@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,8 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "undo",
+    "redo",
 ]
 
 def create_instance(c_instance):
@@ -295,6 +297,7 @@ class AbletonMCP(ControlSurface):
                                  "clear_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
+                                 "undo", "redo",
                                  "load_browser_item", "load_instrument_or_effect",
                                  # Arrangement view – must run on the main thread
                                  "switch_to_arrangement_view", "set_current_song_time",
@@ -366,6 +369,8 @@ class AbletonMCP(ControlSurface):
                             result = self._start_playback()
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
+                        elif command_type in ("undo", "redo"):
+                            result = self._undo_redo(command_type)
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
@@ -950,6 +955,38 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error deleting clip: " + str(e))
             raise
 
+
+    def _undo_redo(self, action):
+        """Undo or redo one step in Live's undo history, if there is one.
+
+        Guarded by Song.can_undo / Song.can_redo: with nothing to undo (or
+        redo) nothing is called and the reply says so, instead of Live raising.
+        This acts on Live's single global history, so it also reverts edits the
+        user made by hand, not only the ones made through this server.
+        """
+        try:
+            if action not in ("undo", "redo"):
+                raise ValueError("Unknown action '%s'" % action)
+            can = "can_" + action
+            if not getattr(self._song, can, False):
+                return {
+                    "performed": False,
+                    "action": action,
+                    "message": "Nothing to %s: Live's %s history is empty" % (action, action),
+                    "can_undo": bool(getattr(self._song, "can_undo", False)),
+                    "can_redo": bool(getattr(self._song, "can_redo", False)),
+                }
+            getattr(self._song, action)()
+            return {
+                "performed": True,
+                "action": action,
+                "message": "Performed %s" % action,
+                "can_undo": bool(getattr(self._song, "can_undo", False)),
+                "can_redo": bool(getattr(self._song, "can_redo", False)),
+            }
+        except Exception as e:
+            self.log_message("Error performing %s: %s" % (action, str(e)))
+            raise
 
     def _start_playback(self):
         """Start playing the session"""

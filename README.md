@@ -251,6 +251,14 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Undo and redo
+
+### Tool reference (undo)
+
+| Tool | What it does |
+|---|---|
+| `undo()` | Undoes one step of Live's undo history. If there is nothing to undo it does nothing and says so. Live has one history, so this also undoes edits you made by hand. |
+| `redo()` | Redoes one undone step. If there is nothing to redo it does nothing and says so. |
 
 ### Example Commands
 
