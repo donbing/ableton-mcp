@@ -162,16 +162,46 @@ def test_peak_and_mean_for_a_constant_signal(inst):
     assert drums["mean"] == pytest.approx(0.375)
 
 
-def test_dbfs_conversion(inst):
+def test_db_approx_conversion_is_linear_in_db(inst):
+    """Live's meter is ~linear in dB: (raw - 0.85) / 0.01325, not 20*log10."""
     drums = meters(inst, seconds=1, hz=10)["result"]["tracks"][0]
-    assert drums["peak_dbfs"] == pytest.approx(20 * math.log10(0.5), abs=0.01)
-    assert drums["mean_dbfs"] == pytest.approx(20 * math.log10(0.375), abs=0.01)
+    assert drums["peak_db_approx"] == pytest.approx((0.5 - 0.85) / 0.01325, abs=0.01)
+    assert drums["mean_db_approx"] == pytest.approx((0.375 - 0.85) / 0.01325, abs=0.01)
 
 
-def test_silence_has_zero_levels_and_null_dbfs(inst):
+def test_db_approx_matches_the_live_calibration_points(inst, song):
+    """Real Live: fader at -36..-6 dB read raw 0.3582..0.7550 (peak)."""
+    for raw, expected_db in ((0.85, 0.0), (0.4301, -31.7), (0.3582, -37.1),
+                             (0.7550, -7.2), (0.4, -34.0)):
+        song.tracks[0]._left = lambda t, v=raw: v
+        song.tracks[0]._right = lambda t, v=raw: v
+        drums = meters(inst, seconds=0.5, hz=10)["result"]["tracks"][0]
+        assert drums["peak_db_approx"] == pytest.approx(expected_db, abs=0.1)
+
+
+def test_old_linear_amplitude_formula_is_not_used(inst, song):
+    song.tracks[0]._left = lambda t: 0.4301
+    song.tracks[0]._right = lambda t: 0.4301
+    drums = meters(inst, seconds=0.5, hz=10)["result"]["tracks"][0]
+    # 20*log10(0.4301) would be -7.33 dB, ~24 dB too loud for a -30 dB fader.
+    assert drums["peak_db_approx"] != pytest.approx(20 * math.log10(0.4301), abs=1.0)
+    assert drums["peak_db_approx"] < -30
+    assert not any(k.endswith("_dbfs") for k in drums)
+
+
+def test_silence_has_zero_levels_and_null_db_approx(inst, song):
     bass = meters(inst, seconds=1, hz=10)["result"]["tracks"][1]
     assert bass["peak"] == 0.0 and bass["mean"] == 0.0
-    assert bass["peak_dbfs"] is None and bass["mean_dbfs"] is None
+    assert bass["peak_db_approx"] is None and bass["mean_db_approx"] is None
+    # The floor: anything at or below 0.03 is silence, just above is a number.
+    song.tracks[0]._left = lambda t: 0.03
+    song.tracks[0]._right = lambda t: 0.03
+    drums = meters(inst, seconds=0.5, hz=10)["result"]["tracks"][0]
+    assert drums["peak_db_approx"] is None
+    song.tracks[0]._left = lambda t: 0.031
+    song.tracks[0]._right = lambda t: 0.031
+    drums = meters(inst, seconds=0.5, hz=10)["result"]["tracks"][0]
+    assert drums["peak_db_approx"] is not None
 
 
 def test_every_track_return_and_master_is_reported(inst):
@@ -180,7 +210,8 @@ def test_every_track_return_and_master_is_reported(inst):
     assert [t["name"] for t in result["return_tracks"]] == ["A Reverb"]
     assert result["master"]["name"] == "Master"
     assert result["master"]["peak"] == 1.0
-    assert result["master"]["peak_dbfs"] == 0.0
+    assert result["master"]["peak_db_approx"] == pytest.approx(
+        (1.0 - 0.85) / 0.01325, abs=0.01)
 
 
 def test_peak_catches_a_transient_the_mean_averages_away(inst, song, clock):
@@ -203,7 +234,26 @@ def test_a_ramp_is_averaged_across_the_whole_window(inst, song):
 
 def test_the_note_explains_the_scale(inst):
     note = meters(inst, seconds=0.5, hz=10)["result"]["note"]
-    assert "linear 0..1" in note and "dbfs" in note.lower()
+    assert "linear in dB" in note and "NOT linear amplitude" in note
+    assert "20*log10" not in note
+
+
+def test_response_carries_a_scale_object(inst):
+    scale = meters(inst, seconds=0.5, hz=10)["result"]["scale"]
+    assert scale == {
+        "raw": ("Live's 0..1 meter reading, approximately linear in dB, "
+                "NOT linear amplitude"),
+        "db_approx": "(raw-0.85)/0.01325",
+        "calibrated_range_db": [-37, -7],
+        "accuracy_db": ("about +-1.5 inside the calibrated range; "
+                        "extrapolated outside it (unverified)"),
+    }
+
+
+def test_tool_docstring_states_the_scale():
+    doc = server.get_meters.__doc__ or ""
+    assert "LINEAR IN dB" in doc and "db_approx" in doc
+    assert "dBFS conversion" not in doc
 
 
 def test_reports_transport_state(inst, song):

@@ -491,9 +491,15 @@ def get_meters(
     `seconds` seconds. Start playback first: meters read 0 when nothing plays.
     The call takes about `seconds` to return; it does not freeze Live.
 
-    Values are Live's own meter readings, linear 0..1 (1.0 = full scale), with
-    a dBFS conversion (20*log10(value)). The dBFS figure is an approximation,
-    not a calibrated measurement. null dBFS means silence.
+    Raw values (peak, mean, peak_left, ...) are Live's own 0..1 meter readings.
+    They are approximately LINEAR IN dB, NOT linear amplitude (about 0.01325 per
+    dB, and roughly 0.85 = 0 dBFS, like a fader). Never convert with
+    20*log10(raw): that is wrong by tens of dB. Each entry also carries
+    peak_db_approx / mean_db_approx = (raw - 0.85) / 0.01325, measured on
+    Live 12 Lite: accurate to about +-1.5 dB inside roughly -37..-7 dB and
+    extrapolated (unverified) outside it. null means silence (raw <= 0.03).
+    The response's `scale` object restates this. Use it for relative changes
+    and rough levels, not as a calibrated meter.
 
     Parameters:
     - seconds: Window length, default 2.0, capped at 10
