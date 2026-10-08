@@ -564,22 +564,55 @@ def get_device_parameters(
     ctx: Context,
     track_index: int,
     device_index: int,
+    name_contains: Optional[str] = None,
+    limit: Optional[int] = None,
+    include_racks: bool = False,
     user_prompt: str = "",
 ) -> str:
     """
-    Read all parameters for a device on a track (name, value, min, max).
+    Read the parameters of a device on a track: name, value, min, max, and
+    `display`, the string Live shows for the current value ("-6.0 dB", "1/8",
+    "Sine", "2.4 kHz"). Use `display` to understand what a raw value means
+    before changing it with set_device_parameter.
+
+    Racks (Instrument, Audio Effect and Drum Racks) are returned as a compact
+    summary by default: their own macro parameters plus chain and device names.
+    Walking every chain can return hundreds of KB. Pass include_racks=true when
+    you need the parameters of the devices nested inside.
+
+    Each parameter's `index` is its index in device.parameters, even when the
+    list is filtered, so it can be passed straight to set_device_parameter.
 
     Parameters:
     - track_index: Track that owns the device
     - device_index: Index into the track's device chain
+    - name_contains: Optional case-insensitive filter on parameter names
+      (for example "cutoff" or "attack")
+    - limit: Optional maximum number of parameters returned per device
+    - include_racks: false (default) summarises racks; true returns full chain contents
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        if name_contains is not None or limit is not None:
+            from .script_handshake import require_capability
+
+            missing = require_capability("get_device_parameters_v2")
+            if missing:
+                return missing
+        if limit is not None and limit < 0:
+            return "Error getting device parameters: limit must not be negative"
+        params: Dict[str, Any] = {
+            "track_index": track_index,
+            "device_index": device_index,
+        }
+        if name_contains:
+            params["name_contains"] = name_contains
+        if limit is not None:
+            params["limit"] = limit
+        if include_racks:
+            params["include_racks"] = True
         ableton = get_ableton_connection()
-        result = ableton.send_command(
-            "get_device_parameters",
-            {"track_index": track_index, "device_index": device_index},
-        )
+        result = ableton.send_command("get_device_parameters", params)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting device parameters: {str(e)}")

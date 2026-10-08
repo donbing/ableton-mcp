@@ -255,6 +255,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Mute, solo and arm tracks
 - Delete a track, with a preview and name check first
 - Measure per-track output levels (peak and mean) over a short window
+- Read device parameters with Live's own display strings ("-6.0 dB", "1/8")
 
 ### Mixer control
 
@@ -316,6 +317,12 @@ name, which catches a stale index after tracks were added or removed.
 | Tool | What it does |
 |---|---|
 | `get_meters(seconds=2.0, hz=20)` | Samples the output meters of every track, return track and the master for `seconds` (max 10) at `hz` samples per second, and returns each one's `peak` and `mean` level. Values are Live's own linear 0..1 meter readings, with a `*_dbfs` conversion (`20*log10(value)`, approximate; `null` = silence). Start playback first; meters read 0 when nothing plays. Sampling happens on the Remote Script's client thread, so Live is not blocked. |
+
+### Tool reference (device parameters)
+
+| Tool | What it does |
+|---|---|
+| `get_device_parameters(track_index, device_index, name_contains=None, limit=None, include_racks=false)` | Reads a device's parameters. Every entry now has a `display` string, exactly what Live shows for the value (`"-6.0 dB"`, `"1/8"`, `"Sine"`). `name_contains` (case-insensitive) and `limit` narrow the list; each `index` stays the real index for `set_device_parameter`. Racks are returned as a compact summary (macros plus chain and device names) unless `include_racks=true`, because a full rack read can be hundreds of KB. Other devices are returned as before. |
 
 ### Example Commands
 
