@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,10 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "get_mixer",
+    "set_track_volume",
+    "set_track_panning",
+    "set_send",
 ]
 
 def create_instance(c_instance):

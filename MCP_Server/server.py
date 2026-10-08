@@ -131,6 +131,7 @@ class AbletonConnection:
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
+            "set_track_volume", "set_track_panning", "set_send",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "clear_notes_from_clip",
@@ -1575,6 +1576,11 @@ def get_mixer(ctx: Context, track_index: int = 0, track_type: str = "track",
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_mixer")
+        if missing:
+            return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("get_mixer", {
             "track_index": track_index,
@@ -1611,6 +1617,11 @@ def set_track_volume(
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_track_volume")
+        if missing:
+            return missing
         if db is None and value is None:
             return "Error: provide either db or value"
         ableton = get_ableton_connection()
@@ -1645,6 +1656,11 @@ def set_track_panning(
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_track_panning")
+        if missing:
+            return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("set_track_panning", {
             "track_index": track_index,
@@ -1682,6 +1698,11 @@ def set_send(
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_send")
+        if missing:
+            return missing
         if db is None and value is None:
             return "Error: provide either db or value"
         ableton = get_ableton_connection()
