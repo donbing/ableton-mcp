@@ -253,6 +253,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Change tempo and other session parameters
 - Read and set mixer levels — volume, panning and sends
 - Mute, solo and arm tracks
+- Delete a track, with a preview and name check first
 
 ### Mixer control
 
@@ -302,6 +303,12 @@ send at silence also reports `db: null`; its `display` reads `"-inf dB"`.
 `track_type` is `"track"` (default) or `"return"`. `expected_name` is an optional
 guard: the call fails unless the track at `track_index` currently has exactly that
 name, which catches a stale index after tracks were added or removed.
+
+### Tool reference (destructive edits)
+
+| Tool | What it does |
+|---|---|
+| `delete_track(track_index, expected_name, confirm=false)` | Deletes a regular track in two steps. Without `confirm=true` it only returns a preview (name, type, devices, clip counts, group members, and the track list as it would remain). It deletes only when `confirm=true` **and** `expected_name` matches the track's current name. Return and master tracks and the last remaining track are refused. Returns the new track list, because every later track's index shifts down by one. Deletions go into Live's undo history (Cmd/Ctrl+Z). |
 
 ### Example Commands
 

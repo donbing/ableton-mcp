@@ -1,5 +1,6 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.types import ToolAnnotations
 import socket
 import json
 import logging
@@ -135,6 +136,7 @@ class AbletonConnection:
             "set_track_mute", "set_track_solo", "set_track_arm",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
+            "delete_track",
             "clear_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
@@ -1109,6 +1111,71 @@ def delete_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: st
     except Exception as e:
         logger.error(f"Error deleting clip: {str(e)}")
         return f"Error deleting clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_track")
+@trajectory_tool("delete_track")
+def delete_track(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    confirm: bool = False,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete one track, in two steps. DESTRUCTIVE: remaining track indices shift.
+
+    Step 1: call with confirm=false (the default). Nothing is deleted; you get a
+    preview with the track's name, type, devices, clip counts, any group members
+    that would go with it, and the track list as it would look afterwards.
+    Step 2: call again with the same track_index and expected_name and
+    confirm=true to delete it.
+
+    Deletion only happens when confirm=true AND expected_name equals the track's
+    current name. A mismatch (usually a stale index) deletes nothing. Only regular
+    tracks can be deleted: return and master tracks, and the last remaining track,
+    are refused. Deleting a group track also deletes the tracks inside it. After a
+    delete, use the returned track list: every later track moved down by one.
+    Deletions go into Live's undo history (Cmd/Ctrl+Z); a group may need one
+    undo per track.
+
+    Parameters:
+    - track_index: Index of the track to delete
+    - expected_name: The track's exact current name (required safety check)
+    - confirm: false = preview only (default), true = delete
+    - track_type: "track" (default). "return" and "master" are refused.
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_track")
+        if missing:
+            return missing
+        if not expected_name:
+            return ("Error deleting track: expected_name is required. Read the "
+                    "track's current name with get_track_info and pass it exactly.")
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "expected_name": expected_name,
+            "track_type": track_type,
+        }
+        if not confirm:
+            preview = ableton.send_command("delete_track", dict(params, dry_run=True))
+            return (
+                "NOT DELETED (preview only). This would delete: "
+                + json.dumps(preview, indent=2)
+                + "\nTo delete, call delete_track again with the same track_index "
+                "and expected_name and confirm=true."
+            )
+        result = ableton.send_command("delete_track", dict(params, dry_run=False))
+        return "Deleted track. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting track: {str(e)}")
+        return f"Error deleting track: {str(e)}"
 
 
 @mcp.tool()

@@ -65,6 +65,7 @@ SCRIPT_CAPABILITIES = [
     "set_track_mute",
     "set_track_solo",
     "set_track_arm",
+    "delete_track",
 ]
 
 def create_instance(c_instance):
@@ -304,6 +305,7 @@ class AbletonMCP(ControlSurface):
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_arrangement_clip_name",
                                  "delete_clip",
+                                 "delete_track",
                                  "clear_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
@@ -383,6 +385,13 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._delete_clip(track_index, clip_index)
+                        elif command_type == "delete_track":
+                            result = self._delete_track(
+                                params.get("track_index", 0),
+                                params.get("expected_name"),
+                                params.get("track_type", "track"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -1233,6 +1242,104 @@ class AbletonMCP(ControlSurface):
             return {"deleted": True}
         except Exception as e:
             self.log_message("Error deleting clip: " + str(e))
+            raise
+
+    def _delete_track(self, track_index, expected_name=None, track_type="track",
+                      dry_run=True):
+        """Preview or perform the deletion of one regular (Session) track.
+
+        Guards, all enforced here so a direct TCP caller gets them too:
+        - dry_run defaults to True; deleting requires dry_run to be False.
+        - Only regular tracks (song.tracks) can be deleted. Return and master
+          tracks are refused: song.delete_track cannot remove them, and a
+          plain index would otherwise silently hit a regular track instead.
+        - Deleting requires expected_name to equal the track's current name.
+          Indices shift after every delete, so a remembered index is the
+          realistic way to delete the wrong track.
+        - The last remaining track is refused (Live needs at least one), and
+          so is a deletion that would remove every track.
+        - Deleting a group track also deletes its members; they are listed.
+
+        Always returns the facts about the track and the track list that would
+        remain (preview) or does remain (after deleting), re-indexed.
+        """
+        try:
+            kind = (track_type or "track").lower()
+            if kind in ("return", "master"):
+                raise ValueError(
+                    "Return and master tracks cannot be deleted with delete_track")
+            if kind != "track":
+                raise ValueError("Unknown track_type '%s' (expected track)" % track_type)
+            if isinstance(track_index, bool) or not isinstance(track_index, int):
+                raise TypeError("track_index must be an integer, got %r" % (track_index,))
+            tracks = list(self._song.tracks)
+            if track_index < 0 or track_index >= len(tracks):
+                raise IndexError(
+                    "track index %d out of range (have %d)" % (track_index, len(tracks)))
+            track = tracks[track_index]
+            if expected_name is not None and track.name != expected_name:
+                raise ValueError(
+                    "Track %d is '%s', not '%s'; indices may have shifted. "
+                    "Nothing was deleted." % (track_index, track.name, expected_name))
+            if not dry_run and expected_name is None:
+                raise ValueError("expected_name is required to delete a track")
+
+            # Group members go with their group (nested groups included).
+            doomed = [track]
+            for candidate in tracks:
+                parent = getattr(candidate, "group_track", None)
+                if (candidate not in doomed and parent is not None
+                        and any(parent == d for d in doomed)):
+                    doomed.append(candidate)
+            members = [t.name for t in doomed[1:]]
+            if len(doomed) >= len(tracks):
+                raise ValueError(
+                    "Refusing to delete the last remaining track; "
+                    "a Live Set needs at least one")
+
+            survivors = [t for t in tracks if not any(t == d for d in doomed)]
+            info = {
+                "track_index": track_index,
+                "name": track.name,
+                "is_group": bool(getattr(track, "is_foldable", False)),
+                "type": ("group" if getattr(track, "is_foldable", False)
+                         else "midi" if getattr(track, "has_midi_input", False)
+                         else "audio"),
+                "group_members": members,
+                "devices": [d.name for d in track.devices],
+                "session_clip_count": sum(1 for s in track.clip_slots if s.has_clip),
+                "arrangement_clip_count": len(
+                    self._safe_attr(track, "arrangement_clips", list, [])),
+                "armed": self._safe_arm(track),
+                "remaining": [{"index": i, "name": t.name}
+                              for i, t in enumerate(survivors)],
+            }
+            if dry_run:
+                info["deleted"] = False
+                info["dry_run"] = True
+                return info
+
+            # Members first, group last. After each delete the indices have
+            # moved, and Live may also drop a group once its last member is
+            # gone, so re-find every victim by identity right before deleting
+            # it and skip any that no longer exists. Never trust a stale index
+            # on a destructive call.
+            for victim in reversed(doomed):
+                current = list(self._song.tracks)
+                at = next((i for i, t in enumerate(current) if t == victim), None)
+                if at is not None:
+                    self._song.delete_track(at)
+            after = list(self._song.tracks)
+            info["deleted"] = len(after) == len(survivors)
+            info["remaining"] = [{"index": i, "name": t.name}
+                                 for i, t in enumerate(after)]
+            if not info["deleted"]:
+                raise RuntimeError(
+                    "Live did not delete the track (%d tracks before, %d after)"
+                    % (len(tracks), len(after)))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting track: " + str(e))
             raise
 
 
