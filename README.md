@@ -281,10 +281,14 @@ string Live displays:
 {
   "name": "1-Drums",
   "volume": { "value": 0.85, "db": 0.0, "display": "0.0 dB" },
-  "panning": { "value": 0.0, "db": null, "display": "C" },
+  "panning": { "value": 0.0, "db": null, "display": "C", "pan_percent": 0 },
   "sends": [ { "index": 0, "name": "A Reverb", "db": -12.0, "display": "-12.0 dB" } ]
 }
 ```
+
+Panning has no dB: `db` is always `null` and `pan_percent` is the position parsed
+from Live's display (`"50L"` is `-50`, `"25R"` is `25`, `"C"` is `0`). A volume or
+send at silence also reports `db: null`; its `display` reads `"-inf dB"`.
 
 ### Example Commands
 

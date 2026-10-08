@@ -5,6 +5,7 @@ from _Framework.ControlSurface import ControlSurface
 import os
 import socket
 import json
+import re
 import threading
 import time
 import traceback
@@ -732,23 +733,43 @@ class AbletonMCP(ControlSurface):
         Live's fader taper has no published closed form, so rather than
         approximating it we ask Live what the value actually reads as and
         parse that. This stays correct across Live versions.
+
+        Only displays that carry a "dB" unit are parsed. Anything else (a pan
+        reading such as "50L") is not a level, and pulling its digits out would
+        invent a bogus dB figure, so it raises instead.
         """
-        text = param.str_for_value(value)
-        if not isinstance(text, str):
-            try:
-                text = text.encode("utf-8")
-            except Exception:
-                text = str(text)
+        raw = param.str_for_value(value)
+        text = raw if isinstance(raw, str) else str(raw)
         # Normalize the unicode minus Live uses and locale decimal commas.
-        text = text.replace("\xe2\x88\x92", "-").replace("−", "-")
-        text = text.replace("dB", "").replace(",", ".").strip()
-        if "inf" in text.lower():
+        text = text.replace("\u2212", "-")
+        if "db" not in text.lower():
+            raise ValueError("Display '%s' is not a dB value" % text)
+        text = text.lower().replace("db", "").replace(",", ".").strip()
+        if "inf" in text:
             return float("-inf")
         cleaned = "".join([c for c in text if c.isdigit() or c in "-+."])
         try:
             return float(cleaned)
         except Exception:
-            raise Exception("Could not parse dB from Live display '%s'" % param.str_for_value(value))
+            raise ValueError("Could not parse dB from Live display '%s'" % raw)
+
+    def _pan_percent_for_display(self, display):
+        """Parse a pan display ("C", "50L", "25R") into -100..100, left negative.
+
+        Returns None for anything else.
+        """
+        text = (display if isinstance(display, str) else str(display)).strip().upper()
+        if text == "C":
+            return 0
+        m = re.match(r"^(\d+(?:[.,]\d+)?)\s*([LR])$", text) or re.match(
+            r"^([LR])\s*(\d+(?:[.,]\d+)?)$", text)
+        if not m:
+            return None
+        first, second = m.groups()
+        number, side = (first, second) if first[0].isdigit() else (second, first)
+        amount = float(number.replace(",", "."))
+        amount = int(amount) if amount == int(amount) else amount
+        return -amount if side == "L" else amount
 
     def _value_for_db(self, param, target_db):
         """Find the normalized value whose display matches target_db.
@@ -774,16 +795,26 @@ class AbletonMCP(ControlSurface):
                 high = mid
         return (low + high) / 2.0
 
-    def _param_report(self, param):
-        """Describe a mixer parameter as raw value, dB and Live's own display."""
-        report = {
-            "value": param.value,
-            "display": param.str_for_value(param.value),
-        }
+    def _param_report(self, param, kind="level"):
+        """Describe a mixer parameter as raw value, Live's display and a number.
+
+        kind="level" (volume, sends): "db" is the level in dB. It is None when
+        the display is not a dB figure, and None for silence ("-inf dB", where
+        the display still says so), so the reply is always valid JSON.
+        kind="pan": "db" is always None and "pan_percent" holds the position,
+        -100 (hard left) .. 100 (hard right), parsed from Live's own "50L" /
+        "C" / "25R" display. Reading a pan display as dB made off-centre pans
+        report db=50.0.
+        """
+        display = param.str_for_value(param.value)
+        report = {"value": param.value, "display": display, "db": None}
+        if kind == "pan":
+            report["pan_percent"] = self._pan_percent_for_display(display)
+            return report
         try:
-            report["db"] = self._db_for_value(param, param.value)
+            db = self._db_for_value(param, param.value)
+            report["db"] = None if db == float("-inf") else db
         except Exception:
-            # panning and other non-dB parameters simply have no dB reading
             report["db"] = None
         return report
 
@@ -813,7 +844,7 @@ class AbletonMCP(ControlSurface):
                 "name": track.name,
                 "track_type": (track_type or "track").lower(),
                 "volume": self._param_report(mixer.volume),
-                "panning": self._param_report(mixer.panning),
+                "panning": self._param_report(mixer.panning, kind="pan"),
                 "sends": sends,
             }
         except Exception as e:
@@ -837,7 +868,7 @@ class AbletonMCP(ControlSurface):
             track = self._resolve_track(track_index, track_type)
             param = track.mixer_device.panning
             param.value = max(param.min, min(param.max, float(value)))
-            result = self._param_report(param)
+            result = self._param_report(param, kind="pan")
             result["name"] = track.name
             return result
         except Exception as e:
