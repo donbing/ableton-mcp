@@ -36,7 +36,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.9.0"
+SCRIPT_VERSION = "1.9.1"
 PROTOCOL_VERSION = 1
 
 # get_meters sampling limits. The window is capped so a request can never tie
@@ -45,6 +45,23 @@ PROTOCOL_VERSION = 1
 METER_MAX_SECONDS = 10.0
 METER_MIN_HZ = 1.0
 METER_MAX_HZ = 50.0
+# Live's 0..1 meter reading is approximately LINEAR IN dB, not linear in
+# amplitude (measured on Live 12 Lite: a constant synth through a fader at
+# -36..-6 dB gave raw = 0.8281 + 0.01325 * dB, residuals < 0.014). So
+# dB_approx = (raw - 0.85) / 0.01325, with 0.85 ~ 0 dBFS (the same fader-style
+# scale: 0.85 = 0 dB, 0.4 = -18 dB, 1.0 = +6 dB). Values at or below
+# METER_DB_FLOOR are treated as silence. Calibrated only for about -37..-7 dB.
+METER_DB_REF = 0.85
+METER_DB_SLOPE = 0.01325
+METER_DB_FLOOR = 0.03
+METER_SCALE = {
+    "raw": ("Live's 0..1 meter reading, approximately linear in dB, "
+            "NOT linear amplitude"),
+    "db_approx": "(raw-0.85)/0.01325",
+    "calibrated_range_db": [-37, -7],
+    "accuracy_db": ("about +-1.5 inside the calibrated range; extrapolated "
+                    "outside it (unverified)"),
+}
 
 SCRIPT_CAPABILITIES = [
     "get_session_info",
@@ -653,8 +670,11 @@ class AbletonMCP(ControlSurface):
         If a track's meter cannot be read it is reported as unavailable and
         skipped; one bad track does not fail the call.
 
-        Meter values are Live's own 0..1 readings; dBFS is 20*log10(value) and
-        is an approximation, not a calibrated level.
+        Meter values are Live's own 0..1 readings, which are approximately
+        LINEAR IN dB, not linear amplitude. *_db_approx = (raw - 0.85) / 0.01325
+        (about 0.01325 per dB, 0.85 ~ 0 dBFS), measured on Live 12 Lite and
+        accurate to about +-1.5 dB only inside roughly -37..-7 dB. Do not use
+        20*log10(raw): that is off by tens of dB.
         """
         try:
             for label, val in (("seconds", seconds), ("hz", hz)):
@@ -711,8 +731,10 @@ class AbletonMCP(ControlSurface):
                         time.sleep(wait)
             elapsed = time.monotonic() - started
 
-            def dbfs(x):
-                return round(20.0 * math.log10(x), 2) if x > 0 else None
+            def db_approx(x):
+                if x <= METER_DB_FLOOR:
+                    return None
+                return round((x - METER_DB_REF) / METER_DB_SLOPE, 2)
 
             def report(st):
                 entry = {"index": st["index"], "name": st["name"]}
@@ -726,9 +748,9 @@ class AbletonMCP(ControlSurface):
                 entry.update({
                     "meter_available": True,
                     "peak": round(peak, 4),
-                    "peak_dbfs": dbfs(peak),
+                    "peak_db_approx": db_approx(peak),
                     "mean": round(mean, 4),
-                    "mean_dbfs": dbfs(mean),
+                    "mean_db_approx": db_approx(mean),
                     "peak_left": round(st["peak_left"], 4),
                     "peak_right": round(st["peak_right"], 4),
                     "mean_left": round(mean_left, 4),
@@ -746,12 +768,15 @@ class AbletonMCP(ControlSurface):
                 "tracks": [report(st) for st in stats if st["group"] == "tracks"],
                 "return_tracks": [report(st) for st in stats if st["group"] == "return_tracks"],
                 "master": [report(st) for st in stats if st["group"] == "master"][0],
+                "scale": dict(METER_SCALE, calibrated_range_db=list(
+                    METER_SCALE["calibrated_range_db"])),
                 "note": (
-                    "peak/mean are Live's own output meter readings, linear 0..1 "
-                    "(peak = loudest sample of either channel, mean = average of "
-                    "both channels over the window). *_dbfs = 20*log10(value), an "
-                    "approximation; null means silence (-inf). Meters read 0 "
-                    "while nothing is playing."),
+                    "peak/mean are Live's own output meter readings, 0..1 and "
+                    "approximately linear in dB (NOT linear amplitude); peak = "
+                    "loudest sample of either channel, mean = average of both "
+                    "channels over the window. *_db_approx = (raw-0.85)/0.01325 "
+                    "(see scale); null means silence (raw <= 0.03). Meters read "
+                    "0 while nothing is playing."),
             }
             return result
         except Exception as e:
