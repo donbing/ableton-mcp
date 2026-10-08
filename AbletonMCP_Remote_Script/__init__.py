@@ -34,7 +34,15 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.8.0"
+SCRIPT_VERSION = "1.8.1"
+
+# Shown on every undo / redo reply. Live merges edits made through the API into
+# a single undo step, so one undo can revert several MCP changes.
+UNDO_WARNING = (
+    "WARNING: Live merges API-originated edits into ONE undo step, so a single "
+    "undo/redo may revert SEVERAL MCP changes (everything since the user's last "
+    "manual action) and also the user's own recent manual edits. Verify the "
+    "session state afterwards.")
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -59,6 +67,8 @@ SCRIPT_CAPABILITIES = [
     "clear_notes_from_clip",
     "undo",
     "redo",
+    # undo/redo take dry_run (default True): without it an undo would act at once
+    "undo_confirm_guard",
 ]
 
 def create_instance(c_instance):
@@ -370,7 +380,8 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
                         elif command_type in ("undo", "redo"):
-                            result = self._undo_redo(command_type)
+                            result = self._undo_redo(
+                                command_type, params.get("dry_run", True))
                         elif command_type == "load_instrument_or_effect":
                             track_index = params.get("track_index", 0)
                             uri = params.get("uri", "")
@@ -956,31 +967,57 @@ class AbletonMCP(ControlSurface):
             raise
 
 
-    def _undo_redo(self, action):
+    def _undo_redo(self, action, dry_run=True):
         """Undo or redo one step in Live's undo history, if there is one.
 
-        Guarded by Song.can_undo / Song.can_redo: with nothing to undo (or
+        DANGEROUS, so dry_run defaults to True (like delete_track): without
+        dry_run=False nothing is changed and song.undo()/redo() is NOT called;
+        the reply is a preview with UNDO_WARNING and can_undo / can_redo.
+
+        Why: measured on Live 12 Lite, Live merges edits that come from the API
+        into ONE undo step. Three Remote Script edits made 2 s apart
+        (set_track_name, set_tempo, set_track_mute) were all reverted by a
+        single undo(); another single undo() reverted every rename, track
+        creation/deletion and mute made since the last human action. So one undo
+        may revert several MCP changes and the user's own recent manual edits.
+
+        Also guarded by Song.can_undo / Song.can_redo: with nothing to undo (or
         redo) nothing is called and the reply says so, instead of Live raising.
-        This acts on Live's single global history, so it also reverts edits the
-        user made by hand, not only the ones made through this server.
         """
         try:
             if action not in ("undo", "redo"):
                 raise ValueError("Unknown action '%s'" % action)
             can = "can_" + action
+            can_undo = bool(getattr(self._song, "can_undo", False))
+            can_redo = bool(getattr(self._song, "can_redo", False))
             if not getattr(self._song, can, False):
                 return {
                     "performed": False,
+                    "dry_run": bool(dry_run),
                     "action": action,
                     "message": "Nothing to %s: Live's %s history is empty" % (action, action),
-                    "can_undo": bool(getattr(self._song, "can_undo", False)),
-                    "can_redo": bool(getattr(self._song, "can_redo", False)),
+                    "can_undo": can_undo,
+                    "can_redo": can_redo,
+                }
+            if dry_run:
+                return {
+                    "performed": False,
+                    "dry_run": True,
+                    "action": action,
+                    "message": (
+                        "PREVIEW ONLY, nothing was changed. " + UNDO_WARNING
+                        + " Call %s again with confirm=true to go ahead." % action),
+                    "warning": UNDO_WARNING,
+                    "can_undo": can_undo,
+                    "can_redo": can_redo,
                 }
             getattr(self._song, action)()
             return {
                 "performed": True,
+                "dry_run": False,
                 "action": action,
-                "message": "Performed %s" % action,
+                "message": "Performed %s. %s" % (action, UNDO_WARNING),
+                "warning": UNDO_WARNING,
                 "can_undo": bool(getattr(self._song, "can_undo", False)),
                 "can_redo": bool(getattr(self._song, "can_redo", False)),
             }
