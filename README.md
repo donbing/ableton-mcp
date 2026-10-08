@@ -251,6 +251,13 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Delete a track, with a preview and name check first
+
+### Tool reference (destructive edits)
+
+| Tool | What it does |
+|---|---|
+| `delete_track(track_index, expected_name, confirm=false)` | Deletes a regular track in two steps. Without `confirm=true` it only returns a preview (name, type, devices, clip counts, group members, and the track list as it would remain). It deletes only when `confirm=true` **and** `expected_name` matches the track's current name. Return and master tracks and the last remaining track are refused. Returns the new track list, because every later track's index shifts down by one. Deletions go into Live's undo history (Cmd/Ctrl+Z). |
 
 ### Example Commands
 

@@ -28,6 +28,7 @@ MODIFYING_TOOLS = {
     "create_midi_track",
     "create_audio_track",
     "set_track_name",
+    "delete_track",
     "create_clip",
     "create_audio_clip",
     "add_notes_to_clip",
@@ -42,6 +43,8 @@ MODIFYING_TOOLS = {
 
 _PARAM_KEYS = (
     "track_index",
+    "track_type",
+    "confirm",
     "clip_index",
     "device_index",
     "index",
