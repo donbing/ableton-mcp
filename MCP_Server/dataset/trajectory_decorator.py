@@ -38,6 +38,8 @@ MODIFYING_TOOLS = {
     "set_clip_name",
     "set_arrangement_clip_name",
     "set_tempo",
+    "undo",
+    "redo",
     "set_device_parameter",
     "load_instrument_or_effect",
     "load_drum_kit",

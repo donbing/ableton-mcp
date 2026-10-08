@@ -256,6 +256,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Delete a track, with a preview and name check first
 - Measure per-track output levels (peak and mean) over a short window
 - Read device parameters with Live's own display strings ("-6.0 dB", "1/8")
+- Undo and redo
 
 ### Mixer control
 
@@ -323,6 +324,13 @@ name, which catches a stale index after tracks were added or removed.
 | Tool | What it does |
 |---|---|
 | `get_device_parameters(track_index, device_index, name_contains=None, limit=None, include_racks=false)` | Reads a device's parameters. Every entry now has a `display` string, exactly what Live shows for the value (`"-6.0 dB"`, `"1/8"`, `"Sine"`). `name_contains` (case-insensitive) and `limit` narrow the list; each `index` stays the real index for `set_device_parameter`. Racks are returned as a compact summary (macros plus chain and device names) unless `include_racks=true`, because a full rack read can be hundreds of KB. Other devices are returned as before. |
+
+### Tool reference (undo)
+
+| Tool | What it does |
+|---|---|
+| `undo()` | Undoes one step of Live's undo history. If there is nothing to undo it does nothing and says so. Live has one history, so this also undoes edits you made by hand. |
+| `redo()` | Redoes one undone step. If there is nothing to redo it does nothing and says so. |
 
 ### Example Commands
 

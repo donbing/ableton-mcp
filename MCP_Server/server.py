@@ -140,6 +140,7 @@ class AbletonConnection:
             "clear_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
+            "undo", "redo",
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
@@ -1252,6 +1253,59 @@ def delete_track(
     except Exception as e:
         logger.error(f"Error deleting track: {str(e)}")
         return f"Error deleting track: {str(e)}"
+
+
+def _undo_redo(action: str) -> str:
+    """Shared body of undo / redo."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability(action)
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command(action, {})
+        if not result.get("performed"):
+            return result.get("message") or f"Nothing to {action}"
+        return (f"{action.capitalize()} done. Can undo: {result.get('can_undo')}, "
+                f"can redo: {result.get('can_redo')}.")
+    except Exception as e:
+        logger.error(f"Error performing {action}: {str(e)}")
+        return f"Error performing {action}: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("undo")
+@trajectory_tool("undo")
+def undo(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Undo the last change in Ableton Live (one step of Live's undo history).
+
+    Does nothing, and says so, when there is nothing to undo. Live has a single
+    history, so this also undoes edits the user made by hand in Live, not only
+    changes made through these tools. Call get_session_info or get_track_info
+    afterwards to see the state you are now in.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _undo_redo("undo")
+
+
+@mcp.tool()
+@telemetry_tool("redo")
+@trajectory_tool("redo")
+def redo(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Redo the last undone change in Ableton Live (one step).
+
+    Does nothing, and says so, when there is nothing to redo (for example after
+    any new edit, which clears Live's redo history).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _undo_redo("redo")
 
 
 @mcp.tool()
