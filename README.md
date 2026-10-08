@@ -251,6 +251,19 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Mute, solo and arm tracks
+
+### Tool reference (mixer state)
+
+| Tool | What it does |
+|---|---|
+| `set_track_mute(track_index, mute, track_type="track", expected_name=None)` | Mute or unmute a regular, group or return track. Returns the previous and new value. The master track cannot be muted. |
+| `set_track_solo(track_index, solo, track_type="track", expected_name=None)` | Solo or unsolo a regular, group or return track. Returns the previous and new value. The master track cannot be soloed. |
+| `set_track_arm(track_index, arm, track_type="track", expected_name=None)` | Arm or disarm a MIDI or audio track. Group, return and master tracks have no arm state and are refused. |
+
+`track_type` is `"track"` (default) or `"return"`. `expected_name` is an optional
+guard: the call fails unless the track at `track_index` currently has exactly that
+name, which catches a stale index after tracks were added or removed.
 
 ### Example Commands
 

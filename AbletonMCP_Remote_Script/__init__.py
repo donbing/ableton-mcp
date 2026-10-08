@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,9 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "set_track_mute",
+    "set_track_solo",
+    "set_track_arm",
 ]
 
 def create_instance(c_instance):
@@ -289,6 +292,7 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_track_info(track_index)
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
+                                 "set_track_mute", "set_track_solo", "set_track_arm",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_arrangement_clip_name",
                                  "delete_clip",
@@ -347,6 +351,13 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             name = params.get("name", "")
                             result = self._set_arrangement_clip_name(track_index, clip_index, name)
+                        elif command_type in ("set_track_mute", "set_track_solo", "set_track_arm"):
+                            result = self._set_track_flag(
+                                command_type[len("set_track_"):],
+                                params.get("track_index", 0),
+                                params.get("enabled"),
+                                params.get("track_type", "track"),
+                                params.get("expected_name"))
                         elif command_type == "set_tempo":
                             tempo = params.get("tempo", 120.0)
                             result = self._set_tempo(tempo)
@@ -692,6 +703,82 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting track name: " + str(e))
+            raise
+
+    def _resolve_track(self, track_index, track_type="track"):
+        """Resolve (track_index, track_type) to a Live track object.
+
+        track_type is "track", "return" or "master". For "master" the index is
+        ignored. Rejects non-integer and out-of-range indices with a clear
+        message rather than an opaque TypeError from list indexing.
+        """
+        kind = (track_type or "track").lower()
+        if kind == "master":
+            return self._song.master_track
+        if kind == "return":
+            tracks = self._song.return_tracks
+        elif kind == "track":
+            tracks = self._song.tracks
+        else:
+            raise ValueError(
+                "Unknown track_type '%s' (expected track, return or master)" % track_type)
+        if isinstance(track_index, bool) or not isinstance(track_index, int):
+            raise TypeError("track_index must be an integer, got %r" % (track_index,))
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("%s index %d out of range (have %d)" % (kind, track_index, len(tracks)))
+        return tracks[track_index]
+
+    def _set_track_flag(self, flag, track_index, enabled, track_type="track",
+                        expected_name=None):
+        """Set Track.mute / Track.solo / Track.arm and report old and new state.
+
+        Where the Live Object Model allows it:
+        - mute and solo exist on regular, group and return tracks. The master
+          track has neither, so it is refused with an explanation.
+        - arm exists only on tracks whose can_be_armed is true. Group, return
+          and master tracks are refused (reading or writing arm on them makes
+          Live raise a RuntimeError; see _safe_arm).
+
+        expected_name, when given, must equal the track's current name. It
+        catches a stale index (tracks shifted after a create or delete) before
+        the wrong track is changed.
+        """
+        try:
+            if flag not in ("mute", "solo", "arm"):
+                raise ValueError("Unknown track flag '%s'" % flag)
+            if not isinstance(enabled, bool):
+                raise TypeError("'%s' must be true or false, got %r" % (flag, enabled))
+            kind = (track_type or "track").lower()
+            track = self._resolve_track(track_index, track_type)
+            if expected_name is not None and track.name != expected_name:
+                raise ValueError(
+                    "%s %s is '%s', not '%s'; indices may have shifted"
+                    % (kind, track_index, track.name, expected_name))
+            if kind == "master":
+                raise ValueError("The master track has no %s state" % flag)
+            if flag == "arm":
+                if not getattr(track, "can_be_armed", False):
+                    raise ValueError(
+                        "Track '%s' cannot be armed (group, return and master "
+                        "tracks have no arm state)" % track.name)
+                previous = self._safe_arm(track)
+                track.arm = enabled
+                current = self._safe_arm(track)
+            else:
+                previous = bool(getattr(track, flag))
+                setattr(track, flag, enabled)
+                current = bool(getattr(track, flag))
+            return {
+                "track_index": track_index if kind != "master" else None,
+                "track_type": kind,
+                "name": track.name,
+                "flag": flag,
+                "previous": previous,
+                "value": current,
+                "changed": previous != current,
+            }
+        except Exception as e:
+            self.log_message("Error setting track %s: %s" % (flag, str(e)))
             raise
     
     def _create_clip(self, track_index, clip_index, length):

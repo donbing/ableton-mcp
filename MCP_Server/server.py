@@ -7,7 +7,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Union
+from typing import AsyncIterator, Dict, Any, List, Optional, Union
 
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
@@ -131,6 +131,7 @@ class AbletonConnection:
         # Check if this is a state-modifying command
         is_modifying_command = command_type in [
             "create_midi_track", "create_audio_track", "set_track_name",
+            "set_track_mute", "set_track_solo", "set_track_arm",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "clear_notes_from_clip",
@@ -685,6 +686,118 @@ def set_track_name(ctx: Context, track_index: int, name: str, user_prompt: str =
     except Exception as e:
         logger.error(f"Error setting track name: {str(e)}")
         return f"Error setting track name: {str(e)}"
+
+def _set_track_flag(command: str, flag: str, track_index: int, enabled: bool,
+                    track_type: str, expected_name: Optional[str]) -> str:
+    """Shared body of set_track_mute / set_track_solo / set_track_arm."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability(command)
+        if missing:
+            return missing
+        params: Dict[str, Any] = {
+            "track_index": track_index,
+            "enabled": enabled,
+            "track_type": track_type,
+        }
+        if expected_name is not None:
+            params["expected_name"] = expected_name
+        result = get_ableton_connection().send_command(command, params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting track {flag}: {str(e)}")
+        return f"Error setting track {flag}: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_mute")
+@trajectory_tool("set_track_mute")
+def set_track_mute(
+    ctx: Context,
+    track_index: int,
+    mute: bool,
+    track_type: str = "track",
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Mute or unmute a track. Works on regular, group and return tracks; the
+    master track cannot be muted. Returns the previous and the new value.
+
+    Parameters:
+    - track_index: Index within the chosen track_type (ignored for "master")
+    - mute: True to mute, False to unmute
+    - track_type: "track" (default) or "return"
+    - expected_name: Optional safety check. If given, the call fails unless the
+      track at track_index currently has exactly this name (guards against
+      stale indices)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _set_track_flag("set_track_mute", "mute", track_index, mute,
+                           track_type, expected_name)
+
+
+@mcp.tool()
+@telemetry_tool("set_track_solo")
+@trajectory_tool("set_track_solo")
+def set_track_solo(
+    ctx: Context,
+    track_index: int,
+    solo: bool,
+    track_type: str = "track",
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Solo or unsolo a track. Works on regular, group and return tracks; the
+    master track cannot be soloed. Returns the previous and the new value.
+    With Live's "Exclusive Solo" preference on, soloing one track unsolos the
+    others.
+
+    Parameters:
+    - track_index: Index within the chosen track_type (ignored for "master")
+    - solo: True to solo, False to unsolo
+    - track_type: "track" (default) or "return"
+    - expected_name: Optional safety check. If given, the call fails unless the
+      track at track_index currently has exactly this name (guards against
+      stale indices)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _set_track_flag("set_track_solo", "solo", track_index, solo,
+                           track_type, expected_name)
+
+
+@mcp.tool()
+@telemetry_tool("set_track_arm")
+@trajectory_tool("set_track_arm")
+def set_track_arm(
+    ctx: Context,
+    track_index: int,
+    arm: bool,
+    track_type: str = "track",
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Arm or disarm a track for recording. Only tracks that can be armed
+    (MIDI and audio tracks) are accepted; group, return and master tracks have
+    no arm state and are refused with an explanation. Returns the previous and
+    the new value (read back from Live, so a refused arm shows as unchanged).
+    With Live's "Exclusive Arm" preference on, arming one track disarms others.
+
+    Parameters:
+    - track_index: Index of the track
+    - arm: True to arm, False to disarm
+    - track_type: "track" (default)
+    - expected_name: Optional safety check. If given, the call fails unless the
+      track at track_index currently has exactly this name (guards against
+      stale indices)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _set_track_flag("set_track_arm", "arm", track_index, arm,
+                           track_type, expected_name)
+
 
 @mcp.tool()
 @rich_telemetry_tool("create_clip")
