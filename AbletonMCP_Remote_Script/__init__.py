@@ -6,6 +6,7 @@ import os
 import socket
 import json
 import re
+import math
 import threading
 import time
 import traceback
@@ -38,6 +39,13 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
+# get_meters sampling limits. The window is capped so a request can never tie
+# up a client handler thread for long; the rate is capped because Live's meters
+# refresh at roughly UI rate, so faster polling only re-reads the same value.
+METER_MAX_SECONDS = 10.0
+METER_MIN_HZ = 1.0
+METER_MAX_HZ = 50.0
+
 SCRIPT_CAPABILITIES = [
     "get_session_info",
     "get_track_info",
@@ -66,6 +74,7 @@ SCRIPT_CAPABILITIES = [
     "set_track_solo",
     "set_track_arm",
     "delete_track",
+    "get_meters",
 ]
 
 def create_instance(c_instance):
@@ -299,6 +308,12 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "get_meters":
+                # Deliberately NOT scheduled on the main thread: it samples for
+                # up to METER_MAX_SECONDS and must not block Live. See
+                # _get_meters.
+                response["result"] = self._get_meters(
+                    params.get("seconds", 2.0), params.get("hz", 20))
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "set_track_mute", "set_track_solo", "set_track_arm",
@@ -611,6 +626,128 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session info: " + str(e))
             raise
     
+    def _get_meters(self, seconds=2.0, hz=20):
+        """Sample output_meter_left/right of every track over a time window.
+
+        Threading, deliberately: this runs on the client handler thread and
+        never touches Live's main thread for longer than one attribute read.
+        - It is NOT scheduled with schedule_message. That callback runs once
+          per ~100 ms tick, so it cannot reach 20 Hz, and a 10 s window would
+          have to be split across dozens of main-thread callbacks that compete
+          with Live's own UI work.
+        - It does not hold the main thread for the window either (a blocking
+          main-thread loop would freeze Live for up to 10 s).
+        - Between samples it sleeps on the handler thread. The reads are plain
+          float properties, the same kind of off-thread LOM read that
+          get_track_info and get_session_snapshot already do.
+        If a track's meter cannot be read it is reported as unavailable and
+        skipped; one bad track does not fail the call.
+
+        Meter values are Live's own 0..1 readings; dBFS is 20*log10(value) and
+        is an approximation, not a calibrated level.
+        """
+        try:
+            for label, val in (("seconds", seconds), ("hz", hz)):
+                if (isinstance(val, bool) or not isinstance(val, (int, float))
+                        or not math.isfinite(val) or val <= 0):
+                    raise ValueError("%s must be a positive number, got %r" % (label, val))
+            capped = seconds > METER_MAX_SECONDS
+            seconds = min(float(seconds), METER_MAX_SECONDS)
+            hz = min(max(float(hz), METER_MIN_HZ), METER_MAX_HZ)
+            samples = int(round(seconds * hz)) + 1
+            interval = 1.0 / hz
+
+            groups = [
+                ("tracks", list(self._song.tracks)),
+                ("return_tracks", list(self._song.return_tracks)),
+                ("master", [self._song.master_track]),
+            ]
+            stats = []
+            for group, tracks in groups:
+                for index, track in enumerate(tracks):
+                    stats.append({
+                        "group": group, "index": index, "track": track,
+                        "name": self._safe_attr(track, "name", str, ""),
+                        "peak_left": 0.0, "peak_right": 0.0,
+                        "sum_left": 0.0, "sum_right": 0.0, "n": 0,
+                        "available": True,
+                    })
+
+            started = time.monotonic()
+            taken = 0
+            for i in range(samples):
+                if not getattr(self, "running", True):
+                    break
+                for st in stats:
+                    if not st["available"]:
+                        continue
+                    try:
+                        left = float(st["track"].output_meter_left)
+                        right = float(st["track"].output_meter_right)
+                        if not (math.isfinite(left) and math.isfinite(right)):
+                            raise ValueError("non-finite meter value")
+                    except Exception:
+                        st["available"] = False
+                        continue
+                    st["peak_left"] = max(st["peak_left"], left)
+                    st["peak_right"] = max(st["peak_right"], right)
+                    st["sum_left"] += left
+                    st["sum_right"] += right
+                    st["n"] += 1
+                taken += 1
+                if i < samples - 1:
+                    wait = started + (i + 1) * interval - time.monotonic()
+                    if wait > 0:
+                        time.sleep(wait)
+            elapsed = time.monotonic() - started
+
+            def dbfs(x):
+                return round(20.0 * math.log10(x), 2) if x > 0 else None
+
+            def report(st):
+                entry = {"index": st["index"], "name": st["name"]}
+                if not st["available"] or st["n"] == 0:
+                    entry["meter_available"] = False
+                    return entry
+                mean_left = st["sum_left"] / st["n"]
+                mean_right = st["sum_right"] / st["n"]
+                peak = max(st["peak_left"], st["peak_right"])
+                mean = (mean_left + mean_right) / 2.0
+                entry.update({
+                    "meter_available": True,
+                    "peak": round(peak, 4),
+                    "peak_dbfs": dbfs(peak),
+                    "mean": round(mean, 4),
+                    "mean_dbfs": dbfs(mean),
+                    "peak_left": round(st["peak_left"], 4),
+                    "peak_right": round(st["peak_right"], 4),
+                    "mean_left": round(mean_left, 4),
+                    "mean_right": round(mean_right, 4),
+                })
+                return entry
+
+            result = {
+                "seconds_requested": seconds,
+                "seconds_elapsed": round(elapsed, 3),
+                "hz": hz,
+                "samples": taken,
+                "capped_to_max_seconds": capped,
+                "is_playing": self._safe_song_property("is_playing", bool, False),
+                "tracks": [report(st) for st in stats if st["group"] == "tracks"],
+                "return_tracks": [report(st) for st in stats if st["group"] == "return_tracks"],
+                "master": [report(st) for st in stats if st["group"] == "master"][0],
+                "note": (
+                    "peak/mean are Live's own output meter readings, linear 0..1 "
+                    "(peak = loudest sample of either channel, mean = average of "
+                    "both channels over the window). *_dbfs = 20*log10(value), an "
+                    "approximation; null means silence (-inf). Meters read 0 "
+                    "while nothing is playing."),
+            }
+            return result
+        except Exception as e:
+            self.log_message("Error getting meters: " + str(e))
+            raise
+
     def _get_track_info(self, track_index):
         """Get information about a track"""
         try:

@@ -54,6 +54,8 @@ _PARAM_KEYS = (
     "solo",
     "arm",
     "confirm",
+    "seconds",
+    "hz",
     "clip_index",
     "device_index",
     "index",

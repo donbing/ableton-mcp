@@ -150,7 +150,7 @@ class AbletonConnection:
         # than the default modifying-command budget (e.g. importing/decoding a
         # large audio file). Give them a wider socket timeout so we don't time
         # out before the Remote Script's own queue does.
-        long_running_commands = {"create_audio_clip": 65.0}
+        long_running_commands = {"create_audio_clip": 65.0, "get_meters": 20.0}
         
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
@@ -476,6 +476,49 @@ def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_meters")
+@trajectory_tool("get_meters")
+def get_meters(
+    ctx: Context,
+    seconds: float = 2.0,
+    hz: int = 20,
+    user_prompt: str = "",
+) -> str:
+    """
+    Measure output levels of every track, every return track and the master over
+    a short time window, and report per-track peak and mean level.
+
+    Samples Live's output meters (left and right) `hz` times a second for
+    `seconds` seconds. Start playback first: meters read 0 when nothing plays.
+    The call takes about `seconds` to return; it does not freeze Live.
+
+    Values are Live's own meter readings, linear 0..1 (1.0 = full scale), with
+    a dBFS conversion (20*log10(value)). The dBFS figure is an approximation,
+    not a calibrated measurement. null dBFS means silence.
+
+    Parameters:
+    - seconds: Window length, default 2.0, capped at 10
+    - hz: Samples per second, default 20, clamped to 1..50
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_meters")
+        if missing:
+            return missing
+        if seconds <= 0 or hz <= 0:
+            return "Error getting meters: seconds and hz must be positive"
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_meters", {"seconds": min(float(seconds), 10.0), "hz": hz})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting meters: {str(e)}")
+        return f"Error getting meters: {str(e)}"
 
 
 @mcp.tool()

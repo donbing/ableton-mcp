@@ -254,6 +254,7 @@ Once the config file has been set on Claude, and the remote script is running in
 - Read and set mixer levels — volume, panning and sends
 - Mute, solo and arm tracks
 - Delete a track, with a preview and name check first
+- Measure per-track output levels (peak and mean) over a short window
 
 ### Mixer control
 
@@ -309,6 +310,12 @@ name, which catches a stale index after tracks were added or removed.
 | Tool | What it does |
 |---|---|
 | `delete_track(track_index, expected_name, confirm=false)` | Deletes a regular track in two steps. Without `confirm=true` it only returns a preview (name, type, devices, clip counts, group members, and the track list as it would remain). It deletes only when `confirm=true` **and** `expected_name` matches the track's current name. Return and master tracks and the last remaining track are refused. Returns the new track list, because every later track's index shifts down by one. Deletions go into Live's undo history (Cmd/Ctrl+Z). |
+
+### Tool reference (metering)
+
+| Tool | What it does |
+|---|---|
+| `get_meters(seconds=2.0, hz=20)` | Samples the output meters of every track, return track and the master for `seconds` (max 10) at `hz` samples per second, and returns each one's `peak` and `mean` level. Values are Live's own linear 0..1 meter readings, with a `*_dbfs` conversion (`20*log10(value)`, approximate; `null` = silence). Start playback first; meters read 0 when nothing plays. Sampling happens on the Remote Script's client thread, so Live is not blocked. |
 
 ### Example Commands
 
