@@ -42,6 +42,8 @@ MODIFYING_TOOLS = {
 
 _PARAM_KEYS = (
     "track_index",
+    "seconds",
+    "hz",
     "clip_index",
     "device_index",
     "index",

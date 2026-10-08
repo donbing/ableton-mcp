@@ -251,6 +251,13 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Measure per-track output levels (peak and mean) over a short window
+
+### Tool reference (metering)
+
+| Tool | What it does |
+|---|---|
+| `get_meters(seconds=2.0, hz=20)` | Samples the output meters of every track, return track and the master for `seconds` (max 10) at `hz` samples per second, and returns each one's `peak` and `mean` level. Values are Live's own linear 0..1 meter readings, with a `*_dbfs` conversion (`20*log10(value)`, approximate; `null` = silence). Start playback first; meters read 0 when nothing plays. Sampling happens on the Remote Script's client thread, so Live is not blocked. |
 
 ### Example Commands
 
