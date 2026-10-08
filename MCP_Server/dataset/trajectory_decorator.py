@@ -42,6 +42,9 @@ MODIFYING_TOOLS = {
 
 _PARAM_KEYS = (
     "track_index",
+    "name_contains",
+    "limit",
+    "include_racks",
     "clip_index",
     "device_index",
     "index",

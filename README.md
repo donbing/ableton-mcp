@@ -251,6 +251,13 @@ Once the config file has been set on Claude, and the remote script is running in
 - Load instruments and effects from Ableton's browser
 - Add notes to MIDI clips
 - Change tempo and other session parameters
+- Read device parameters with Live's own display strings ("-6.0 dB", "1/8")
+
+### Tool reference (device parameters)
+
+| Tool | What it does |
+|---|---|
+| `get_device_parameters(track_index, device_index, name_contains=None, limit=None, include_racks=false)` | Reads a device's parameters. Every entry now has a `display` string, exactly what Live shows for the value (`"-6.0 dB"`, `"1/8"`, `"Sine"`). `name_contains` (case-insensitive) and `limit` narrow the list; each `index` stays the real index for `set_device_parameter`. Racks are returned as a compact summary (macros plus chain and device names) unless `include_racks=true`, because a full rack read can be hundreds of KB. Other devices are returned as before. |
 
 ### Example Commands
 

@@ -34,7 +34,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.7.1"
+SCRIPT_VERSION = "1.8.0"
 PROTOCOL_VERSION = 1
 
 SCRIPT_CAPABILITIES = [
@@ -57,6 +57,7 @@ SCRIPT_CAPABILITIES = [
     "create_locator",
     "delete_clip",
     "clear_notes_from_clip",
+    "get_device_parameters_v2",
 ]
 
 def create_instance(c_instance):
@@ -459,7 +460,11 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
-                response["result"] = self._get_device_parameters(track_index, device_index)
+                response["result"] = self._get_device_parameters(
+                    track_index, device_index,
+                    name_contains=params.get("name_contains"),
+                    limit=params.get("limit"),
+                    include_racks=params.get("include_racks", False))
             elif command_type == "get_session_snapshot":
                 include_notes = params.get("include_notes", True)
                 include_params = params.get("include_params", True)
@@ -1934,7 +1939,9 @@ class AbletonMCP(ControlSurface):
     # a snapshot can never blow the stack or the payload size.
     _MAX_CHAIN_DEPTH = 4
 
-    def _serialize_device(self, device, device_index, include_params=True, depth=0):
+    def _serialize_device(self, device, device_index, include_params=True, depth=0,
+                          with_display=False, name_filter=None, param_limit=None,
+                          include_chains=True):
         info = {
             "index": device_index,
             "name": device.name,
@@ -1950,9 +1957,18 @@ class AbletonMCP(ControlSurface):
 
         if include_params:
             params = []
+            matched = 0
+            total = 0
+            needle = name_filter.lower() if name_filter else None
             try:
                 for p_index, param in enumerate(device.parameters):
+                    total += 1
                     try:
+                        if needle is not None and needle not in str(param.name).lower():
+                            continue
+                        matched += 1
+                        if param_limit is not None and len(params) >= param_limit:
+                            continue
                         entry = {
                             "index": p_index,
                             "name": param.name,
@@ -1962,6 +1978,10 @@ class AbletonMCP(ControlSurface):
                             "is_enabled": bool(getattr(param, "is_enabled", True)),
                             "is_quantized": bool(getattr(param, "is_quantized", False)),
                         }
+                        if with_display:
+                            display = self._param_display(param)
+                            if display is not None:
+                                entry["display"] = display
                         if hasattr(param, "value_string"):
                             entry["value_string"] = str(param.value_string)
                         if hasattr(param, "automation_state"):
@@ -1975,20 +1995,27 @@ class AbletonMCP(ControlSurface):
             except Exception as e:
                 self.log_message("Error reading device parameters: " + str(e))
             info["parameters"] = params
+            if needle is not None or param_limit is not None:
+                info["parameters_total"] = total
+                info["parameters_matched"] = matched
+                info["parameters_truncated"] = matched > len(params)
 
         # Devices inside a rack carry the actual sound design — a drum rack's
         # nested Operator, an instrument rack's filter. Without this walk a rack
         # contributes only its 8 macros and the timbral state is invisible.
-        if getattr(device, "can_have_chains", False):
+        if include_chains and getattr(device, "can_have_chains", False):
             if depth >= self._MAX_CHAIN_DEPTH:
                 info["chains_truncated"] = True
             else:
                 info["chains"] = self._serialize_chains(
-                    device, include_params=include_params, depth=depth
+                    device, include_params=include_params, depth=depth,
+                    with_display=with_display, name_filter=name_filter,
+                    param_limit=param_limit,
                 )
         return info
 
-    def _serialize_chains(self, rack, include_params=True, depth=0):
+    def _serialize_chains(self, rack, include_params=True, depth=0,
+                          with_display=False, name_filter=None, param_limit=None):
         chains = []
         try:
             chain_lists = [("chains", getattr(rack, "chains", []))]
@@ -2027,6 +2054,9 @@ class AbletonMCP(ControlSurface):
                                     d_i,
                                     include_params=include_params,
                                     depth=depth + 1,
+                                    with_display=with_display,
+                                    name_filter=name_filter,
+                                    param_limit=param_limit,
                                 )
                             )
                     except Exception as e:
@@ -2198,21 +2228,95 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting clip notes: " + str(e))
             raise
 
-    def _get_device_parameters(self, track_index, device_index):
+    # A rack's chains (and everything nested in them) are what make
+    # get_device_parameters payloads reach hundreds of KB; the summary lists
+    # only this many chains.
+    _RACK_SUMMARY_MAX_CHAINS = 32
+
+    def _get_device_parameters(self, track_index, device_index, name_contains=None,
+                               limit=None, include_racks=False):
+        """Parameters of one device, each with Live's display string.
+
+        name_contains: case-insensitive substring filter on parameter names.
+        limit: keep at most this many parameters per device (after filtering).
+        include_racks: racks (and drum racks) are returned as a compact summary
+        (their own macro parameters plus a list of chain and device names)
+        unless this is true, because walking every chain returns payloads of
+        hundreds of KB. Non-racks are unaffected.
+        Parameter "index" is always the index into device.parameters, so a
+        filtered result can be passed straight to set_device_parameter.
+        """
         try:
+            if name_contains is not None and not isinstance(name_contains, str):
+                raise TypeError("name_contains must be a string")
+            if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)
+                                      or limit < 0):
+                raise ValueError("limit must be a non-negative integer")
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             track = self._song.tracks[track_index]
             if device_index < 0 or device_index >= len(track.devices):
                 raise IndexError("Device index out of range")
             device = track.devices[device_index]
-            return {
-                "track_index": track_index,
-                "device": self._serialize_device(device, device_index, include_params=True),
-            }
+            is_rack = bool(getattr(device, "can_have_chains", False))
+            summarise = is_rack and not include_racks
+            info = self._serialize_device(
+                device, device_index, include_params=True, with_display=True,
+                name_filter=name_contains, param_limit=limit,
+                include_chains=not summarise)
+            if summarise:
+                info["rack_summary"] = self._rack_summary(device)
+            return {"track_index": track_index, "device": info}
         except Exception as e:
             self.log_message("Error getting device parameters: " + str(e))
             raise
+
+    def _param_display(self, param):
+        """Live's own display string for a parameter's current value ("-6.0 dB",
+        "1/8", "Sine"), or None when it cannot be read."""
+        try:
+            text = param.str_for_value(param.value)
+            if text is not None:
+                return str(text)
+        except Exception:
+            pass
+        try:
+            text = str(param)
+            # An unhelpful default repr means __str__ is not a display string.
+            if text and not text.startswith("<"):
+                return text
+        except Exception:
+            pass
+        return None
+
+    def _rack_summary(self, rack):
+        chains = []
+        total_devices = 0
+        chain_lists = [("chains", list(getattr(rack, "chains", None) or [])),
+                       ("return_chains", list(getattr(rack, "return_chains", None) or []))]
+        for kind, chain_list in chain_lists:
+            for chain_index, chain in enumerate(chain_list):
+                device_names = [self._safe_attr(d, "name", str, "")
+                                for d in (self._safe_attr(chain, "devices", list, []) or [])]
+                total_devices += len(device_names)
+                if len(chains) < self._RACK_SUMMARY_MAX_CHAINS:
+                    chains.append({
+                        "index": chain_index,
+                        "kind": kind,
+                        "chain_name": self._safe_attr(chain, "name", str, ""),
+                        "device_names": device_names,
+                    })
+        count = sum(len(c) for _, c in chain_lists)
+        return {
+            "chain_count": len(chain_lists[0][1]),
+            "return_chain_count": len(chain_lists[1][1]),
+            "nested_device_count": total_devices,
+            "chains": chains,
+            "chains_truncated": count > len(chains),
+            "hint": ("Rack contents omitted to keep the reply small. Pass "
+                     "include_racks=true for every chain parameter (can be "
+                     "hundreds of KB), or read a nested device directly."),
+        }
 
     def _get_session_snapshot(self, include_notes=True, include_params=True):
         """Full v2 project state dump for trajectory dataset recording."""
