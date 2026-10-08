@@ -350,8 +350,8 @@ Abridged `get_meters` response (a synth track whose fader sits at -30 dB reads a
 
 | Tool | What it does |
 |---|---|
-| `undo()` | Undoes one step of Live's undo history. If there is nothing to undo it does nothing and says so. Live has one history, so this also undoes edits you made by hand. |
-| `redo()` | Redoes one undone step. If there is nothing to redo it does nothing and says so. |
+| `undo(confirm=false)` | **Dangerous: one undo can revert several changes.** Live merges changes made through the API into ONE undo step, so a single undo may revert several MCP changes (everything since your last manual action) and also your own recent manual edits. Measured on Live 12 Lite: three edits made 2 s apart (rename, tempo, mute) were all reverted by one `undo`. Without `confirm=true` it changes nothing and returns a preview with this warning plus `can_undo` / `can_redo`; with `confirm=true` it undoes one step. If there is nothing to undo it says so. |
+| `redo(confirm=false)` | Same guard and the same warning: without `confirm=true` it only previews; with `confirm=true` it redoes one step (which may re-apply several changes). If there is nothing to redo it says so. |
 
 ### Example Commands
 

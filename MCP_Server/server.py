@@ -1261,19 +1261,33 @@ def delete_track(
         return f"Error deleting track: {str(e)}"
 
 
-def _undo_redo(action: str) -> str:
-    """Shared body of undo / redo."""
+UNDO_REDO_WARNING = (
+    "WARNING: Live merges changes made through the API into ONE undo step, so a "
+    "single undo/redo can revert SEVERAL MCP changes at once (everything since "
+    "the user's last manual action) and also the user's own recent manual edits."
+)
+
+
+def _undo_redo(action: str, confirm: bool = False) -> str:
+    """Shared body of undo / redo. Without confirm it only previews."""
     try:
         from .script_handshake import require_capability
 
-        missing = require_capability(action)
+        # undo_confirm_guard: an older Remote Script ignores dry_run and would
+        # undo at once, defeating the guard, so refuse to talk to it.
+        missing = require_capability(action) or require_capability("undo_confirm_guard")
         if missing:
             return missing
         ableton = get_ableton_connection()
-        result = ableton.send_command(action, {})
+        result = ableton.send_command(action, {"dry_run": not confirm})
         if not result.get("performed"):
+            if result.get("dry_run") and result.get("message", "").startswith("PREVIEW"):
+                return (
+                    f"{result['message']} (can undo: {result.get('can_undo')}, "
+                    f"can redo: {result.get('can_redo')}.)")
             return result.get("message") or f"Nothing to {action}"
-        return (f"{action.capitalize()} done. Can undo: {result.get('can_undo')}, "
+        return (f"{action.capitalize()} done. {UNDO_REDO_WARNING} "
+                f"Can undo: {result.get('can_undo')}, "
                 f"can redo: {result.get('can_redo')}.")
     except Exception as e:
         logger.error(f"Error performing {action}: {str(e)}")
@@ -1283,35 +1297,55 @@ def _undo_redo(action: str) -> str:
 @mcp.tool()
 @telemetry_tool("undo")
 @trajectory_tool("undo")
-def undo(ctx: Context, user_prompt: str = "") -> str:
+def undo(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
     """
-    Undo the last change in Ableton Live (one step of Live's undo history).
+    Undo in Ableton Live. DANGEROUS: one undo can revert SEVERAL changes.
 
-    Does nothing, and says so, when there is nothing to undo. Live has a single
-    history, so this also undoes edits the user made by hand in Live, not only
-    changes made through these tools. Call get_session_info or get_track_info
-    afterwards to see the state you are now in.
+    WARNING: Live merges changes made through the API into ONE undo step. One
+    undo may therefore revert many MCP changes at once (renames, tempo, mutes,
+    track creation/deletion, everything since the user's last manual action) and
+    also the user's own recent manual edits. It is not "undo the last tool call".
+
+    Step 1: call with confirm=false (the default). Nothing is changed; you get a
+    preview with this warning plus can_undo / can_redo. Tell the user what an
+    undo could revert and get their agreement.
+    Step 2: call again with confirm=true to actually undo one step of Live's
+    history. Call get_session_info or get_track_info afterwards, because you may
+    be in a different state than you expect. Prefer reversing a specific change
+    with the matching set_* tool when you can.
+
+    Does nothing, and says so, when there is nothing to undo.
 
     Parameters:
+    - confirm: false = preview only (default), true = really undo
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
-    return _undo_redo("undo")
+    return _undo_redo("undo", confirm)
 
 
 @mcp.tool()
 @telemetry_tool("redo")
 @trajectory_tool("redo")
-def redo(ctx: Context, user_prompt: str = "") -> str:
+def redo(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
     """
-    Redo the last undone change in Ableton Live (one step).
+    Redo in Ableton Live. DANGEROUS: one redo can re-apply SEVERAL changes.
+
+    WARNING: Live merges changes made through the API into ONE undo step, so one
+    redo can re-apply many MCP changes at once (and the user's own manual edits
+    that were undone with them).
+
+    Step 1: call with confirm=false (the default). Nothing is changed; you get a
+    preview with this warning plus can_undo / can_redo.
+    Step 2: call again with confirm=true to actually redo one step.
 
     Does nothing, and says so, when there is nothing to redo (for example after
     any new edit, which clears Live's redo history).
 
     Parameters:
+    - confirm: false = preview only (default), true = really redo
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
-    return _undo_redo("redo")
+    return _undo_redo("redo", confirm)
 
 
 @mcp.tool()

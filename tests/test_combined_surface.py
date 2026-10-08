@@ -36,7 +36,7 @@ NEW_CAPABILITIES = {
 
 
 # Capabilities that advertise a feature of an existing command, not a command.
-FEATURE_FLAGS = {"get_device_parameters_v2"}
+FEATURE_FLAGS = {"get_device_parameters_v2", "undo_confirm_guard"}
 
 
 def _load_script_module():
@@ -71,7 +71,7 @@ def script_module():
 
 def test_script_and_server_agree_on_the_version(script_module):
     assert script_module.SCRIPT_VERSION == EXPECTED_REMOTE_SCRIPT_VERSION
-    assert script_module.SCRIPT_VERSION not in ("1.7.1", "1.8.0")
+    assert script_module.SCRIPT_VERSION not in ("1.7.1", "1.8.0", "1.8.1", "1.9.0")
 
 
 def test_capabilities_have_no_duplicates(script_module):
@@ -111,3 +111,18 @@ def test_every_new_tool_is_registered():
 def test_feature_flags_belong_to_a_dispatched_command(script_module):
     assert "get_device_parameters" in script_module.SCRIPT_CAPABILITIES
     assert FEATURE_FLAGS <= set(script_module.SCRIPT_CAPABILITIES)
+
+
+def test_undo_and_redo_preview_by_default_through_the_real_dispatcher(script_module):
+    """Seam: with no params the combined script must never call song.undo()."""
+    inst = script_module.AbletonMCP.__new__(script_module.AbletonMCP)
+    inst._song = mock.MagicMock()
+    inst.log_message = lambda *a, **k: None
+    inst.schedule_message = lambda delay, callback: callback()
+    for command in ("undo", "redo"):
+        reply = inst._process_command({"type": command, "params": {}})
+        assert reply["status"] == "success"
+        assert reply["result"]["performed"] is False
+        assert reply["result"]["dry_run"] is True
+    inst._song.undo.assert_not_called()
+    inst._song.redo.assert_not_called()
