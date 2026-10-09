@@ -245,8 +245,8 @@ def test_response_carries_a_scale_object(inst):
                 "NOT linear amplitude"),
         "db_approx": "(raw-0.85)/0.01325",
         "calibrated_range_db": [-37, -7],
-        "accuracy_db": ("about +-1.5 inside the calibrated range; "
-                        "extrapolated outside it (unverified)"),
+        "accuracy_db": ("about +-1 dB (1 sigma), single readings up to about +-4 dB, "
+                        "inside the calibrated range; extrapolated outside it (unverified)"),
     }
 
 
