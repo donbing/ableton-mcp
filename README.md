@@ -317,7 +317,7 @@ name, which catches a stale index after tracks were added or removed.
 
 | Tool | What it does |
 |---|---|
-| `get_meters(seconds=2.0, hz=20)` | Samples the output meters of every track, return track and the master for `seconds` (max 10) at `hz` samples per second, and returns each one's `peak` and `mean` level. Raw values are Live's own 0..1 meter readings, which are approximately **linear in dB, not linear amplitude** (about 0.01325 per dB, ~0.85 = 0 dBFS). Each entry also has `peak_db_approx` / `mean_db_approx` = `(raw-0.85)/0.01325` (`null` = silence, raw <= 0.03), accurate to about +-1.5 dB inside roughly -37..-7 dB and extrapolated outside it; the response carries a `scale` object saying so. Never use `20*log10(raw)`. Start playback first; meters read 0 when nothing plays. Sampling happens on the Remote Script's client thread, so Live is not blocked. |
+| `get_meters(seconds=2.0, hz=20)` | Samples the output meters of every track, return track and the master for `seconds` (max 10) at `hz` samples per second, and returns each one's `peak` and `mean` level. Raw values are Live's own 0..1 meter readings, which are approximately **linear in dB, not linear amplitude** (about 0.01325 per dB, ~0.85 = 0 dBFS). Each entry also has `peak_db_approx` / `mean_db_approx` = `(raw-0.85)/0.01325` (`null` = silence, raw <= 0.03), accurate to about +-1 dB (1 sigma; single readings up to about +-4 dB) inside roughly -37..-7 dB and extrapolated outside it; the response carries a `scale` object saying so. Never use `20*log10(raw)`. Start playback first; meters read 0 when nothing plays. Sampling happens on the Remote Script's client thread, so Live is not blocked. |
 
 Abridged `get_meters` response (a synth track whose fader sits at -30 dB reads about 0.43 raw, which is about -31.7 dB; `20*log10(0.43)` would wrongly say -7.3):
 
@@ -335,7 +335,7 @@ Abridged `get_meters` response (a synth track whose fader sits at -30 dB reads a
     "raw": "Live's 0..1 meter reading, approximately linear in dB, NOT linear amplitude",
     "db_approx": "(raw-0.85)/0.01325",
     "calibrated_range_db": [-37, -7],
-    "accuracy_db": "about +-1.5 inside the calibrated range; extrapolated outside it (unverified)"
+    "accuracy_db": "about +-1 dB (1 sigma), single readings up to about +-4 dB, inside the calibrated range; extrapolated outside it (unverified)"
   }
 }
 ```
