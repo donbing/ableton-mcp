@@ -496,7 +496,7 @@ def get_meters(
     dB, and roughly 0.85 = 0 dBFS, like a fader). Never convert with
     20*log10(raw): that is wrong by tens of dB. Each entry also carries
     peak_db_approx / mean_db_approx = (raw - 0.85) / 0.01325, measured on
-    Live 12 Lite: accurate to about +-1.5 dB inside roughly -37..-7 dB and
+    Live 12 Lite: accurate to about +-1 dB (1 sigma; single readings up to about +-4 dB) inside roughly -37..-7 dB and
     extrapolated (unverified) outside it. null means silence (raw <= 0.03).
     The response's `scale` object restates this. Use it for relative changes
     and rough levels, not as a calibrated meter.

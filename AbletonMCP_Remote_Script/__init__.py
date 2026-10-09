@@ -58,7 +58,7 @@ METER_SCALE = {
             "NOT linear amplitude"),
     "db_approx": "(raw-0.85)/0.01325",
     "calibrated_range_db": [-37, -7],
-    "accuracy_db": ("about +-1.5 inside the calibrated range; extrapolated "
+    "accuracy_db": ("about +-1 dB (1 sigma), single readings up to about +-4 dB, inside the calibrated range; extrapolated "
                     "outside it (unverified)"),
 }
 
@@ -614,7 +614,7 @@ class AbletonMCP(ControlSurface):
         Meter values are Live's own 0..1 readings, which are approximately
         LINEAR IN dB, not linear amplitude. *_db_approx = (raw - 0.85) / 0.01325
         (about 0.01325 per dB, 0.85 ~ 0 dBFS), measured on Live 12 Lite and
-        accurate to about +-1.5 dB only inside roughly -37..-7 dB. Do not use
+        accurate to about +-1 dB (1 sigma; single readings up to about +-4 dB) only inside roughly -37..-7 dB. Do not use
         20*log10(raw): that is off by tens of dB.
         """
         try:
