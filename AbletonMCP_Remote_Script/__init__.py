@@ -105,6 +105,7 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "delete_device",
 ]
 
 def create_instance(c_instance):
@@ -351,6 +352,7 @@ class AbletonMCP(ControlSurface):
                                  "set_arrangement_clip_name",
                                  "delete_clip",
                                  "delete_track",
+                                 "delete_device",
                                  "clear_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
@@ -438,6 +440,14 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_type", "track"),
                                 # Preview unless the caller explicitly opts out.
                                 params.get("dry_run", True))
+                        elif command_type == "delete_device":
+                            result = self._delete_device(
+                                params.get("track_index", 0),
+                                params.get("device_index", 0),
+                                params.get("expected_name"),
+                                params.get("expected_device_name"),
+                                params.get("confirm", False),
+                                params.get("track_type", "track"))
                         elif command_type == "start_playback":
                             result = self._start_playback()
                         elif command_type == "stop_playback":
@@ -1523,6 +1533,131 @@ class AbletonMCP(ControlSurface):
             return info
         except Exception as e:
             self.log_message("Error deleting track: " + str(e))
+            raise
+
+
+    @staticmethod
+    def _require_confirm_flag(confirm):
+        """Return True only for an explicit boolean True.
+
+        None means "not given" and previews. Any other non-boolean (the string
+        "false", 0, 1) is ambiguous on a destructive call, so it is refused
+        rather than guessed at.
+        """
+        if confirm is None:
+            return False
+        if not isinstance(confirm, bool):
+            raise TypeError("confirm must be true or false, got %r" % (confirm,))
+        return confirm
+
+    @staticmethod
+    def _require_expected_name(expected_name, what):
+        if not isinstance(expected_name, str) or expected_name == "":
+            raise ValueError(
+                "expected_name is required (the %s's exact current name); "
+                "read it first and pass it unchanged" % what)
+
+    @staticmethod
+    def _require_finite_number(value, label):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("%s must be a number of beats, got %r" % (label, value))
+        value = float(value)
+        if math.isnan(value) or math.isinf(value):
+            raise ValueError("%s must be a finite number of beats" % label)
+        return value
+
+    def _delete_device(self, track_index, device_index, expected_name,
+                       expected_device_name, confirm=False, track_type="track"):
+        """Preview or perform the deletion of one device from a track's chain.
+
+        Guards, all enforced here so a direct TCP caller gets them too:
+        - confirm defaults to False: that only previews. Deleting needs
+          confirm to be exactly True.
+        - track_type is "track" or "return"; the master track is refused.
+        - expected_name (the track's name) and expected_device_name (the
+          device's name) are both required, for preview as well as delete, and
+          both must match the current state. A stale track or device index is
+          the realistic way to delete the wrong thing.
+        - device_index must be an integer inside the chain. Only devices at the
+          top level of the track's chain are addressed, not devices nested in
+          a rack's chains.
+        - Track.delete_device(index) must exist, else an error says so.
+
+        Returns the chain with the target marked (preview) or the remaining
+        chain, re-indexed (after deleting).
+        """
+        try:
+            do_delete = self._require_confirm_flag(confirm)
+            kind = (track_type or "track").lower()
+            if kind == "master":
+                raise ValueError("delete_device does not support the master track")
+            if kind not in ("track", "return"):
+                raise ValueError(
+                    "Unknown track_type '%s' (expected track or return)" % track_type)
+            self._require_expected_name(expected_name, "track")
+            if not isinstance(expected_device_name, str) or expected_device_name == "":
+                raise ValueError(
+                    "expected_device_name is required (the device's exact "
+                    "current name in the chain); read it first and pass it unchanged")
+            track = self._resolve_track(track_index, kind)
+            if track.name != expected_name:
+                raise ValueError(
+                    "%s %s is '%s', not '%s'; indices may have shifted. "
+                    "Nothing was deleted."
+                    % (kind, track_index, track.name, expected_name))
+            if isinstance(device_index, bool) or not isinstance(device_index, int):
+                raise TypeError("device_index must be an integer, got %r" % (device_index,))
+            devices = list(track.devices)
+            if device_index < 0 or device_index >= len(devices):
+                raise IndexError(
+                    "device index %d out of range (track '%s' has %d devices)"
+                    % (device_index, track.name, len(devices)))
+            device = devices[device_index]
+            if device.name != expected_device_name:
+                raise ValueError(
+                    "Device %d on '%s' is '%s', not '%s'; indices may have "
+                    "shifted. Nothing was deleted."
+                    % (device_index, track.name, device.name, expected_device_name))
+
+            def chain(items, mark=None):
+                return [{"index": i, "name": d.name,
+                         "class_name": getattr(d, "class_name", None),
+                         "to_delete": i == mark}
+                        for i, d in enumerate(items)]
+
+            delete_device = getattr(track, "delete_device", None)
+            info = {
+                "track_index": track_index,
+                "track_type": kind,
+                "track_name": track.name,
+                "device_index": device_index,
+                "device_name": device.name,
+                "delete_supported": callable(delete_device),
+                "chain": chain(devices, device_index),
+            }
+            if not do_delete:
+                info["deleted"] = False
+                info["dry_run"] = True
+                return info
+            if not callable(delete_device):
+                raise RuntimeError(
+                    "Track.delete_device is not available in this version of "
+                    "Live. Nothing was deleted.")
+
+            delete_device(device_index)
+            after = list(track.devices)
+            info["dry_run"] = False
+            info["chain"] = chain(after)
+            info["deleted"] = (len(after) == len(devices) - 1
+                               and not any(d is device for d in after))
+            if not info["deleted"]:
+                raise RuntimeError(
+                    "Live did not delete the device (%d devices before, %d "
+                    "after); check the track and use undo if needed"
+                    % (len(devices), len(after)))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting device: " + str(e))
             raise
 
 
