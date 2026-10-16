@@ -1,3 +1,5 @@
+> **Community fork.** This repository is a community-maintained fork of [ahujasid/ableton-mcp](https://github.com/ahujasid/ableton-mcp) that ships mixer, mute/solo/arm, guarded delete, meters, display strings and undo/redo on top of upstream `main`, with a 7-day first-response commitment for issues and PRs. What is different, how to install it and how we plan to reconcile with upstream: **[docs/FORK.md](docs/FORK.md)**.
+
 <div align="center">
 
 # Ableton MCP

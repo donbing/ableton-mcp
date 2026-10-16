@@ -1,0 +1,61 @@
+# About this fork
+
+This is a community-maintained fork of [ahujasid/ableton-mcp](https://github.com/ahujasid/ableton-mcp) (MIT, © Siddharth Ahuja). It exists because a lot of useful work is sitting in open pull requests upstream and the project's `main` has not moved since 2026-09-22. We want that work tested, reviewed and usable now, **without replacing or competing with upstream**: everything here is kept in small, separable branches so it can go back upstream, and we will converge with upstream if and when it becomes active again. See [upstream issue #142](https://github.com/ahujasid/ableton-mcp/issues/142) for the coverage map that started this.
+
+Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, tested on **Ableton Live 12 Lite (macOS)** only. Please read the limits below.
+
+## What is in `main` of this fork
+
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.9.1**, **48 MCP tools** (upstream: 37), 327 tests (all pass).
+
+| Added | Tools / change | Origin |
+|---|---|---|
+| Mixer | `get_mixer`, `set_track_volume`, `set_track_panning`, `set_send` (tracks, returns, master; dB or raw; display strings) | upstream PR #122 by Jorge Nunes (@staminna), original commits kept; we added the version handshake / capability list / bundled-copy sync, pan parsed as pan (not dB), no `-Infinity` in JSON, and mocked-LOM tests |
+| Track state | `set_track_mute`, `set_track_solo`, `set_track_arm` (optional `expected_name` guard against shifted indices) | new, branch `feat/track-mute-solo-arm` |
+| Safe delete | `delete_track` with preview by default; deletes only with `confirm=true` and a matching `expected_name`; refuses return/master/last track | new, `feat/delete-track-guarded` |
+| Meters | `get_meters(seconds, hz)`: windowed per-track peak/mean from `output_meter_left/right`, with the measured dB scale (the raw value is dB-linear, not amplitude) | new, `feat/get-meters` |
+| Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
+| Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
+
+Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
+
+## Install
+
+```json
+{ "mcpServers": { "AbletonMCP": { "command": "uvx",
+  "args": ["--from", "git+https://github.com/vittorfp/ableton-mcp", "ableton-mcp"] } } }
+```
+
+```bash
+uvx --from git+https://github.com/vittorfp/ableton-mcp ableton-mcp-install-script --list-targets   # preview
+uvx --from git+https://github.com/vittorfp/ableton-mcp ableton-mcp-install-script
+```
+
+Then restart Live and re-select the AbletonMCP control surface. Use **either** this fork **or** upstream, not both. Pin a release tag (for example `@v1.9.1-fork.1`) if you want a stable install.
+
+## What we commit to
+
+- **A first response to every issue and pull request within 7 days.** Even if it is only "seen, here is when we will look" or "we won't take this, because ...".
+- **Small PRs first.** Anything under ~250 lines with tests is reviewed first; big ones get a request to split, with concrete suggestions.
+- **Real-Live checks where we can.** New behaviour is run on a real Live 12 Lite set, not only against mocks, and the results are written in the PR. What we could not run is labelled "not run on Live".
+- **Credit.** Work from upstream PRs is brought in with the original authorship (cherry-pick / merge, never a squash that hides authors) and a link to the PR.
+- **Honest changelog.** Every release says what was verified on real Live and what was not.
+- **A monthly sync with upstream `main`**, kept visible in the branch `upstream-main` (a pure mirror).
+
+## Limits
+
+Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) and one OS (macOS); no promise about response time beyond the 7-day first reply; features implemented in open upstream PRs that we have not yet reproduced on Live are listed in the roadmap, not shipped.
+
+## Roadmap (from the coverage map in upstream #142)
+
+Already implemented in open upstream PRs, to be brought in as **small slices with real-Live tests** (oldest and smallest first): scenes, return tracks and load device on a return, routing (#99); delete Arrangement clips, guarded batch operations (#110, #119); automation envelopes and delete device (#23); real-time audio export by resample capture (#143, needs a real-Live run first); record/analyze audio (#133).
+
+Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **reliable create/delete locator** (the current toggle races with the playhead move: two designs failed on real Live); return/master device parameters; device reorder; browser search and preview.
+
+## Reconciling with upstream
+
+If upstream merges a piece we ship, we drop our copy at the next sync. If upstream becomes active and wants any branch here, we will send it as PRs. If the maintainers of the open PRs would rather their work land through this fork (or want to review how we adapted it), say so on the PR or open an issue here.
+
+## Reporting problems
+
+Open an issue here for anything specific to this fork. For behaviour shared with upstream, an upstream issue is still welcome; mention the version (`get_remote_script_info`).
