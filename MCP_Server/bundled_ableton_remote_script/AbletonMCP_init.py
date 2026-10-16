@@ -71,6 +71,11 @@ METER_SCALE = {
                     "outside it (unverified)"),
 }
 
+# delete_arrangement_clips refuses (preview and delete alike) when more clips
+# than this start inside the requested range: that is a sign of a wrong range,
+# and a human cannot sensibly review a longer list.
+MAX_ARRANGEMENT_CLIPS_PER_DELETE = 64
+
 SCRIPT_CAPABILITIES = [
     "get_session_info",
     "get_track_info",
@@ -105,6 +110,7 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "delete_arrangement_clips",
     "delete_device",
 ]
 
@@ -352,7 +358,7 @@ class AbletonMCP(ControlSurface):
                                  "set_arrangement_clip_name",
                                  "delete_clip",
                                  "delete_track",
-                                 "delete_device",
+                                 "delete_arrangement_clips", "delete_device",
                                  "clear_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
@@ -440,6 +446,14 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_type", "track"),
                                 # Preview unless the caller explicitly opts out.
                                 params.get("dry_run", True))
+                        elif command_type == "delete_arrangement_clips":
+                            result = self._delete_arrangement_clips(
+                                params.get("track_index", 0),
+                                params.get("expected_name"),
+                                params.get("start_time"),
+                                params.get("end_time"),
+                                # Preview unless the caller explicitly opts in.
+                                params.get("confirm", False))
                         elif command_type == "delete_device":
                             result = self._delete_device(
                                 params.get("track_index", 0),
@@ -1565,6 +1579,131 @@ class AbletonMCP(ControlSurface):
         if math.isnan(value) or math.isinf(value):
             raise ValueError("%s must be a finite number of beats" % label)
         return value
+
+    @staticmethod
+    def _arrangement_clip_facts(index, clip):
+        return {
+            "index": index,
+            "name": clip.name,
+            "start_time": float(clip.start_time),
+            "end_time": float(clip.end_time),
+            "length": float(clip.length),
+        }
+
+    def _delete_arrangement_clips(self, track_index, expected_name, start_time,
+                                  end_time, confirm=False):
+        """Preview or perform the deletion of Arrangement clips on one track.
+
+        Matching rule: a clip is selected when its START lies in
+        [start_time, end_time) (start inclusive, end exclusive), in absolute
+        Arrangement beats. A clip that starts before start_time but runs into
+        the range is NOT selected, and neither is one that starts at end_time.
+
+        Guards, all enforced here so a direct TCP caller gets them too:
+        - confirm defaults to False: that only previews. Deleting needs
+          confirm to be exactly True.
+        - expected_name is required (preview and delete) and must equal the
+          track's current name, which catches a stale track index.
+        - Only regular tracks are accepted (song.tracks); group tracks hold no
+          Arrangement clips of their own and are refused.
+        - start_time and end_time must be finite numbers with start < end.
+        - More than MAX_ARRANGEMENT_CLIPS_PER_DELETE matches is refused, and
+          so is a match list where two clips share a start time (it should
+          not happen, and a delete must never be ambiguous).
+        - Track.delete_clip(clip) must exist in this Live version; if not, an
+          error says so and nothing is deleted.
+
+        Returns the clips that would be (or were) deleted and the track's
+        remaining Arrangement clips, indexed as get_arrangement_clips does.
+        """
+        try:
+            do_delete = self._require_confirm_flag(confirm)
+            if isinstance(track_index, bool) or not isinstance(track_index, int):
+                raise TypeError("track_index must be an integer, got %r" % (track_index,))
+            self._require_expected_name(expected_name, "track")
+            start = self._require_finite_number(start_time, "start_time")
+            end = self._require_finite_number(end_time, "end_time")
+            if start >= end:
+                raise ValueError(
+                    "start_time (%s) must be less than end_time (%s)" % (start, end))
+            tracks = list(self._song.tracks)
+            if track_index < 0 or track_index >= len(tracks):
+                raise IndexError(
+                    "track index %d out of range (have %d)" % (track_index, len(tracks)))
+            track = tracks[track_index]
+            if track.name != expected_name:
+                raise ValueError(
+                    "Track %d is '%s', not '%s'; indices may have shifted. "
+                    "Nothing was deleted." % (track_index, track.name, expected_name))
+            if getattr(track, "is_foldable", False):
+                raise ValueError(
+                    "Track '%s' is a group track and has no Arrangement clips "
+                    "of its own; target the tracks inside it" % track.name)
+            try:
+                clips = list(track.arrangement_clips)
+            except Exception as e:
+                raise RuntimeError(
+                    "Could not read Arrangement clips of track '%s': %s"
+                    % (track.name, e))
+
+            matched = [c for c in clips if start <= float(c.start_time) < end]
+            if len(matched) > MAX_ARRANGEMENT_CLIPS_PER_DELETE:
+                raise ValueError(
+                    "%d clips start in [%s, %s); refusing more than %d at once. "
+                    "Narrow the range. Nothing was deleted."
+                    % (len(matched), start, end, MAX_ARRANGEMENT_CLIPS_PER_DELETE))
+            starts = [float(c.start_time) for c in matched]
+            if len(set(starts)) != len(starts):
+                raise ValueError(
+                    "Two matching clips share a start time; refusing an "
+                    "ambiguous delete. Nothing was deleted.")
+
+            delete_clip = getattr(track, "delete_clip", None)
+            supported = callable(delete_clip)
+            info = {
+                "track_index": track_index,
+                "track_name": track.name,
+                "start_time": start,
+                "end_time": end,
+                "rule": "clips whose start lies in [start_time, end_time), in beats",
+                "match_count": len(matched),
+                "clips": [self._arrangement_clip_facts(i, c)
+                          for i, c in enumerate(clips)
+                          if any(c is m for m in matched)],
+                "delete_supported": supported,
+            }
+            if not do_delete:
+                info["deleted"] = False
+                info["dry_run"] = True
+                info["remaining"] = [self._arrangement_clip_facts(i, c)
+                                     for i, c in enumerate(clips)
+                                     if not any(c is m for m in matched)]
+                return info
+            if not supported:
+                raise RuntimeError(
+                    "Track.delete_clip is not available in this version of Live, "
+                    "so Arrangement clips cannot be deleted through the API. "
+                    "Nothing was deleted.")
+
+            for clip in matched:
+                delete_clip(clip)
+            after = list(track.arrangement_clips)
+            leftover = [c for c in after if start <= float(c.start_time) < end]
+            info["deleted"] = not leftover
+            info["dry_run"] = False
+            info["deleted_count"] = len(clips) - len(after)
+            info["remaining"] = [self._arrangement_clip_facts(i, c)
+                                 for i, c in enumerate(after)]
+            if leftover or len(after) != len(clips) - len(matched):
+                raise RuntimeError(
+                    "Live did not delete exactly the matched clips (%d clips "
+                    "before, %d after, %d still start in the range); check "
+                    "the Arrangement and use undo if needed"
+                    % (len(clips), len(after), len(leftover)))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting arrangement clips: " + str(e))
+            raise
 
     def _delete_device(self, track_index, device_index, expected_name,
                        expected_device_name, confirm=False, track_type="track"):
