@@ -49,6 +49,7 @@ MODIFYING_TOOLS = {
     "set_send",
     "create_return_track",
     "load_device_on_return",
+    "set_time_signature",
 }
 
 _PARAM_KEYS = (

@@ -111,6 +111,12 @@ SCRIPT_CAPABILITIES = [
     "undo_confirm_guard",
     "create_return_track",
     "load_device_on_return",
+    "set_time_signature",
+    "set_metronome",
+    "get_arrangement_loop",
+    "set_arrangement_loop",
+    "get_cue_points",
+    "jump_to_cue",
 ]
 
 def create_instance(c_instance):
@@ -344,6 +350,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "get_arrangement_loop":
+                response["result"] = self._get_arrangement_loop()
+            elif command_type == "get_cue_points":
+                response["result"] = self._get_cue_points()
             elif command_type == "get_meters":
                 # Deliberately NOT scheduled on the main thread: it samples for
                 # up to METER_MAX_SECONDS and must not block Live. See
@@ -370,7 +380,10 @@ class AbletonMCP(ControlSurface):
                                  # Mixer – must run on the main thread
                                  "set_track_volume", "set_track_panning", "set_send",
                                  # Return tracks
-                                 "create_return_track", "load_device_on_return"]:
+                                 "create_return_track", "load_device_on_return",
+                                 # Transport
+                                 "set_time_signature", "set_metronome",
+                                 "set_arrangement_loop", "jump_to_cue"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -513,6 +526,18 @@ class AbletonMCP(ControlSurface):
                             result = self._load_device_on_return(
                                 params.get("return_track_index", 0),
                                 params.get("uri", ""))
+                        # ── Transport ──────────────────────────────────────────────
+                        elif command_type == "set_time_signature":
+                            result = self._set_time_signature(
+                                params.get("numerator"), params.get("denominator"))
+                        elif command_type == "set_metronome":
+                            result = self._set_metronome(params.get("enabled"))
+                        elif command_type == "set_arrangement_loop":
+                            result = self._set_arrangement_loop(
+                                params.get("loop_start"), params.get("loop_length"),
+                                params.get("enabled"))
+                        elif command_type == "jump_to_cue":
+                            result = self._jump_to_cue(params.get("direction"))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1991,6 +2016,177 @@ class AbletonMCP(ControlSurface):
             result["loaded"] = False
             result["warning"] = "Could not verify the load: %s" % e
         return result
+
+    # ── Transport ─────────────────────────────────────────────────────────────
+    # Adapted from the open upstream PR ahujasid/ableton-mcp#99 (Zachary May):
+    # time signature, metronome, arrangement loop, cue points and cue jumps,
+    # with input validation and honest read-backs added. Record, overdub, tap
+    # tempo, nudge, punch points and locator creation/deletion are NOT ported.
+
+    def _is_int(self, value):
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    def _beats(self, value, label):
+        """A finite number of beats (bool and NaN/inf are rejected)."""
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            raise TypeError("%s must be a finite number of beats, got %r" % (label, value))
+        return float(value)
+
+    def _set_time_signature(self, numerator, denominator):
+        """Set the Set's global time signature (undoable with Live's undo).
+
+        numerator must be an integer 1-99 and denominator one of 1, 2, 4, 8,
+        16. Nothing is changed unless both are valid.
+        """
+        try:
+            if not self._is_int(numerator) or not 1 <= numerator <= 99:
+                raise ValueError("numerator must be an integer from 1 to 99, got %r"
+                                 % (numerator,))
+            if not self._is_int(denominator) or denominator not in (1, 2, 4, 8, 16):
+                raise ValueError("denominator must be one of 1, 2, 4, 8, 16, got %r"
+                                 % (denominator,))
+            self._song.signature_numerator = numerator
+            self._song.signature_denominator = denominator
+            now = (self._song.signature_numerator, self._song.signature_denominator)
+            return {
+                "requested": {"numerator": numerator, "denominator": denominator},
+                "numerator": now[0],
+                "denominator": now[1],
+                "applied": now == (numerator, denominator),
+            }
+        except Exception as e:
+            self.log_message("Error setting time signature: " + str(e))
+            raise
+
+    def _set_metronome(self, enabled):
+        """Turn the metronome on or off (a Set-wide setting, audible at once).
+
+        Live may apply boolean changes after this call returns, so read_back
+        can still show the old value; metronome is the requested state.
+        """
+        try:
+            if not isinstance(enabled, bool):
+                raise TypeError("enabled must be true or false, got %r" % (enabled,))
+            self._song.metronome = enabled
+            return {"metronome": enabled, "read_back": bool(self._song.metronome)}
+        except Exception as e:
+            self.log_message("Error setting metronome: " + str(e))
+            raise
+
+    def _get_arrangement_loop(self):
+        """Read the arrangement loop brace: on/off, start, length, end (beats)."""
+        try:
+            start = float(self._song.loop_start)
+            length = float(self._song.loop_length)
+            return {
+                "loop": bool(self._song.loop),
+                "loop_start": start,
+                "loop_length": length,
+                "loop_end": start + length,
+            }
+        except Exception as e:
+            self.log_message("Error getting arrangement loop: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, loop_start=None, loop_length=None, enabled=None):
+        """Set the arrangement loop brace and/or switch looping on or off.
+
+        Side effects: changes the Set's loop region, which also changes what
+        repeats if the transport is playing. At least one argument is needed;
+        everything is validated before anything is written. loop_start is in
+        beats and >= 0, loop_length in beats and > 0. Live may apply the
+        boolean after this call returns, so "loop" is the requested state and
+        loop_read_back what Live reported straight away.
+        """
+        try:
+            if loop_start is None and loop_length is None and enabled is None:
+                raise ValueError(
+                    "Provide at least one of loop_start, loop_length, enabled")
+            if loop_start is not None:
+                loop_start = self._beats(loop_start, "loop_start")
+                if loop_start < 0:
+                    raise ValueError("loop_start must be >= 0 beats, got %r" % loop_start)
+            if loop_length is not None:
+                loop_length = self._beats(loop_length, "loop_length")
+                if loop_length <= 0:
+                    raise ValueError("loop_length must be > 0 beats, got %r" % loop_length)
+            if enabled is not None and not isinstance(enabled, bool):
+                raise TypeError("enabled must be true or false, got %r" % (enabled,))
+            if loop_start is not None:
+                self._song.loop_start = loop_start
+            if loop_length is not None:
+                self._song.loop_length = loop_length
+            if enabled is not None:
+                self._song.loop = enabled
+            now = self._get_arrangement_loop()
+            result = {
+                "loop": enabled if enabled is not None else now["loop"],
+                "loop_read_back": now["loop"],
+                "loop_start": now["loop_start"],
+                "loop_length": now["loop_length"],
+                "loop_end": now["loop_end"],
+                "applied": True,
+            }
+            if ((loop_start is not None and abs(now["loop_start"] - loop_start) > 1e-6)
+                    or (loop_length is not None
+                        and abs(now["loop_length"] - loop_length) > 1e-6)):
+                result["applied"] = False
+                result["warning"] = ("Live reports a different loop than requested "
+                                     "(it may have adjusted or ignored the values).")
+            return result
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
+            raise
+
+    def _get_cue_points(self):
+        """List the arrangement's cue points (locators), sorted by time (beats)."""
+        try:
+            cues = sorted(self._serialize_cue_points(), key=lambda c: c["time"])
+            return {"cue_points": cues, "count": len(cues)}
+        except Exception as e:
+            self.log_message("Error getting cue points: " + str(e))
+            raise
+
+    def _jump_to_cue(self, direction):
+        """Move the playhead to the next or previous cue point.
+
+        Side effect: the playhead moves (and playback continues from there if
+        playing). direction must be "next" or "previous". When no cue exists
+        in that direction nothing is called and an error is raised. Live
+        performs the jump after this call returns, so the position is not
+        read back: expected_time/expected_name come from the cue list instead.
+        """
+        try:
+            if direction not in ("next", "previous"):
+                raise ValueError("direction must be 'next' or 'previous', got %r"
+                                 % (direction,))
+            now = float(self._song.current_song_time)
+            cues = self._get_cue_points()["cue_points"]
+            tolerance = 1e-6
+            if direction == "next":
+                candidates = [c for c in cues if c["time"] > now + tolerance]
+                target = candidates[0] if candidates else None
+            else:
+                candidates = [c for c in cues if c["time"] < now - tolerance]
+                target = candidates[-1] if candidates else None
+            if target is None:
+                raise ValueError("No %s cue point from beat %s (the Set has %d cue "
+                                 "point(s)); nothing was moved"
+                                 % (direction, now, len(cues)))
+            if direction == "next":
+                self._song.jump_to_next_cue()
+            else:
+                self._song.jump_to_prev_cue()
+            return {
+                "direction": direction,
+                "from_time": now,
+                "expected_time": target["time"],
+                "expected_name": target["name"],
+            }
+        except Exception as e:
+            self.log_message("Error jumping to cue: " + str(e))
+            raise
 
     # ── Browser implementations ───────────────────────────────────────────────
 
