@@ -275,6 +275,118 @@ def test_clip_info_errors(inst, params, needle):
     assert needle in err(run(inst, "get_clip_info", **params))
 
 
+# ------------------------------------------------------------ set_clip_loop
+
+def loop_of(clip):
+    return (clip.loop_start, clip.loop_end)
+
+
+@pytest.mark.parametrize("start,end", [
+    (0.0, 8.0),    # grow the end
+    (1.0, 3.0),    # shrink on both sides
+    (0.0, 2.0),    # shrink the end only
+    (2.0, 4.0),    # move the start later, end unchanged
+    (6.0, 8.0),    # jump entirely past the current end (start must not go first)
+    (0.0, 1.0),    # new end lands before the current start (start must go first)
+])
+def test_loop_moves_in_an_order_live_accepts(script_module, start, end):
+    # The fake raises if an intermediate state has start >= end, so reaching
+    # the target at all proves the write order is safe.
+    clip = FakeClip(make_notes(), length=4.0, loop_start=1.5, loop_end=3.0)
+    inst = make_inst(script_module, FakeSong(clip))
+    result = ok(run(inst, "set_clip_loop", loop_start=start, loop_end=end))
+    assert loop_of(clip) == (start, end)
+    assert result["after"]["loop_start"] == start
+    assert result["after"]["loop_end"] == end
+    assert result["before"]["loop_start"] == 1.5
+    assert result["before"]["loop_end"] == 3.0
+
+
+@pytest.mark.parametrize("old,new", [
+    ((0.0, 4.0), (8.0, 12.0)),     # move later, past the old end
+    ((8.0, 12.0), (0.0, 4.0)),     # move earlier, before the old start
+    ((2.0, 6.0), (3.0, 5.0)),      # shrink inside
+    ((3.0, 5.0), (2.0, 6.0)),      # grow outside
+])
+def test_loop_every_ordering_case(script_module, old, new):
+    clip = FakeClip(length=16.0, loop_start=old[0], loop_end=old[1])
+    inst = make_inst(script_module, FakeSong(clip))
+    ok(run(inst, "set_clip_loop", loop_start=new[0], loop_end=new[1]))
+    assert loop_of(clip) == new
+
+
+def test_growing_writes_the_end_first_and_shrinking_to_before_the_start_writes_start_first(
+        script_module):
+    grow = FakeClip(length=16.0, loop_start=0.0, loop_end=4.0)
+    ok(run(make_inst(script_module, FakeSong(grow)), "set_clip_loop",
+           loop_start=0.0, loop_end=8.0))
+    assert [name for name, _ in grow.loop_writes] == ["loop_end"]  # start unchanged
+
+    back = FakeClip(length=16.0, loop_start=8.0, loop_end=12.0)
+    ok(run(make_inst(script_module, FakeSong(back)), "set_clip_loop",
+           loop_start=0.0, loop_end=4.0))
+    assert [name for name, _ in back.loop_writes] == ["loop_start", "loop_end"]
+
+    forward = FakeClip(length=16.0, loop_start=0.0, loop_end=4.0)
+    ok(run(make_inst(script_module, FakeSong(forward)), "set_clip_loop",
+           loop_start=8.0, loop_end=12.0))
+    assert [name for name, _ in forward.loop_writes] == ["loop_end", "loop_start"]
+
+
+def test_looping_flag_is_applied_and_omitted_means_unchanged(inst, clip):
+    result = ok(run(inst, "set_clip_loop", loop_start=0.0, loop_end=2.0, looping=False))
+    assert clip.looping is False
+    assert result["after"]["looping"] is False
+    ok(run(inst, "set_clip_loop", loop_start=0.0, loop_end=3.0))
+    assert clip.looping is False
+
+
+def test_loop_does_not_touch_the_notes(inst, clip):
+    ok(run(inst, "set_clip_loop", loop_start=0.0, loop_end=1.0))
+    assert [n.note_id for n in clip.notes] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("start,end,needle", [
+    (2.0, 2.0, "must be before"),
+    (3.0, 1.0, "must be before"),
+    (-1.0, 2.0, ">= 0"),
+    (None, 2.0, "must be a number"),
+    (0.0, None, "must be a number"),
+    ("0", 2.0, "must be a number"),
+    (True, 2.0, "must be a number"),
+    (0.0, float("inf"), "must be finite"),
+    (float("nan"), 2.0, "must be finite"),
+])
+def test_invalid_loops_are_refused_before_anything_is_written(inst, clip, start, end, needle):
+    assert needle in err(run(inst, "set_clip_loop", loop_start=start, loop_end=end))
+    assert clip.loop_writes == []
+
+
+def test_looping_must_be_a_bool(inst, clip):
+    assert "looping must be" in err(
+        run(inst, "set_clip_loop", loop_start=0.0, loop_end=2.0, looping="yes"))
+    assert clip.loop_writes == []
+
+
+def test_a_loop_live_did_not_keep_is_rolled_back_and_reported(inst, clip):
+    clip.loop_end_ignored = True
+    message = err(run(inst, "set_clip_loop", loop_start=0.0, loop_end=2.0))
+    assert "did not accept the loop" in message
+    assert "loop_end is 4.0, wanted 2.0" in message
+    assert "restored" in message
+    assert loop_of(clip) == (0.0, 4.0)
+
+
+def test_loop_on_a_slot_without_a_clip(inst):
+    assert "No clip in slot" in err(
+        run(inst, "set_clip_loop", clip_index=1, loop_start=0.0, loop_end=2.0))
+
+
+def test_loop_is_scheduled_on_the_main_thread(inst):
+    run(inst, "set_clip_loop", loop_start=0.0, loop_end=2.0)
+    assert inst.scheduled == [(0, "main_thread_task")]
+
+
 # ------------------------------------------------------ server tool wrappers
 
 class FakeConnection(object):
@@ -343,3 +455,28 @@ def test_get_clip_info_tool_returns_the_capability_message_for_an_old_script(
     monkeypatch.setattr(sh, "require_capability", lambda name: "missing " + name)
     assert call(server.get_clip_info, None, 0, 0) == "missing get_clip_info"
     assert conn.sent == []
+
+
+def test_set_clip_loop_tool_sends_the_command(conn):
+    conn.responses = [{"before": {}, "after": {"loop_start": 0.0, "loop_end": 2.0}}]
+    out = call(server.set_clip_loop, None, 1, 2, 0.0, 2.0, looping=True)
+    assert out.startswith("Loop set.")
+    assert conn.sent == [("set_clip_loop", {
+        "track_index": 1, "clip_index": 2, "loop_start": 0.0, "loop_end": 2.0,
+        "looping": True})]
+
+
+def test_set_clip_loop_tool_omits_looping_when_not_given(conn):
+    call(server.set_clip_loop, None, 1, 2, 0.0, 2.0)
+    assert "looping" not in conn.sent[0][1]
+
+
+def test_set_clip_loop_tool_keeps_user_prompt_and_is_a_modifying_tool():
+    assert "user_prompt" in _tool("set_clip_loop").inputSchema["properties"]
+    assert "set_clip_loop" in MODIFYING_TOOLS
+
+
+def test_set_clip_loop_tool_reports_script_errors(conn):
+    conn.raise_exc = Exception("loop_start (3) must be before loop_end (1)")
+    assert call(server.set_clip_loop, None, 0, 0, 3.0, 1.0).startswith(
+        "Error setting clip loop:")

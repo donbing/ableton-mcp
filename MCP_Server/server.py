@@ -138,6 +138,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "clear_notes_from_clip",
+            "set_clip_loop",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "undo", "redo",
@@ -1050,6 +1051,58 @@ def clear_notes_from_clip(
     except Exception as e:
         logger.error(f"Error clearing notes from clip: {str(e)}")
         return f"Error clearing notes from clip: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("set_clip_loop")
+@trajectory_tool("set_clip_loop")
+def set_clip_loop(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    loop_start: float,
+    loop_end: float,
+    looping: Optional[bool] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set the loop range of a Session clip, in beats, and optionally turn
+    looping on or off. Notes are not touched (a shorter loop only stops the
+    later notes from playing).
+
+    loop_start must be >= 0 and before loop_end. The Remote Script writes the
+    two markers in an order Live accepts, then reads the clip back; if Live
+    did not keep the values the previous loop is restored and an error is
+    returned. Use get_clip_info to see the current loop first.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - loop_start: Loop start in beats from the clip start
+    - loop_end: Loop end in beats; must be greater than loop_start
+    - looping: true/false to switch clip looping, omit to leave it unchanged
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_clip_loop")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "loop_start": loop_start,
+            "loop_end": loop_end,
+        }
+        if looping is not None:
+            params["looping"] = looping
+        result = ableton.send_command("set_clip_loop", params)
+        return "Loop set. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting clip loop: {str(e)}")
+        return f"Error setting clip loop: {str(e)}"
+
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")

@@ -106,6 +106,7 @@ SCRIPT_CAPABILITIES = [
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
     "get_clip_info",
+    "set_clip_loop",
 ]
 
 def _finite_number(value, label):
@@ -363,6 +364,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "clear_notes_from_clip",
+                                 "set_clip_loop",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "undo", "redo",
@@ -410,6 +412,13 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._clear_notes_from_clip(track_index, clip_index)
+                        elif command_type == "set_clip_loop":
+                            result = self._set_clip_loop(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("loop_start"),
+                                params.get("loop_end"),
+                                params.get("looping"))
                         elif command_type == "set_clip_name":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -1829,6 +1838,103 @@ class AbletonMCP(ControlSurface):
             return info
         except Exception as e:
             self.log_message("Error getting clip info: " + str(e))
+            raise
+
+    def _loop_state(self, clip):
+        return {
+            "loop_start": self._safe_attr(clip, "loop_start", float, None),
+            "loop_end": self._safe_attr(clip, "loop_end", float, None),
+            "looping": self._safe_attr(clip, "looping", bool, None),
+            "start_marker": self._safe_attr(clip, "start_marker", float, None),
+            "end_marker": self._safe_attr(clip, "end_marker", float, None),
+        }
+
+    def _write_loop_points(self, clip, loop_start, loop_end):
+        """Move the loop to [loop_start, loop_end] without an invalid step.
+
+        Live rejects a loop whose start is not before its end, even for the
+        instant between the two assignments. Writing loop_end first is valid
+        whenever the CURRENT start is before the NEW end (growing, or moving
+        the loop later); otherwise the new end is at or before the current
+        start, so the new start (which is before the new end) must go first.
+        At least one of the two orders is always valid because the current
+        loop has start < end. Unchanged values are not rewritten.
+        """
+        current_start = float(clip.loop_start)
+        current_end = float(clip.loop_end)
+        steps = [("loop_end", loop_end, current_end),
+                 ("loop_start", loop_start, current_start)]
+        if current_start >= loop_end:
+            steps.reverse()
+        for name, value, current in steps:
+            if value != current:
+                setattr(clip, name, value)
+
+    def _set_clip_loop(self, track_index, clip_index, loop_start, loop_end,
+                       looping=None):
+        """Set a Session clip's loop range (beats) and optionally looping.
+
+        Validates start < end, writes the two markers in an order Live accepts
+        (see _write_loop_points), then reads everything back. If Live did not
+        keep a value, the previous loop is restored and an error is raised, so
+        a reported success always means the clip now has that loop. Notes are
+        never touched.
+        """
+        try:
+            start = _finite_number(loop_start, "loop_start")
+            end = _finite_number(loop_end, "loop_end")
+            if start < 0:
+                raise ValueError("loop_start must be >= 0, got %r" % (loop_start,))
+            if start >= end:
+                raise ValueError(
+                    "loop_start (%r) must be before loop_end (%r)" % (loop_start, loop_end))
+            if looping is not None and not isinstance(looping, bool):
+                raise TypeError("looping must be true, false or omitted, got %r" % (looping,))
+            track, clip = self._session_clip(track_index, clip_index)
+
+            before = self._loop_state(clip)
+            try:
+                self._write_loop_points(clip, start, end)
+                if looping is not None:
+                    clip.looping = looping
+                after = self._loop_state(clip)
+                problems = []
+                if (after["loop_start"] is None
+                        or abs(after["loop_start"] - start) > 1e-6):
+                    problems.append("loop_start is %r, wanted %r"
+                                    % (after["loop_start"], start))
+                if after["loop_end"] is None or abs(after["loop_end"] - end) > 1e-6:
+                    problems.append("loop_end is %r, wanted %r"
+                                    % (after["loop_end"], end))
+                if looping is not None and after["looping"] != looping:
+                    problems.append("looping is %r, wanted %r"
+                                    % (after["looping"], looping))
+                if problems:
+                    raise RuntimeError("; ".join(problems))
+            except Exception as failure:
+                restored = True
+                try:
+                    if before["loop_start"] is not None and before["loop_end"] is not None:
+                        self._write_loop_points(
+                            clip, before["loop_start"], before["loop_end"])
+                    if looping is not None and before["looping"] is not None:
+                        clip.looping = before["looping"]
+                except Exception as restore_failure:
+                    restored = False
+                    self.log_message("set_clip_loop restore failed: " + str(restore_failure))
+                raise RuntimeError(
+                    "Live did not accept the loop (%s). %s" % (
+                        failure,
+                        "The previous loop was restored." if restored
+                        else "Restoring the previous loop ALSO failed; check the clip."))
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "before": before,
+                "after": after,
+            }
+        except Exception as e:
+            self.log_message("Error setting clip loop: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

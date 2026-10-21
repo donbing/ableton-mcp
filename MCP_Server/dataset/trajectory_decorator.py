@@ -36,6 +36,7 @@ MODIFYING_TOOLS = {
     "create_audio_clip",
     "add_notes_to_clip",
     "set_clip_name",
+    "set_clip_loop",
     "set_arrangement_clip_name",
     "set_tempo",
     "undo",
