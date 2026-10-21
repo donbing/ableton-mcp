@@ -148,7 +148,10 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            "create_return_track", "load_device_on_return",
+            "set_time_signature", "set_metronome", "set_arrangement_loop",
+            "jump_to_cue",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -2558,6 +2561,234 @@ def set_send(
     except Exception as e:
         logger.error(f"Error setting send: {str(e)}")
         return f"Error setting send: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("create_return_track")
+@trajectory_tool("create_return_track")
+def create_return_track(ctx: Context, name: str = "", user_prompt: str = "") -> str:
+    """
+    Add a return track to the Live Set and return the new list of return tracks.
+
+    Side effects: the Set gains a return track, and so a new send on every
+    track. Undoable with Live's undo. Live Lite allows only 2 return tracks:
+    when the Set is full nothing is created and an explanatory error is returned.
+
+    Parameters:
+    - name: Optional name for the new return track (empty keeps Live's default)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("create_return_track")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track", {"name": name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("load_device_on_return")
+@trajectory_tool("load_device_on_return")
+def load_device_on_return(ctx: Context, return_track_index: int, uri: str,
+                          user_prompt: str = "") -> str:
+    """
+    Load an effect from the browser onto a return track, by browser URI.
+
+    Side effects: Live loads browser items onto the selected track, so the
+    return track is selected for the load and the previously selected track is
+    restored afterwards (the reply says whether that worked). The return track
+    gains a device. After a short settle the reply lists the return's devices
+    as read back from Live; "loaded" is true only if that list grew. Find URIs
+    with get_browser_tree / get_browser_items_at_path. Return tracks take audio
+    effects; instruments are not expected to load there.
+
+    Parameters:
+    - return_track_index: Index of the return track (0 = A)
+    - uri: Browser URI of the device to load
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("load_device_on_return")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_device_on_return", {
+            "return_track_index": return_track_index,
+            "uri": uri,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error loading device on return track: {str(e)}")
+        return f"Error loading device on return track: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("set_time_signature")
+@trajectory_tool("set_time_signature")
+def set_time_signature(ctx: Context, numerator: int, denominator: int, user_prompt: str = "") -> str:
+    """
+    Set the Live Set's global time signature (undoable with Live's undo).
+
+    Parameters:
+    - numerator: Beats per bar, an integer from 1 to 99
+    - denominator: Note value of one beat: 1, 2, 4, 8 or 16
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_time_signature")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_time_signature", {"numerator": numerator, "denominator": denominator})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in set_time_signature: {str(e)}")
+        return f"Error in set_time_signature: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_metronome")
+@trajectory_tool("set_metronome")
+def set_metronome(ctx: Context, enabled: bool, user_prompt: str = "") -> str:
+    """
+    Turn Live's metronome on or off. This is a Set-wide setting and is audible
+    immediately. The reply gives the requested state and what Live read back
+    (Live may apply the change just after replying).
+
+    Parameters:
+    - enabled: true = metronome on, false = off
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_metronome")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_metronome", {"enabled": enabled})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in set_metronome: {str(e)}")
+        return f"Error in set_metronome: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_arrangement_loop")
+@trajectory_tool("get_arrangement_loop")
+def get_arrangement_loop(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Read the arrangement loop brace: whether looping is on, loop_start,
+    loop_length and loop_end, all in beats.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_arrangement_loop")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_arrangement_loop", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in get_arrangement_loop: {str(e)}")
+        return f"Error in get_arrangement_loop: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_arrangement_loop")
+@trajectory_tool("set_arrangement_loop")
+def set_arrangement_loop(ctx: Context, loop_start: Optional[float] = None, loop_length: Optional[float] = None, enabled: Optional[bool] = None, user_prompt: str = "") -> str:
+    """
+    Set the arrangement loop brace and/or switch looping on or off. Give at
+    least one of the three; omitted ones are left alone. Changes the Set's loop
+    region, which also changes what repeats if the transport is playing.
+
+    Parameters:
+    - loop_start: Loop start in beats, 0 or more (e.g. 16.0 = bar 5 in 4/4)
+    - loop_length: Loop length in beats, greater than 0
+    - enabled: true = loop on, false = loop off
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_arrangement_loop")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_arrangement_loop", {"loop_start": loop_start, "loop_length": loop_length, "enabled": enabled})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in set_arrangement_loop: {str(e)}")
+        return f"Error in set_arrangement_loop: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_cue_points")
+@trajectory_tool("get_cue_points")
+def get_cue_points(ctx: Context, user_prompt: str = "") -> str:
+    """
+    List the arrangement's cue points (locators) as name and time in beats,
+    sorted by time. Read-only; this does not create or delete locators.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_cue_points")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_cue_points", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in get_cue_points: {str(e)}")
+        return f"Error in get_cue_points: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("jump_to_cue")
+@trajectory_tool("jump_to_cue")
+def jump_to_cue(ctx: Context, direction: str = "next", user_prompt: str = "") -> str:
+    """
+    Move the playhead to the next or previous cue point (locator). The playhead
+    moves, and playback continues from there if the transport is playing. If
+    there is no cue point in that direction nothing moves and an error is
+    returned. Live performs the jump just after replying, so the reply gives
+    the position expected from the cue list rather than a read-back.
+
+    Parameters:
+    - direction: "next" (default) or "previous"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("jump_to_cue")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("jump_to_cue", {"direction": direction})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error in jump_to_cue: {str(e)}")
+        return f"Error in jump_to_cue: {str(e)}"
+
 
 # Main execution
 def main():

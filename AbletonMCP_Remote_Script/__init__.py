@@ -77,6 +77,10 @@ METER_SCALE = {
                     "outside it (unverified)"),
 }
 
+# load_device_on_return waits this long after browser.load_item before it
+# reads the return's device list back, so the list reflects the finished load.
+LOAD_SETTLE_SECONDS = 0.3
+
 # delete_arrangement_clips refuses (preview and delete alike) when more clips
 # than this start inside the requested range: that is a sign of a wrong range,
 # and a human cannot sensibly review a longer list.
@@ -129,6 +133,14 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "create_return_track",
+    "load_device_on_return",
+    "set_time_signature",
+    "set_metronome",
+    "get_arrangement_loop",
+    "set_arrangement_loop",
+    "get_cue_points",
+    "jump_to_cue",
     "get_scenes",
     "create_scene",
     "duplicate_scene",
@@ -375,6 +387,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "get_arrangement_loop":
+                response["result"] = self._get_arrangement_loop()
+            elif command_type == "get_cue_points":
+                response["result"] = self._get_cue_points()
             elif command_type == "get_scenes":
                 response["result"] = self._get_scenes()
             elif command_type == "get_audio_clip_info":
@@ -411,7 +427,12 @@ class AbletonMCP(ControlSurface):
                                  "set_track_volume", "set_track_panning", "set_send",
                                  # Session scenes – must run on the main thread
                                  "create_scene", "duplicate_scene", "fire_scene",
-                                 "set_scene_name", "stop_all_clips", "delete_scene"]:
+                                 "set_scene_name", "stop_all_clips", "delete_scene",
+                                 # Return tracks
+                                 "create_return_track", "load_device_on_return",
+                                 # Transport
+                                 "set_time_signature", "set_metronome",
+                                 "set_arrangement_loop", "jump_to_cue"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -571,6 +592,25 @@ class AbletonMCP(ControlSurface):
                                 params.get("db", None),
                                 params.get("value", None),
                                 params.get("track_type", "track"))
+                        # ── Return tracks ──────────────────────────────────────────
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track(params.get("name", ""))
+                        elif command_type == "load_device_on_return":
+                            result = self._load_device_on_return(
+                                params.get("return_track_index", 0),
+                                params.get("uri", ""))
+                        # ── Transport ──────────────────────────────────────────────
+                        elif command_type == "set_time_signature":
+                            result = self._set_time_signature(
+                                params.get("numerator"), params.get("denominator"))
+                        elif command_type == "set_metronome":
+                            result = self._set_metronome(params.get("enabled"))
+                        elif command_type == "set_arrangement_loop":
+                            result = self._set_arrangement_loop(
+                                params.get("loop_start"), params.get("loop_length"),
+                                params.get("enabled"))
+                        elif command_type == "jump_to_cue":
+                            result = self._jump_to_cue(params.get("direction"))
                         # ── Session scene commands ─────────────────────────────────
                         # No default scene_index: a call that forgets it must fail,
                         # not quietly act on scene 0.
@@ -630,6 +670,11 @@ class AbletonMCP(ControlSurface):
                         response["message"] = task_response.get("message", "Unknown error")
                     else:
                         response["result"] = task_response.get("result", {})
+                        if command_type == "load_device_on_return":
+                            # Settle on this client thread (never on Live's
+                            # main thread), then read the device list back.
+                            response["result"] = self._verify_load_on_return(
+                                response["result"])
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
@@ -2665,6 +2710,326 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
+            raise
+
+    # ── Return tracks ─────────────────────────────────────────────────────────
+    # create_return_track and load_device_on_return adapted from the open
+    # upstream PR ahujasid/ableton-mcp#99 (Zachary May), with guards added.
+
+    def _call_on_main_thread(self, fn, timeout=10.0):
+        """Run fn() on Live's main thread and return its value (or raise)."""
+        replies = queue.Queue()
+
+        def task():
+            try:
+                replies.put(("ok", fn()))
+            except Exception as e:
+                replies.put(("error", e))
+
+        try:
+            self.schedule_message(0, task)
+        except AssertionError:
+            task()
+        try:
+            status, value = replies.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("Timeout waiting for Live's main thread")
+        if status == "error":
+            raise value
+        return value
+
+    def _return_tracks_summary(self):
+        """Index, name and device names of every return track."""
+        return [{"index": i, "name": t.name,
+                 "devices": [d.name for d in t.devices]}
+                for i, t in enumerate(self._song.return_tracks)]
+
+    def _create_return_track(self, name=""):
+        """Add one return track to the Set and return the new return list.
+
+        Side effects: the Set gains a return track (and so a new send on every
+        track); undoable with Live's undo. Live Lite allows only 2 return
+        tracks: when the Set is full (Live raises, or the count does not
+        grow) this raises a readable error and nothing is changed. The
+        optional name is applied to the new return; a rename failure does not
+        undo the creation and is reported as name_error.
+        """
+        try:
+            if name is None:
+                name = ""
+            if not isinstance(name, str):
+                raise TypeError("name must be a string, got %r" % (name,))
+            before = list(self._song.return_tracks)
+            full_hint = (
+                "No return track was created. Live Lite allows only 2 return "
+                "tracks; this Set has %d (%s)."
+                % (len(before), ", ".join(t.name for t in before) or "none"))
+            try:
+                self._song.create_return_track()
+            except Exception as e:
+                raise RuntimeError("Live refused to create a return track (%s). %s"
+                                   % (e, full_hint))
+            after = list(self._song.return_tracks)
+            if len(after) <= len(before):
+                raise RuntimeError(full_hint)
+            fresh = [t for t in after if not any(t == b for b in before)]
+            track = fresh[-1] if fresh else after[-1]
+            result = {"created": True}
+            if name:
+                try:
+                    track.name = name
+                except Exception as e:
+                    result["name_error"] = str(e)
+            result["index"] = next(
+                (i for i, t in enumerate(self._song.return_tracks) if t == track),
+                len(after) - 1)
+            result["name"] = track.name
+            result["return_tracks"] = self._return_tracks_summary()
+            return result
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
+            raise
+
+    def _load_device_on_return(self, return_track_index, uri):
+        """Load a browser item onto a return track (main-thread step).
+
+        Live loads a browser item onto the SELECTED track, so this selects the
+        return, loads, then restores the previously selected track. Side
+        effects: the Set's selected track briefly changes (restored in a
+        finally block; selection_restored reports whether it worked), and the
+        return track gains a device. The device list is read back by
+        _verify_load_on_return after a settle delay, not here.
+        """
+        try:
+            track = self._resolve_track(return_track_index, "return")
+            if not isinstance(uri, str) or not uri:
+                raise ValueError("uri is required")
+            app = self.application()
+            item = self._find_browser_item_by_uri(app.browser, uri)
+            if not item:
+                raise ValueError("Browser item with URI '%s' not found" % uri)
+            view = self._song.view
+            previous = view.selected_track
+            devices_before = [d.name for d in track.devices]
+            try:
+                view.selected_track = track
+                app.browser.load_item(item)
+            finally:
+                try:
+                    view.selected_track = previous
+                except Exception as e:
+                    self.log_message("Could not restore track selection: " + str(e))
+            return {
+                "return_track_index": return_track_index,
+                "return_track_name": track.name,
+                "item_name": item.name,
+                "uri": uri,
+                "devices_before": devices_before,
+                "selection_restored": view.selected_track == previous,
+            }
+        except Exception as e:
+            self.log_message("Error loading device on return track: " + str(e))
+            raise
+
+    def _verify_load_on_return(self, result):
+        """Settle, then read the return's device list back (never raises).
+
+        Runs on the client thread so Live's main thread is not blocked while
+        waiting; the read itself is scheduled onto the main thread. loaded is
+        true only when the device count grew.
+        """
+        result = dict(result)
+        try:
+            time.sleep(LOAD_SETTLE_SECONDS)
+            index = result["return_track_index"]
+
+            def read():
+                track = self._resolve_track(index, "return")
+                return track.name, [d.name for d in track.devices]
+
+            name, after = self._call_on_main_thread(read)
+            before = result.get("devices_before", [])
+            result["devices_after"] = after
+            result["loaded"] = len(after) > len(before) and name == result.get("return_track_name")
+            if not result["loaded"]:
+                result["warning"] = (
+                    "The return track's device list did not grow after loading; "
+                    "the item may not be loadable on a return track (for "
+                    "example an instrument), or the load has not finished.")
+        except Exception as e:
+            result["loaded"] = False
+            result["warning"] = "Could not verify the load: %s" % e
+        return result
+
+    # ── Transport ─────────────────────────────────────────────────────────────
+    # Adapted from the open upstream PR ahujasid/ableton-mcp#99 (Zachary May):
+    # time signature, metronome, arrangement loop, cue points and cue jumps,
+    # with input validation and honest read-backs added. Record, overdub, tap
+    # tempo, nudge, punch points and locator creation/deletion are NOT ported.
+
+    def _is_int(self, value):
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    def _beats(self, value, label):
+        """A finite number of beats (bool and NaN/inf are rejected)."""
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            raise TypeError("%s must be a finite number of beats, got %r" % (label, value))
+        return float(value)
+
+    def _set_time_signature(self, numerator, denominator):
+        """Set the Set's global time signature (undoable with Live's undo).
+
+        numerator must be an integer 1-99 and denominator one of 1, 2, 4, 8,
+        16. Nothing is changed unless both are valid.
+        """
+        try:
+            if not self._is_int(numerator) or not 1 <= numerator <= 99:
+                raise ValueError("numerator must be an integer from 1 to 99, got %r"
+                                 % (numerator,))
+            if not self._is_int(denominator) or denominator not in (1, 2, 4, 8, 16):
+                raise ValueError("denominator must be one of 1, 2, 4, 8, 16, got %r"
+                                 % (denominator,))
+            self._song.signature_numerator = numerator
+            self._song.signature_denominator = denominator
+            now = (self._song.signature_numerator, self._song.signature_denominator)
+            return {
+                "requested": {"numerator": numerator, "denominator": denominator},
+                "numerator": now[0],
+                "denominator": now[1],
+                "applied": now == (numerator, denominator),
+            }
+        except Exception as e:
+            self.log_message("Error setting time signature: " + str(e))
+            raise
+
+    def _set_metronome(self, enabled):
+        """Turn the metronome on or off (a Set-wide setting, audible at once).
+
+        Live may apply boolean changes after this call returns, so read_back
+        can still show the old value; metronome is the requested state.
+        """
+        try:
+            if not isinstance(enabled, bool):
+                raise TypeError("enabled must be true or false, got %r" % (enabled,))
+            self._song.metronome = enabled
+            return {"metronome": enabled, "read_back": bool(self._song.metronome)}
+        except Exception as e:
+            self.log_message("Error setting metronome: " + str(e))
+            raise
+
+    def _get_arrangement_loop(self):
+        """Read the arrangement loop brace: on/off, start, length, end (beats)."""
+        try:
+            start = float(self._song.loop_start)
+            length = float(self._song.loop_length)
+            return {
+                "loop": bool(self._song.loop),
+                "loop_start": start,
+                "loop_length": length,
+                "loop_end": start + length,
+            }
+        except Exception as e:
+            self.log_message("Error getting arrangement loop: " + str(e))
+            raise
+
+    def _set_arrangement_loop(self, loop_start=None, loop_length=None, enabled=None):
+        """Set the arrangement loop brace and/or switch looping on or off.
+
+        Side effects: changes the Set's loop region, which also changes what
+        repeats if the transport is playing. At least one argument is needed;
+        everything is validated before anything is written. loop_start is in
+        beats and >= 0, loop_length in beats and > 0. Live may apply the
+        boolean after this call returns, so "loop" is the requested state and
+        loop_read_back what Live reported straight away.
+        """
+        try:
+            if loop_start is None and loop_length is None and enabled is None:
+                raise ValueError(
+                    "Provide at least one of loop_start, loop_length, enabled")
+            if loop_start is not None:
+                loop_start = self._beats(loop_start, "loop_start")
+                if loop_start < 0:
+                    raise ValueError("loop_start must be >= 0 beats, got %r" % loop_start)
+            if loop_length is not None:
+                loop_length = self._beats(loop_length, "loop_length")
+                if loop_length <= 0:
+                    raise ValueError("loop_length must be > 0 beats, got %r" % loop_length)
+            if enabled is not None and not isinstance(enabled, bool):
+                raise TypeError("enabled must be true or false, got %r" % (enabled,))
+            if loop_start is not None:
+                self._song.loop_start = loop_start
+            if loop_length is not None:
+                self._song.loop_length = loop_length
+            if enabled is not None:
+                self._song.loop = enabled
+            now = self._get_arrangement_loop()
+            result = {
+                "loop": enabled if enabled is not None else now["loop"],
+                "loop_read_back": now["loop"],
+                "loop_start": now["loop_start"],
+                "loop_length": now["loop_length"],
+                "loop_end": now["loop_end"],
+                "applied": True,
+            }
+            if ((loop_start is not None and abs(now["loop_start"] - loop_start) > 1e-6)
+                    or (loop_length is not None
+                        and abs(now["loop_length"] - loop_length) > 1e-6)):
+                result["applied"] = False
+                result["warning"] = ("Live reports a different loop than requested "
+                                     "(it may have adjusted or ignored the values).")
+            return result
+        except Exception as e:
+            self.log_message("Error setting arrangement loop: " + str(e))
+            raise
+
+    def _get_cue_points(self):
+        """List the arrangement's cue points (locators), sorted by time (beats)."""
+        try:
+            cues = sorted(self._serialize_cue_points(), key=lambda c: c["time"])
+            return {"cue_points": cues, "count": len(cues)}
+        except Exception as e:
+            self.log_message("Error getting cue points: " + str(e))
+            raise
+
+    def _jump_to_cue(self, direction):
+        """Move the playhead to the next or previous cue point.
+
+        Side effect: the playhead moves (and playback continues from there if
+        playing). direction must be "next" or "previous". When no cue exists
+        in that direction nothing is called and an error is raised. Live
+        performs the jump after this call returns, so the position is not
+        read back: expected_time/expected_name come from the cue list instead.
+        """
+        try:
+            if direction not in ("next", "previous"):
+                raise ValueError("direction must be 'next' or 'previous', got %r"
+                                 % (direction,))
+            now = float(self._song.current_song_time)
+            cues = self._get_cue_points()["cue_points"]
+            tolerance = 1e-6
+            if direction == "next":
+                candidates = [c for c in cues if c["time"] > now + tolerance]
+                target = candidates[0] if candidates else None
+            else:
+                candidates = [c for c in cues if c["time"] < now - tolerance]
+                target = candidates[-1] if candidates else None
+            if target is None:
+                raise ValueError("No %s cue point from beat %s (the Set has %d cue "
+                                 "point(s)); nothing was moved"
+                                 % (direction, now, len(cues)))
+            if direction == "next":
+                self._song.jump_to_next_cue()
+            else:
+                self._song.jump_to_prev_cue()
+            return {
+                "direction": direction,
+                "from_time": now,
+                "expected_time": target["time"],
+                "expected_name": target["name"],
+            }
+        except Exception as e:
+            self.log_message("Error jumping to cue: " + str(e))
             raise
 
     # ── Browser implementations ───────────────────────────────────────────────

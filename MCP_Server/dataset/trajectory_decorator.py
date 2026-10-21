@@ -55,6 +55,9 @@ MODIFYING_TOOLS = {
     "set_track_volume",
     "set_track_panning",
     "set_send",
+    "create_return_track",
+    "load_device_on_return",
+    "set_time_signature",
 }
 
 _PARAM_KEYS = (
