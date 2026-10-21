@@ -141,6 +141,7 @@ class AbletonConnection:
             "set_clip_loop",
             "remove_notes_from_clip",
             "apply_note_modifications",
+            "quantize_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "undo", "redo",
@@ -1188,6 +1189,67 @@ def apply_note_modifications(
     except Exception as e:
         logger.error(f"Error applying note modifications: {str(e)}")
         return f"Error applying note modifications: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("quantize_clip")
+@trajectory_tool("quantize_clip")
+def quantize_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    grid: str,
+    amount: float = 1.0,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Quantize a Session MIDI clip to a grid, in two steps. REWRITES the start
+    time of the notes in the whole clip (Live's undo, Cmd/Ctrl+Z, reverts it).
+
+    Step 1: call with confirm=false (the default). Nothing changes; you get how
+    many notes would move and a sample of their estimated new starts.
+    Step 2: call again with the same arguments and confirm=true. The result
+    lists the starts as read back from Live.
+
+    Grids: 1/4, 1/8, 1/8T (eighth triplet), 1/16, 1/16T (sixteenth triplet),
+    1/32. amount runs from 0 (no movement) to 1 (every start lands on the grid);
+    lower values pull notes only part of the way, which keeps some feel.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - grid: One of 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32
+    - amount: 0.0 to 1.0, default 1.0
+    - confirm: false = preview only (default), true = quantize
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("quantize_clip")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "grid": grid,
+            "amount": amount,
+        }
+        if not confirm:
+            preview = ableton.send_command("quantize_clip", dict(params, dry_run=True))
+            return (
+                "NOT QUANTIZED (preview only). This would happen: "
+                + json.dumps(preview, indent=2)
+                + "\nTo quantize, call quantize_clip again with the same arguments "
+                "and confirm=true."
+            )
+        result = ableton.send_command("quantize_clip", dict(params, dry_run=False))
+        return "Quantized clip. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error quantizing clip: {str(e)}")
+        return f"Error quantizing clip: {str(e)}"
 
 
 @mcp.tool()

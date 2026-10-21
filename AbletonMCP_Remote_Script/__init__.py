@@ -109,6 +109,7 @@ SCRIPT_CAPABILITIES = [
     "set_clip_loop",
     "remove_notes_from_clip",
     "apply_note_modifications",
+    "quantize_clip",
 ]
 
 def _finite_number(value, label):
@@ -120,6 +121,19 @@ def _finite_number(value, label):
         raise ValueError("%s must be finite, got %r" % (label, value))
     return number
 
+
+# Grid name -> (Live RecordingQuantization value for Clip.quantize, grid in beats).
+# 1, 2, 5 and 8 are confirmed by ahujasid/ableton-mcp#99 (quarter, eighth,
+# sixteenth, thirty-second). 3 (eighth triplet) and 6 (sixteenth triplet)
+# follow the same enum but are UNVERIFIED against a real Live.
+QUANTIZE_GRIDS = {
+    "1/4": (1, 1.0),
+    "1/8": (2, 0.5),
+    "1/8T": (3, 1.0 / 3.0),
+    "1/16": (5, 0.25),
+    "1/16T": (6, 1.0 / 6.0),
+    "1/32": (8, 0.125),
+}
 
 # Fields apply_note_modifications may change on an existing note.
 NOTE_EDIT_FIELDS = ("pitch", "start_time", "duration", "velocity", "mute")
@@ -389,6 +403,7 @@ class AbletonMCP(ControlSurface):
                                  "set_clip_loop",
                                  "remove_notes_from_clip",
                                  "apply_note_modifications",
+                                 "quantize_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "undo", "redo",
@@ -451,6 +466,14 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0),
                                 params.get("clip_index", 0),
                                 params.get("notes"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
+                        elif command_type == "quantize_clip":
+                            result = self._quantize_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("grid"),
+                                params.get("amount", 1.0),
                                 # Preview unless the caller explicitly opts out.
                                 params.get("dry_run", True))
                         elif command_type == "set_clip_loop":
@@ -2202,6 +2225,93 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error applying note modifications: " + str(e))
+            raise
+
+    def _quantize_clip(self, track_index, clip_index, grid, amount=1.0, dry_run=True):
+        """Preview or perform Clip.quantize on a Session MIDI clip.
+
+        grid: one of QUANTIZE_GRIDS (1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32).
+        amount: 0..1, how far each note start moves toward the grid (1 = onto it).
+        This REWRITES note start times for the whole clip, so it previews
+        unless dry_run is explicitly false. The preview computes where each
+        start would land (an estimate: Live does the real rounding); the
+        applied result reports the before and after read back from Live.
+        """
+        try:
+            if not isinstance(grid, str):
+                raise TypeError("grid must be one of %s, got %r"
+                                % (", ".join(sorted(QUANTIZE_GRIDS)), grid))
+            key = grid.strip().upper()
+            if key not in QUANTIZE_GRIDS:
+                raise ValueError("Unknown grid %r; use one of %s"
+                                 % (grid, ", ".join(sorted(QUANTIZE_GRIDS))))
+            ratio = _finite_number(amount, "amount")
+            if ratio < 0 or ratio > 1:
+                raise ValueError("amount must be between 0 and 1, got %r" % (amount,))
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            if not callable(getattr(clip, "quantize", None)):
+                raise Exception("This clip cannot be quantized (Clip.quantize is unavailable)")
+            enum_value, size = QUANTIZE_GRIDS[key]
+
+            span = float(clip.length) + 1.0
+            notes = self._notes_in_range(clip, 0.0, span, 0, 128)
+            notes.sort(key=lambda n: (n["start_time"], n["pitch"]))
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "grid": key,
+                "grid_beats": size,
+                "amount": ratio,
+                "note_count": len(notes),
+            }
+
+            def label(n):
+                return n.get("note_id", "%d@%g" % (n["pitch"], n["start_time"]))
+
+            if dry_run:
+                moves = []
+                for n in notes:
+                    target = round(n["start_time"] / size) * size
+                    landing = n["start_time"] + ratio * (target - n["start_time"])
+                    if abs(landing - n["start_time"]) > 1e-6:
+                        moves.append({"note": label(n), "pitch": n["pitch"],
+                                      "start_before": n["start_time"],
+                                      "start_estimated_after": landing})
+                result["dry_run"] = True
+                result["applied"] = False
+                result["estimated_moved_count"] = len(moves)
+                result["sample"] = moves[:NOTE_SAMPLE_SIZE]
+                result["sample_truncated"] = len(moves) > NOTE_SAMPLE_SIZE
+                result["estimate_note"] = (
+                    "Estimated from the grid; Live does the real rounding. "
+                    "Note starts change; durations are Live's to adjust.")
+                return result
+
+            result["dry_run"] = False
+            if not notes or ratio == 0:
+                result["applied"] = False
+                result["moved_count"] = 0
+                return result
+            clip.quantize(enum_value, ratio)
+            after = self._notes_in_range(clip, 0.0, span, 0, 128)
+            before_by = dict((label(n), n) for n in notes)
+            moves = []
+            for n in after:
+                old = before_by.get(label(n))
+                if old is not None and abs(old["start_time"] - n["start_time"]) > 1e-6:
+                    moves.append({"note": label(n), "pitch": n["pitch"],
+                                  "start_before": old["start_time"],
+                                  "start_after": n["start_time"]})
+            moves.sort(key=lambda m: (m["start_before"], m["pitch"]))
+            result["applied"] = True
+            result["moved_count"] = len(moves)
+            result["note_count_after"] = len(after)
+            result["sample"] = moves[:NOTE_SAMPLE_SIZE]
+            result["sample_truncated"] = len(moves) > NOTE_SAMPLE_SIZE
+            return result
+        except Exception as e:
+            self.log_message("Error quantizing clip: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

@@ -39,6 +39,7 @@ MODIFYING_TOOLS = {
     "set_clip_loop",
     "remove_notes_from_clip",
     "apply_note_modifications",
+    "quantize_clip",
     "set_arrangement_clip_name",
     "set_tempo",
     "undo",

@@ -654,6 +654,110 @@ def test_apply_is_scheduled_on_the_main_thread(inst):
     assert inst.scheduled == [(0, "main_thread_task")]
 
 
+# ------------------------------------------------------------- quantize_clip
+
+def quantize(inst, **params):
+    params.setdefault("grid", "1/4")
+    return run(inst, "quantize_clip", **params)
+
+
+def starts(clip):
+    return [round(n.start_time, 6) for n in clip.notes]
+
+
+def test_quantize_previews_by_default_and_changes_nothing(inst, clip):
+    result = ok(quantize(inst, grid="1/8"))
+    assert result["dry_run"] is True and result["applied"] is False
+    assert result["grid"] == "1/8" and result["amount"] == 1.0
+    assert result["note_count"] == 4
+    # 1.1 -> 1.0 and 3.05 -> 3.0 move; 0.0 and 2.0 are already on the grid
+    assert result["estimated_moved_count"] == 2
+    moved = dict((m["note"], m) for m in result["sample"])
+    assert moved[2]["start_estimated_after"] == pytest.approx(1.0)
+    assert moved[4]["start_estimated_after"] == pytest.approx(3.0)
+    assert "estimate" in result["estimate_note"].lower()
+    assert clip.quantize_calls == []
+    assert starts(clip) == [0.0, 1.1, 2.0, 3.05]
+
+
+@pytest.mark.parametrize("name,enum", [
+    ("1/4", 1), ("1/8", 2), ("1/8T", 3), ("1/16", 5), ("1/16T", 6), ("1/32", 8),
+])
+def test_each_grid_maps_to_its_live_enum(inst, clip, name, enum):
+    ok(quantize(inst, grid=name, dry_run=False))
+    assert clip.quantize_calls == [(enum, 1.0)]
+
+
+def test_grid_names_are_case_and_space_tolerant(inst, clip):
+    ok(quantize(inst, grid=" 1/8t ", dry_run=False))
+    assert clip.quantize_calls == [(3, 1.0)]
+
+
+def test_quantize_applies_and_reports_the_readback(inst, clip):
+    result = ok(quantize(inst, grid="1/8", dry_run=False))
+    assert result["applied"] is True
+    assert result["moved_count"] == 2
+    assert starts(clip) == [0.0, 1.0, 2.0, 3.0]
+    by_note = dict((m["note"], m) for m in result["sample"])
+    assert by_note[2]["start_before"] == pytest.approx(1.1)
+    assert by_note[2]["start_after"] == pytest.approx(1.0)
+
+
+def test_partial_amount_is_passed_to_live_and_previewed(inst, clip):
+    preview = ok(quantize(inst, grid="1/8", amount=0.5))
+    moved = dict((m["note"], m) for m in preview["sample"])
+    assert moved[2]["start_estimated_after"] == pytest.approx(1.05)
+    ok(quantize(inst, grid="1/8", amount=0.5, dry_run=False))
+    assert clip.quantize_calls == [(2, 0.5)]
+    assert starts(clip)[1] == pytest.approx(1.05)
+
+
+def test_amount_defaults_to_one_when_omitted(inst, clip):
+    ok(quantize(inst, dry_run=False))
+    assert clip.quantize_calls == [(1, 1.0)]
+
+
+@pytest.mark.parametrize("amount", [0, 0.0, 1, 1.0, 0.25])
+def test_amount_inside_the_range_is_accepted(inst, amount):
+    assert ok(quantize(inst, amount=amount))["amount"] == float(amount)
+
+
+@pytest.mark.parametrize("amount", [-0.1, 1.1, 2, "1", None, True, float("nan"), float("inf")])
+def test_amount_outside_zero_to_one_is_refused(inst, clip, amount):
+    err(quantize(inst, amount=amount, dry_run=False))
+    assert clip.quantize_calls == []
+
+
+@pytest.mark.parametrize("grid", ["1/2", "1/64", "quarter", "", "0.25", None, 0.25])
+def test_unknown_grids_are_refused(inst, clip, grid):
+    err(quantize(inst, grid=grid, dry_run=False))
+    assert clip.quantize_calls == []
+
+
+def test_amount_zero_is_a_noop_that_does_not_call_live(inst, clip):
+    result = ok(quantize(inst, amount=0.0, dry_run=False))
+    assert result["moved_count"] == 0
+    assert clip.quantize_calls == []
+
+
+def test_quantize_of_an_empty_clip_does_not_call_live(script_module):
+    empty = FakeClip([])
+    inst = make_inst(script_module, FakeSong(empty))
+    assert ok(quantize(inst, dry_run=False))["moved_count"] == 0
+    assert empty.quantize_calls == []
+
+
+def test_quantize_refuses_audio_clips_and_empty_slots(script_module, inst):
+    other = make_inst(script_module, FakeSong(FakeClip(midi=False)))
+    assert "not a MIDI clip" in err(quantize(other))
+    assert "No clip in slot" in err(quantize(inst, clip_index=1))
+
+
+def test_quantize_is_scheduled_on_the_main_thread(inst):
+    quantize(inst)
+    assert inst.scheduled == [(0, "main_thread_task")]
+
+
 # ------------------------------------------------------ server tool wrappers
 
 class FakeConnection(object):
@@ -820,3 +924,40 @@ def test_apply_tool_reports_script_errors(conn):
     out = call(server.apply_note_modifications, None, 0, 1,
                [{"note_id": 99, "pitch": 40}], confirm=True)
     assert out.startswith("Error applying note modifications:")
+
+
+def test_quantize_tool_previews_by_default_and_sends_dry_run_true(conn):
+    conn.responses = [{"estimated_moved_count": 2}]
+    out = call(server.quantize_clip, None, 0, 1, "1/16")
+    assert out.startswith("NOT QUANTIZED (preview only)")
+    assert "confirm=true" in out
+    assert conn.sent == [("quantize_clip", {
+        "track_index": 0, "clip_index": 1, "grid": "1/16", "amount": 1.0,
+        "dry_run": True})]
+
+
+def test_quantize_tool_with_confirm_sends_dry_run_false(conn):
+    conn.responses = [{"applied": True, "moved_count": 2}]
+    out = call(server.quantize_clip, None, 0, 1, "1/8T", amount=0.5, confirm=True)
+    assert out.startswith("Quantized clip.")
+    assert conn.sent[0][1]["dry_run"] is False
+    assert conn.sent[0][1]["amount"] == 0.5
+
+
+def test_quantize_tool_is_destructive_and_defaults_confirm_false():
+    tool = _tool("quantize_clip")
+    assert tool.annotations.destructiveHint is True
+    schema = tool.inputSchema
+    for name in ("track_index", "clip_index", "grid"):
+        assert name in schema["required"]
+    assert "amount" not in schema["required"]
+    assert schema["properties"]["amount"]["default"] == 1.0
+    assert schema["properties"]["confirm"]["default"] is False
+    assert "user_prompt" in schema["properties"]
+    assert "quantize_clip" in MODIFYING_TOOLS
+
+
+def test_quantize_tool_reports_script_errors(conn):
+    conn.raise_exc = Exception("Unknown grid '1/2'")
+    assert call(server.quantize_clip, None, 0, 1, "1/2", confirm=True).startswith(
+        "Error quantizing clip:")
