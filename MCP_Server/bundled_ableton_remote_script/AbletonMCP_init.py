@@ -75,6 +75,19 @@ METER_SCALE = {
 # than this start inside the requested range: that is a sign of a wrong range,
 # and a human cannot sensibly review a longer list.
 MAX_ARRANGEMENT_CLIPS_PER_DELETE = 64
+# Live.Clip.WarpMode integers (same numbers as the Live Object Model; 5 is
+# unused). Names are what Live's clip view shows.
+AUDIO_WARP_MODES = {
+    0: "Beats",
+    1: "Tones",
+    2: "Texture",
+    3: "Re-Pitch",
+    4: "Complex",
+    6: "Complex Pro",
+}
+AUDIO_CLIP_GAIN_RANGE = (0.0, 1.0)      # Clip.gain is a raw 0..1 value, not dB
+AUDIO_CLIP_PITCH_COARSE_RANGE = (-48, 48)   # semitones
+AUDIO_CLIP_PITCH_FINE_RANGE = (-50.0, 50.0)  # cents
 
 SCRIPT_CAPABILITIES = [
     "get_session_info",
@@ -112,6 +125,10 @@ SCRIPT_CAPABILITIES = [
     "undo_confirm_guard",
     "delete_arrangement_clips",
     "delete_device",
+    "get_audio_clip_info",
+    "set_audio_clip_warp",
+    "set_audio_clip_gain",
+    "set_audio_clip_pitch",
 ]
 
 def create_instance(c_instance):
@@ -345,6 +362,10 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "get_audio_clip_info":
+                response["result"] = self._get_audio_clip_info(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("arrangement", False))
             elif command_type == "get_meters":
                 # Deliberately NOT scheduled on the main thread: it samples for
                 # up to METER_MAX_SECONDS and must not block Live. See
@@ -356,6 +377,8 @@ class AbletonMCP(ControlSurface):
                                  "set_track_mute", "set_track_solo", "set_track_arm",
                                  "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
                                  "set_arrangement_clip_name",
+                                 "set_audio_clip_warp", "set_audio_clip_gain",
+                                 "set_audio_clip_pitch",
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
@@ -417,6 +440,26 @@ class AbletonMCP(ControlSurface):
                             clip_index = params.get("clip_index", 0)
                             name = params.get("name", "")
                             result = self._set_arrangement_clip_name(track_index, clip_index, name)
+                        elif command_type == "set_audio_clip_warp":
+                            result = self._set_audio_clip_warp(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("warping"),
+                                params.get("warp_mode"),
+                                params.get("arrangement", False))
+                        elif command_type == "set_audio_clip_gain":
+                            result = self._set_audio_clip_gain(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("gain"),
+                                params.get("arrangement", False))
+                        elif command_type == "set_audio_clip_pitch":
+                            result = self._set_audio_clip_pitch(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("pitch_coarse"),
+                                params.get("pitch_fine"),
+                                params.get("arrangement", False))
                         elif command_type in ("set_track_mute", "set_track_solo", "set_track_arm"):
                             result = self._set_track_flag(
                                 command_type[len("set_track_"):],
@@ -1364,6 +1407,240 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error setting arrangement clip name: " + str(e))
+            raise
+
+    # ── Audio clip properties (warp, gain, pitch) ─────────────────────────────
+    #
+    # Adapted from ahujasid/ableton-mcp#99 (Zachary May): the warp mode table
+    # and the Clip.gain / pitch_coarse / pitch_fine / warping / warp_mode
+    # attribute names. Reads follow #119 (mateogon, get_clip_properties) for
+    # start_marker / end_marker. This version adds Arrangement clips, strict
+    # validation before anything is written, and old/new reporting.
+
+    def _resolve_audio_clip(self, track_index, clip_index, arrangement=False):
+        """Return (clip, where) for an audio clip, or raise a clear error.
+
+        arrangement False: clip_index is a Session slot on tracks[track_index].
+        arrangement True: clip_index indexes list(track.arrangement_clips), the
+        same order set_arrangement_clip_name uses. MIDI clips and empty slots
+        are refused.
+        """
+        if not isinstance(arrangement, bool):
+            raise TypeError("arrangement must be true or false, got %r" % (arrangement,))
+        for label, value in (("track_index", track_index), ("clip_index", clip_index)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("%s must be an integer, got %r" % (label, value))
+        tracks = self._song.tracks
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("Track index %d out of range (have %d tracks)"
+                             % (track_index, len(tracks)))
+        track = tracks[track_index]
+        if arrangement:
+            clips = list(track.arrangement_clips)
+            if clip_index < 0 or clip_index >= len(clips):
+                raise IndexError(
+                    "Arrangement clip index %d out of range (track '%s' has %d "
+                    "arrangement clips)" % (clip_index, track.name, len(clips)))
+            clip = clips[clip_index]
+            where = "arrangement clip %d on track %d ('%s')" % (
+                clip_index, track_index, track.name)
+        else:
+            slots = track.clip_slots
+            if clip_index < 0 or clip_index >= len(slots):
+                raise IndexError(
+                    "Clip slot index %d out of range (track '%s' has %d slots)"
+                    % (clip_index, track.name, len(slots)))
+            slot = slots[clip_index]
+            if not slot.has_clip:
+                raise ValueError("Slot %d on track %d ('%s') is empty"
+                                 % (clip_index, track_index, track.name))
+            clip = slot.clip
+            where = "session clip slot %d on track %d ('%s')" % (
+                clip_index, track_index, track.name)
+        if not getattr(clip, "is_audio_clip", False):
+            raise ValueError(
+                "The clip at %s is not an audio clip (MIDI clips have no "
+                "warp, gain or transpose of this kind)" % where)
+        return clip, where
+
+    def _audio_warp_mode_name(self, mode):
+        if mode is None:
+            return None
+        return AUDIO_WARP_MODES.get(int(mode), "Unknown (%s)" % mode)
+
+    def _parse_audio_warp_mode(self, warp_mode):
+        """Return the Live warp mode integer for a name or a number, or raise."""
+        valid = ", ".join("%s (%d)" % (n, i) for i, n in sorted(AUDIO_WARP_MODES.items()))
+        if isinstance(warp_mode, bool):
+            raise ValueError("warp_mode must be a name or number, got %r. Valid: %s"
+                             % (warp_mode, valid))
+        if isinstance(warp_mode, float) and warp_mode == int(warp_mode):
+            warp_mode = int(warp_mode)
+        if isinstance(warp_mode, int):
+            if warp_mode not in AUDIO_WARP_MODES:
+                raise ValueError("Unknown warp_mode %d. Valid: %s" % (warp_mode, valid))
+            return warp_mode
+        if isinstance(warp_mode, str):
+            def norm(text):
+                return "".join(ch for ch in text.lower() if ch.isalnum())
+            key = norm(warp_mode)
+            for number, name in AUDIO_WARP_MODES.items():
+                if norm(name) == key:
+                    return number
+            if key.isdigit() and int(key) in AUDIO_WARP_MODES:
+                return int(key)
+        raise ValueError("Unknown warp_mode %r. Valid: %s" % (warp_mode, valid))
+
+    def _audio_clip_properties(self, clip):
+        """The audio properties of a clip, read defensively (None when absent)."""
+        mode = self._safe_attr(clip, "warp_mode", int, None)
+        return {
+            "warping": self._safe_attr(clip, "warping", bool, None),
+            "warp_mode": mode,
+            "warp_mode_name": self._audio_warp_mode_name(mode),
+            "gain": self._safe_attr(clip, "gain", float, None),
+            "gain_display_string": self._safe_attr(clip, "gain_display_string", str, None),
+            "pitch_coarse": self._safe_attr(clip, "pitch_coarse", int, None),
+            "pitch_fine": self._safe_attr(clip, "pitch_fine", float, None),
+        }
+
+    def _get_audio_clip_info(self, track_index, clip_index, arrangement=False):
+        """Read an audio clip's length, warp, gain, pitch, markers and file."""
+        try:
+            clip, where = self._resolve_audio_clip(track_index, clip_index, arrangement)
+            info = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "arrangement": bool(arrangement),
+                "name": self._safe_attr(clip, "name", str, ""),
+                "length": self._safe_attr(clip, "length", float, None),
+                "looping": self._safe_attr(clip, "looping", bool, None),
+                "loop_start": self._safe_attr(clip, "loop_start", float, None),
+                "loop_end": self._safe_attr(clip, "loop_end", float, None),
+                "start_marker": self._safe_attr(clip, "start_marker", float, None),
+                "end_marker": self._safe_attr(clip, "end_marker", float, None),
+            }
+            if arrangement:
+                info["start_time"] = self._safe_attr(clip, "start_time", float, None)
+                info["end_time"] = self._safe_attr(clip, "end_time", float, None)
+            info.update(self._audio_clip_properties(clip))
+            for attr in ("file_path", "file_path_relative"):
+                path = self._safe_attr(clip, attr, str, None)
+                if path:
+                    info["file_path"] = path
+                    break
+            markers = self._warp_markers_from_clip(clip)
+            info["warp_markers"] = markers
+            info["warp_marker_count"] = len(markers)
+            return info
+        except Exception as e:
+            self.log_message("Error getting audio clip info: " + str(e))
+            raise
+
+    def _audio_clip_change_report(self, track_index, clip_index, arrangement, clip,
+                                  where, previous, names):
+        current = self._audio_clip_properties(clip)
+        return {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "arrangement": bool(arrangement),
+            "clip": where,
+            "name": self._safe_attr(clip, "name", str, ""),
+            "previous": dict((n, previous.get(n)) for n in names),
+            "value": dict((n, current.get(n)) for n in names),
+            "changed": any(previous.get(n) != current.get(n) for n in names),
+        }
+
+    def _set_audio_clip_warp(self, track_index, clip_index, warping,
+                             warp_mode=None, arrangement=False):
+        """Turn warping on or off and/or choose the warp mode of an audio clip.
+
+        warping must be a real boolean. warp_mode is a name (Beats, Tones,
+        Texture, Re-Pitch, Complex, Complex Pro) or Live's number (0, 1, 2, 3,
+        4, 6); anything else is refused. Everything is validated before
+        anything is written.
+        """
+        try:
+            if not isinstance(warping, bool):
+                raise TypeError("warping must be true or false, got %r" % (warping,))
+            mode_int = None
+            if warp_mode is not None:
+                mode_int = self._parse_audio_warp_mode(warp_mode)
+            clip, where = self._resolve_audio_clip(track_index, clip_index, arrangement)
+            previous = self._audio_clip_properties(clip)
+            clip.warping = warping
+            if mode_int is not None:
+                clip.warp_mode = mode_int
+            return self._audio_clip_change_report(
+                track_index, clip_index, arrangement, clip, where, previous,
+                ("warping", "warp_mode", "warp_mode_name"))
+        except Exception as e:
+            self.log_message("Error setting audio clip warp: " + str(e))
+            raise
+
+    def _set_audio_clip_gain(self, track_index, clip_index, gain, arrangement=False):
+        """Set Clip.gain, the raw LOM value in 0.0..1.0 (not dB).
+
+        The dB Live shows for a raw value is reported back as
+        gain_display_string.
+        """
+        try:
+            if gain is None or isinstance(gain, bool) or not isinstance(gain, (int, float)):
+                raise TypeError("gain must be a number between %s and %s, got %r"
+                                % (AUDIO_CLIP_GAIN_RANGE + (gain,)))
+            gain = float(gain)
+            low, high = AUDIO_CLIP_GAIN_RANGE
+            if gain != gain or gain < low or gain > high:
+                raise ValueError("gain must be between %s and %s (raw Live value, not "
+                                 "dB), got %r" % (low, high, gain))
+            clip, where = self._resolve_audio_clip(track_index, clip_index, arrangement)
+            previous = self._audio_clip_properties(clip)
+            clip.gain = gain
+            return self._audio_clip_change_report(
+                track_index, clip_index, arrangement, clip, where, previous,
+                ("gain", "gain_display_string"))
+        except Exception as e:
+            self.log_message("Error setting audio clip gain: " + str(e))
+            raise
+
+    def _set_audio_clip_pitch(self, track_index, clip_index, pitch_coarse=None,
+                              pitch_fine=None, arrangement=False):
+        """Set transposition: pitch_coarse in semitones, pitch_fine in cents."""
+        try:
+            if pitch_coarse is None and pitch_fine is None:
+                raise ValueError("Give pitch_coarse and/or pitch_fine")
+            coarse = fine = None
+            if pitch_coarse is not None:
+                if (isinstance(pitch_coarse, bool)
+                        or not isinstance(pitch_coarse, (int, float))
+                        or pitch_coarse != int(pitch_coarse)):
+                    raise TypeError("pitch_coarse must be a whole number of semitones, "
+                                    "got %r" % (pitch_coarse,))
+                coarse = int(pitch_coarse)
+                low, high = AUDIO_CLIP_PITCH_COARSE_RANGE
+                if coarse < low or coarse > high:
+                    raise ValueError("pitch_coarse must be between %d and %d semitones, "
+                                     "got %d" % (low, high, coarse))
+            if pitch_fine is not None:
+                if isinstance(pitch_fine, bool) or not isinstance(pitch_fine, (int, float)):
+                    raise TypeError("pitch_fine must be a number of cents, got %r"
+                                    % (pitch_fine,))
+                fine = float(pitch_fine)
+                low, high = AUDIO_CLIP_PITCH_FINE_RANGE
+                if fine != fine or fine < low or fine > high:
+                    raise ValueError("pitch_fine must be between %s and %s cents, got %r"
+                                     % (low, high, fine))
+            clip, where = self._resolve_audio_clip(track_index, clip_index, arrangement)
+            previous = self._audio_clip_properties(clip)
+            if coarse is not None:
+                clip.pitch_coarse = coarse
+            if fine is not None:
+                clip.pitch_fine = fine
+            return self._audio_clip_change_report(
+                track_index, clip_index, arrangement, clip, where, previous,
+                ("pitch_coarse", "pitch_fine"))
+        except Exception as e:
+            self.log_message("Error setting audio clip pitch: " + str(e))
             raise
 
     def _set_tempo(self, tempo):

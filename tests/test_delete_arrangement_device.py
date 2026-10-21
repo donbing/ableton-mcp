@@ -493,9 +493,11 @@ def test_commands_run_on_the_main_thread(inst, command, params):
     assert inst.scheduled == [(0, "main_thread_task")]
 
 
-def test_capabilities_are_advertised_at_the_end(script_module):
+def test_capabilities_are_advertised_after_the_older_ones(script_module):
     caps = script_module.SCRIPT_CAPABILITIES
-    assert caps[-2:] == ["delete_arrangement_clips", "delete_device"]
+    after = caps.index("undo_confirm_guard")
+    for name in ("delete_arrangement_clips", "delete_device"):
+        assert name in caps and caps.index(name) > after
     assert script_module.SCRIPT_VERSION == EXPECTED_REMOTE_SCRIPT_VERSION
 
 
