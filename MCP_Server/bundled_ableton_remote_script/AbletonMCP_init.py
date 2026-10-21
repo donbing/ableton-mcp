@@ -105,7 +105,18 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "get_clip_info",
 ]
+
+def _finite_number(value, label):
+    """Return value as a float, rejecting bool, non-numbers, NaN and infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("%s must be a number, got %r" % (label, value))
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        raise ValueError("%s must be finite, got %r" % (label, value))
+    return number
+
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
@@ -554,6 +565,9 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_clip_notes(track_index, clip_index)
+            elif command_type == "get_clip_info":
+                response["result"] = self._get_clip_info(
+                    params.get("track_index", 0), params.get("clip_index", 0))
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
@@ -1725,6 +1739,96 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error clearing notes from clip: " + str(e))
+            raise
+
+    def _session_clip(self, track_index, clip_index, midi=False):
+        """Return (track, clip) for a Session clip slot, with strict checks.
+
+        Indices must be real integers (a bool or float is an error rather than
+        silently coerced). midi=True also requires a MIDI clip.
+        """
+        for label, value in (("track_index", track_index), ("clip_index", clip_index)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("%s must be an integer, got %r" % (label, value))
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in slot")
+        clip = slot.clip
+        if midi and not getattr(clip, "is_midi_clip", False):
+            raise Exception("Clip is not a MIDI clip")
+        return track, clip
+
+    def _note_summary(self, note):
+        """Plain dict of one note: a Live MidiNote object or a legacy tuple."""
+        if isinstance(note, (tuple, list)):
+            return {"pitch": int(note[0]), "start_time": float(note[1]),
+                    "duration": float(note[2]), "velocity": float(note[3]),
+                    "mute": bool(note[4]) if len(note) > 4 else False}
+        entry = {
+            "pitch": int(getattr(note, "pitch", 0)),
+            "start_time": float(getattr(note, "start_time", 0.0)),
+            "duration": float(getattr(note, "duration", 0.0)),
+            "velocity": float(getattr(note, "velocity", 0)),
+            "mute": bool(getattr(note, "mute", False)),
+        }
+        if hasattr(note, "note_id"):
+            try:
+                entry["note_id"] = int(note.note_id)
+            except Exception:
+                pass
+        return entry
+
+    def _notes_in_range(self, clip, from_time, time_span, from_pitch, pitch_span):
+        """Notes inside a time/pitch window, as plain dicts.
+
+        Uses get_notes_extended (Live 11+; argument order from_pitch,
+        pitch_span, from_time, time_span, as in _notes_from_clip) and falls
+        back to the legacy get_notes(from_time, from_pitch, time_span,
+        pitch_span), which carries no note_id.
+        """
+        getter = getattr(clip, "get_notes_extended", None)
+        if getter is not None:
+            raw = getter(from_pitch, pitch_span, from_time, time_span)
+        else:
+            raw = clip.get_notes(from_time, from_pitch, time_span, pitch_span)
+        return [self._note_summary(n) for n in raw]
+
+    def _get_clip_info(self, track_index, clip_index):
+        """Read-only facts about one Session clip (MIDI or audio)."""
+        try:
+            track, clip = self._session_clip(track_index, clip_index)
+            is_midi = bool(getattr(clip, "is_midi_clip", False))
+            info = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "name": self._safe_attr(clip, "name", str, ""),
+                "length": self._safe_attr(clip, "length", float, None),
+                "is_midi_clip": is_midi,
+                "is_audio_clip": bool(getattr(clip, "is_audio_clip", False)),
+                "is_playing": bool(self._safe_attr(clip, "is_playing", bool, False)),
+                "looping": bool(self._safe_attr(clip, "looping", bool, False)),
+                "loop_start": self._safe_attr(clip, "loop_start", float, None),
+                "loop_end": self._safe_attr(clip, "loop_end", float, None),
+                "start_marker": self._safe_attr(clip, "start_marker", float, None),
+                "end_marker": self._safe_attr(clip, "end_marker", float, None),
+                "muted": self._safe_attr(clip, "muted", bool, None),
+                "color_index": self._safe_attr(clip, "color_index", int, None),
+                "note_count": None,
+            }
+            if is_midi and info["length"] is not None:
+                try:
+                    info["note_count"] = len(self._notes_in_range(
+                        clip, 0.0, info["length"] + 1.0, 0, 128))
+                except Exception as e:
+                    self.log_message("get_clip_info note count failed: " + str(e))
+            return info
+        except Exception as e:
+            self.log_message("Error getting clip info: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

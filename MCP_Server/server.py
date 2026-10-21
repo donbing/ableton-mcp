@@ -564,6 +564,43 @@ def get_clip_notes(
         return f"Error getting clip notes: {str(e)}"
 
 
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@telemetry_tool("get_clip_info")
+@trajectory_tool("get_clip_info")
+def get_clip_info(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read the facts about one Session clip: name, length (beats), looping,
+    loop_start / loop_end and start_marker / end_marker (beats), is_playing,
+    muted, color_index, and for MIDI clips the note count. Fields Live does not
+    report are null. Read-only.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_clip_info")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_clip_info",
+            {"track_index": track_index, "clip_index": clip_index},
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip info: {str(e)}")
+        return f"Error getting clip info: {str(e)}"
+
+
 @mcp.tool()
 @telemetry_tool("get_device_parameters")
 @trajectory_tool("get_device_parameters")
