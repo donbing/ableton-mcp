@@ -117,6 +117,7 @@ SCRIPT_CAPABILITIES = [
     "fire_scene",
     "set_scene_name",
     "stop_all_clips",
+    "delete_scene",
 ]
 
 def create_instance(c_instance):
@@ -379,7 +380,7 @@ class AbletonMCP(ControlSurface):
                                  "set_track_volume", "set_track_panning", "set_send",
                                  # Session scenes – must run on the main thread
                                  "create_scene", "duplicate_scene", "fire_scene",
-                                 "set_scene_name", "stop_all_clips"]:
+                                 "set_scene_name", "stop_all_clips", "delete_scene"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -530,6 +531,12 @@ class AbletonMCP(ControlSurface):
                                 params.get("scene_index"), params.get("name"))
                         elif command_type == "stop_all_clips":
                             result = self._stop_all_clips()
+                        elif command_type == "delete_scene":
+                            result = self._delete_scene(
+                                params.get("scene_index"),
+                                params.get("expected_name"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -1733,6 +1740,73 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting scene name: " + str(e))
+            raise
+
+    def _delete_scene(self, scene_index, expected_name=None, dry_run=True):
+        """Preview or perform the deletion of one scene (and the clips in it).
+
+        Guards, all enforced here so a direct TCP caller gets them too:
+        - dry_run defaults to True; deleting requires dry_run to be False.
+        - Deleting requires expected_name (None is refused; '' is a valid name,
+          Live's unnamed scenes) to equal the scene's current name. Indices
+          shift after every create and delete, so a remembered index is the
+          realistic way to delete the wrong scene. A mismatch is an error even
+          in a preview.
+        - The last remaining scene is refused (Live needs at least one).
+
+        Always returns the facts about the scene (name, tempo, clips it holds)
+        and the scene list that would remain (preview) or does remain (after
+        deleting), re-indexed.
+        """
+        try:
+            scene, scenes = self._resolve_scene(scene_index)
+            if expected_name is not None and not isinstance(expected_name, _STRING_TYPES):
+                raise TypeError("expected_name must be a string, got %r" % (expected_name,))
+            if expected_name is not None and scene.name != expected_name:
+                raise ValueError(
+                    "Scene %d is '%s', not '%s'; indices may have shifted. "
+                    "Nothing was deleted." % (scene_index, scene.name, expected_name))
+            if not dry_run and expected_name is None:
+                raise ValueError("expected_name is required to delete a scene")
+            if len(scenes) <= 1:
+                raise ValueError(
+                    "Refusing to delete the last remaining scene; "
+                    "a Live Set needs at least one")
+
+            summary = self._scene_summary(scene_index, scene)
+            info = {
+                "scene_index": scene_index,
+                "name": summary["name"],
+                "tempo": summary["tempo"],
+                "clip_count": summary["clip_count"],
+                "clips": self._scene_clips(scene_index),
+            }
+            remaining = [self._scene_summary(i, s)
+                         for i, s in enumerate(scenes) if i != scene_index]
+            # Preview shows the post-delete numbering.
+            for new_index, entry in enumerate(remaining):
+                entry["index"] = new_index
+            if dry_run:
+                info["deleted"] = False
+                info["dry_run"] = True
+                info["remaining"] = remaining
+                return info
+
+            try:
+                self._song.delete_scene(scene_index)
+            except Exception as e:
+                raise RuntimeError("Live did not delete the scene: %s" % e)
+            after = list(self._song.scenes)
+            info["deleted"] = (len(after) == len(scenes) - 1
+                               and not any(scene == s for s in after))
+            info["remaining"] = self._scene_list()
+            if not info["deleted"]:
+                raise RuntimeError(
+                    "Live did not delete the scene (%d scenes before, %d after)"
+                    % (len(scenes), len(after)))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting scene: " + str(e))
             raise
 
     def _stop_all_clips(self):
