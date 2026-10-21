@@ -134,6 +134,7 @@ class AbletonConnection:
             "create_midi_track", "create_audio_track", "set_track_name",
             "set_track_volume", "set_track_panning", "set_send",
             "set_track_mute", "set_track_solo", "set_track_arm",
+            "set_audio_clip_warp", "set_audio_clip_gain", "set_audio_clip_pitch",
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "delete_track",
@@ -1064,6 +1065,157 @@ def set_arrangement_clip_name(ctx: Context, track_index: int, clip_index: int, n
     except Exception as e:
         logger.error(f"Error setting arrangement clip name: {str(e)}")
         return f"Error setting arrangement clip name: {str(e)}"
+
+def _audio_clip_call(command: str, label: str, params: Dict[str, Any]) -> str:
+    """Shared body of the audio clip tools: handshake, send, JSON result."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability(command)
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command(command, params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error {label}: {str(e)}")
+        return f"Error {label}: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_audio_clip_info")
+@trajectory_tool("get_audio_clip_info")
+def get_audio_clip_info(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    arrangement: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read an audio clip's properties: name, length (beats), warping, warp_mode
+    (number and name), gain (raw 0..1 plus Live's display string), pitch_coarse
+    (semitones), pitch_fine (cents), loop_start/loop_end, start_marker/end_marker,
+    file_path and the warp marker list. Use it to find out whether Live
+    auto-warped or length-rounded a clip made by create_audio_clip. MIDI clips
+    and empty slots are refused with an error.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: Session slot index, or (arrangement=True) the position in the
+      track's arrangement clips, the same order get_arrangement_clips returns
+    - arrangement: False (default) reads a Session slot, True an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _audio_clip_call("get_audio_clip_info", "getting audio clip info", {
+        "track_index": track_index, "clip_index": clip_index,
+        "arrangement": arrangement})
+
+
+@mcp.tool()
+@telemetry_tool("set_audio_clip_warp")
+@trajectory_tool("set_audio_clip_warp")
+def set_audio_clip_warp(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    warping: bool,
+    warp_mode: Optional[Union[str, int]] = None,
+    arrangement: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Turn warping on or off for an audio clip and optionally choose the warp
+    mode. Returns the previous and the new value. WARNING: changing warp on a
+    clip can change what plays (timing, pitch and length behaviour); check the
+    result and listen. MIDI clips and empty slots are refused.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: Session slot index, or (arrangement=True) the position in the
+      track's arrangement clips, the same order get_arrangement_clips returns
+    - warping: True to warp the clip, False to play it unwarped
+    - warp_mode: Optional. One of Beats (0), Tones (1), Texture (2), Re-Pitch (3),
+      Complex (4), Complex Pro (6), given as the name or the number. Anything
+      else is refused. Left unchanged when omitted
+    - arrangement: False (default) for a Session slot, True for an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    params: Dict[str, Any] = {
+        "track_index": track_index, "clip_index": clip_index,
+        "warping": warping, "arrangement": arrangement}
+    if warp_mode is not None:
+        params["warp_mode"] = warp_mode
+    return _audio_clip_call("set_audio_clip_warp", "setting audio clip warp", params)
+
+
+@mcp.tool()
+@telemetry_tool("set_audio_clip_gain")
+@trajectory_tool("set_audio_clip_gain")
+def set_audio_clip_gain(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    gain: float,
+    arrangement: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set an audio clip's gain. The value is Live's raw Clip.gain in 0.0..1.0, NOT
+    dB and not linear amplitude; the result includes gain_display_string, the
+    text Live shows for it, so read that to see the dB. Values outside 0..1 are
+    refused. Returns the previous and the new value. MIDI clips and empty slots
+    are refused.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: Session slot index, or (arrangement=True) the position in the
+      track's arrangement clips, the same order get_arrangement_clips returns
+    - gain: Raw gain, 0.0 to 1.0
+    - arrangement: False (default) for a Session slot, True for an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _audio_clip_call("set_audio_clip_gain", "setting audio clip gain", {
+        "track_index": track_index, "clip_index": clip_index, "gain": gain,
+        "arrangement": arrangement})
+
+
+@mcp.tool()
+@telemetry_tool("set_audio_clip_pitch")
+@trajectory_tool("set_audio_clip_pitch")
+def set_audio_clip_pitch(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    pitch_coarse: Optional[int] = None,
+    pitch_fine: Optional[float] = None,
+    arrangement: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Transpose an audio clip. Give pitch_coarse (whole semitones, -48 to 48)
+    and/or pitch_fine (cents, -50 to 50); out-of-range values are refused and
+    nothing is changed. Returns the previous and the new values. The transpose
+    may have no audible effect on a clip that is not warped. MIDI clips and
+    empty slots are refused.
+
+    Parameters:
+    - track_index: The index of the track
+    - clip_index: Session slot index, or (arrangement=True) the position in the
+      track's arrangement clips, the same order get_arrangement_clips returns
+    - pitch_coarse: Semitones, -48 to 48. Left unchanged when omitted
+    - pitch_fine: Cents, -50.0 to 50.0. Left unchanged when omitted
+    - arrangement: False (default) for a Session slot, True for an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    params: Dict[str, Any] = {
+        "track_index": track_index, "clip_index": clip_index,
+        "arrangement": arrangement}
+    if pitch_coarse is not None:
+        params["pitch_coarse"] = pitch_coarse
+    if pitch_fine is not None:
+        params["pitch_fine"] = pitch_fine
+    return _audio_clip_call("set_audio_clip_pitch", "setting audio clip pitch", params)
+
 
 @mcp.tool()
 @rich_telemetry_tool("set_tempo")
