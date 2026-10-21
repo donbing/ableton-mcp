@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.9.1**, **48 MCP tools** (upstream: 37), 327 tests (all pass).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.0**, **74 MCP tools** (upstream: 37), 849 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -16,6 +16,17 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Meters | `get_meters(seconds, hz)`: windowed per-track peak/mean from `output_meter_left/right`, with the measured dB scale (the raw value is dB-linear, not amplitude) | new, `feat/get-meters` |
 | Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
 | Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
+
+**Verification status.** The rows above the line were run on a real Live 12 Lite set (release `v1.9.1-fork.1`). The rows below it were ported from open upstream PRs in release `v1.10.0-fork.1` and are tested **only against a mocked LOM: NOT run on a real Live yet** (tracked in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Treat them as "should work, please report". Every destructive one previews by default and needs `confirm=true` plus the matching name(s).
+
+| Ported in 1.10.0 (**not run on Live**) | Tools | Origin |
+|---|---|---|
+| Delete Arrangement clips | `delete_arrangement_clips(track_index, expected_name, start_time, end_time, confirm)`: clips that START in [start, end), refuses more than 64 matches | upstream #110 (Leo) and #119 (mateogon), authorship kept |
+| Delete device | `delete_device(track_index, device_index, expected_name, expected_device_name, confirm, track_type)` | upstream #23 (zzstoatzz), authorship kept |
+| Scenes | `get_scenes`, `create_scene`, `delete_scene` (guarded), `duplicate_scene`, `fire_scene`, `set_scene_name`, `stop_all_clips` | upstream #99 (Zachary May), adapted |
+| Returns and transport | `create_return_track`, `load_device_on_return`, `set_time_signature`, `set_metronome`, `get_arrangement_loop`, `set_arrangement_loop`, `get_cue_points`, `jump_to_cue` | upstream #99, adapted (no locator create/delete: that is a known race, see [issue #4](https://github.com/vittorfp/ableton-mcp/issues/4)) |
+| Audio clip properties | `get_audio_clip_info`, `set_audio_clip_warp`, `set_audio_clip_gain`, `set_audio_clip_pitch` (Session slot or Arrangement clip): lets you read and change the warp that `create_audio_clip` turns on and rounds | upstream #99 / #119, adapted |
+| Note editing | `get_clip_info`, `set_clip_loop`, `remove_notes_from_clip` and `apply_note_modifications` and `quantize_clip` (all three preview by default) | upstream #99, #84, #119, adapted |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
@@ -31,7 +42,7 @@ uvx --from git+https://github.com/vittorfp/ableton-mcp ableton-mcp-install-scrip
 uvx --from git+https://github.com/vittorfp/ableton-mcp ableton-mcp-install-script
 ```
 
-Then restart Live and re-select the AbletonMCP control surface. Use **either** this fork **or** upstream, not both. Pin a release tag (for example `@v1.9.1-fork.1`) if you want a stable install.
+Then restart Live and re-select the AbletonMCP control surface. Use **either** this fork **or** upstream, not both. Pin a release tag (for example `@v1.10.0-fork.1`) if you want a stable install.
 
 ## What we commit to
 
@@ -48,7 +59,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 ## Roadmap (from the coverage map in upstream #142)
 
-Already implemented in open upstream PRs, to be brought in as **small slices with real-Live tests** (oldest and smallest first): scenes, return tracks and load device on a return, routing (#99); delete Arrangement clips, guarded batch operations (#110, #119); automation envelopes and delete device (#23); real-time audio export by resample capture (#143, needs a real-Live run first); record/analyze audio (#133).
+Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
 
 Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **reliable create/delete locator** (the current toggle races with the playhead move: two designs failed on real Live); return/master device parameters; device reorder; browser search and preview.
 
