@@ -17,7 +17,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
 | Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
 
-**Verification status.** The rows above the line were run on a real Live 12 Lite set (release `v1.9.1-fork.1`). The rows below it were ported from open upstream PRs in release `v1.10.0-fork.1` and are tested **only against a mocked LOM: NOT run on a real Live yet** (tracked in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Treat them as "should work, please report". Every destructive one previews by default and needs `confirm=true` plus the matching name(s).
+**Verification status.** The first table (release `v1.9.1-fork.1`) was run on a real Live 12 Lite set. The second table was ported from open upstream PRs in release `v1.10.0-fork.1` and are tested **only against a mocked LOM: NOT run on a real Live yet** (tracked in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Treat them as "should work, please report". Every destructive one previews by default and needs `confirm=true` plus the matching name(s).
 
 | Ported in 1.10.0 (**not run on Live**) | Tools | Origin |
 |---|---|---|
