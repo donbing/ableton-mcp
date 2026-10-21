@@ -108,6 +108,7 @@ SCRIPT_CAPABILITIES = [
     "get_clip_info",
     "set_clip_loop",
     "remove_notes_from_clip",
+    "apply_note_modifications",
 ]
 
 def _finite_number(value, label):
@@ -119,6 +120,9 @@ def _finite_number(value, label):
         raise ValueError("%s must be finite, got %r" % (label, value))
     return number
 
+
+# Fields apply_note_modifications may change on an existing note.
+NOTE_EDIT_FIELDS = ("pitch", "start_time", "duration", "velocity", "mute")
 
 # How many notes a preview shows as a sample.
 NOTE_SAMPLE_SIZE = 10
@@ -384,6 +388,7 @@ class AbletonMCP(ControlSurface):
                                  "clear_notes_from_clip",
                                  "set_clip_loop",
                                  "remove_notes_from_clip",
+                                 "apply_note_modifications",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "undo", "redo",
@@ -439,6 +444,13 @@ class AbletonMCP(ControlSurface):
                                 params.get("time_span"),
                                 params.get("from_pitch"),
                                 params.get("pitch_span"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
+                        elif command_type == "apply_note_modifications":
+                            result = self._apply_note_modifications(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("notes"),
                                 # Preview unless the caller explicitly opts out.
                                 params.get("dry_run", True))
                         elif command_type == "set_clip_loop":
@@ -2035,6 +2047,161 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error removing notes from clip: " + str(e))
+            raise
+
+    def _validated_note_edits(self, notes):
+        """Validate apply_note_modifications input. Returns {note_id: {field: value}}."""
+        if not isinstance(notes, (list, tuple)) or not notes:
+            raise ValueError("notes must be a non-empty list of {note_id, ...changes}")
+        edits = {}
+        for position, entry in enumerate(notes):
+            label = "notes[%d]" % position
+            if not isinstance(entry, dict):
+                raise TypeError("%s must be an object, got %r" % (label, entry))
+            unknown = sorted(set(entry) - set(NOTE_EDIT_FIELDS) - set(["note_id"]))
+            if unknown:
+                raise ValueError(
+                    "%s has unknown field(s) %s; allowed: note_id, %s"
+                    % (label, ", ".join(unknown), ", ".join(NOTE_EDIT_FIELDS)))
+            if "note_id" not in entry:
+                raise ValueError("%s needs a note_id (from get_clip_notes)" % label)
+            note_id = entry["note_id"]
+            if isinstance(note_id, bool) or not isinstance(note_id, int):
+                raise TypeError("%s.note_id must be an integer, got %r" % (label, note_id))
+            if note_id in edits:
+                raise ValueError("note_id %d appears more than once" % note_id)
+            changes = {}
+            if "pitch" in entry:
+                changes["pitch"] = _midi_int(entry["pitch"], label + ".pitch", 0, 127)
+            if "start_time" in entry:
+                changes["start_time"] = _finite_number(entry["start_time"], label + ".start_time")
+                if changes["start_time"] < 0:
+                    raise ValueError("%s.start_time must be >= 0" % label)
+            if "duration" in entry:
+                changes["duration"] = _finite_number(entry["duration"], label + ".duration")
+                if changes["duration"] <= 0:
+                    raise ValueError("%s.duration must be > 0" % label)
+            if "velocity" in entry:
+                changes["velocity"] = _finite_number(entry["velocity"], label + ".velocity")
+                if changes["velocity"] < 1 or changes["velocity"] > 127:
+                    raise ValueError("%s.velocity must be between 1 and 127" % label)
+            if "mute" in entry:
+                if not isinstance(entry["mute"], bool):
+                    raise TypeError("%s.mute must be true or false" % label)
+                changes["mute"] = entry["mute"]
+            if not changes:
+                raise ValueError(
+                    "%s changes nothing; give at least one of %s"
+                    % (label, ", ".join(NOTE_EDIT_FIELDS)))
+            edits[note_id] = changes
+        return edits
+
+    def _apply_note_modifications(self, track_index, clip_index, notes, dry_run=True):
+        """Preview or perform in-place edits of EXISTING notes, by note_id.
+
+        notes: [{"note_id": 12, "pitch": 62, "velocity": 90, ...}, ...] with
+        ids as returned by get_clip_notes. Only the listed fields change;
+        everything else about the note (including its id) stays. Unknown ids
+        are an error and nothing is changed. This rewrites notes, so it
+        previews (before and proposed after) unless dry_run is explicitly
+        false. Needs Live 11+ (get_notes_extended / apply_note_modifications).
+
+        Only the notes that actually change are handed to Live. After applying,
+        the notes are read back by id and compared with what was asked.
+        """
+        try:
+            edits = self._validated_note_edits(notes)
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            getter = getattr(clip, "get_notes_extended", None)
+            applier = getattr(clip, "apply_note_modifications", None)
+            if getter is None or applier is None:
+                raise Exception(
+                    "This version of Live cannot edit notes in place "
+                    "(needs Clip.get_notes_extended / apply_note_modifications, Live 11+)")
+
+            latest_end = max([float(clip.length)] + [
+                c["start_time"] + c.get("duration", 0.0) for c in edits.values()
+                if "start_time" in c])
+            read_span = latest_end + 1.0
+            live_notes = list(getter(0, 128, 0.0, read_span))
+            by_id = {}
+            for note in live_notes:
+                note_id = getattr(note, "note_id", None)
+                if note_id is not None:
+                    by_id[int(note_id)] = note
+            missing = sorted(set(edits) - set(by_id))
+            if missing:
+                raise ValueError(
+                    "Unknown note_id(s) %s in this clip. Read the current ids with "
+                    "get_clip_notes (they change when notes are added or removed). "
+                    "Nothing was changed." % ", ".join(str(m) for m in missing))
+
+            changes = []
+            unchanged = []
+            to_apply = []
+            for note_id in sorted(edits):
+                note = by_id[note_id]
+                before = self._note_summary(note)
+                after = dict(before)
+                for field, value in edits[note_id].items():
+                    after[field] = value
+                if all(before[f] == after[f] for f in NOTE_EDIT_FIELDS):
+                    unchanged.append(note_id)
+                    continue
+                changes.append({"note_id": note_id, "before": before, "after": after})
+                to_apply.append(note)
+
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "changed_count": len(changes),
+                "unchanged_note_ids": unchanged,
+                "changes": changes,
+            }
+            if dry_run:
+                result["applied"] = False
+                result["dry_run"] = True
+                return result
+            result["dry_run"] = False
+            if not changes:
+                result["applied"] = False
+                return result
+
+            for change, note in zip(changes, to_apply):
+                for field in NOTE_EDIT_FIELDS:
+                    if change["after"][field] != change["before"][field]:
+                        setattr(note, field, change["after"][field])
+            applier(to_apply)
+
+            reread = {}
+            for note in getter(0, 128, 0.0, read_span):
+                note_id = getattr(note, "note_id", None)
+                if note_id is not None:
+                    reread[int(note_id)] = self._note_summary(note)
+            mismatches = []
+            for change in changes:
+                actual = reread.get(change["note_id"])
+                if actual is None:
+                    mismatches.append("note %d is no longer in the clip" % change["note_id"])
+                    change["after"] = None
+                    continue
+                for field in NOTE_EDIT_FIELDS:
+                    wanted = change["after"][field]
+                    got = actual[field]
+                    same = (got == wanted if field in ("mute", "pitch")
+                            else abs(float(got) - float(wanted)) <= 1e-6)
+                    if not same:
+                        mismatches.append("note %d %s is %r, wanted %r"
+                                          % (change["note_id"], field, got, wanted))
+                change["after"] = actual
+            result["applied"] = True
+            result["verified"] = not mismatches
+            if mismatches:
+                result["mismatches"] = mismatches
+            return result
+        except Exception as e:
+            self.log_message("Error applying note modifications: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

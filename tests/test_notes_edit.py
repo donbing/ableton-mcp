@@ -522,6 +522,138 @@ def test_remove_is_scheduled_on_the_main_thread(inst):
     assert inst.scheduled == [(0, "main_thread_task")]
 
 
+# ------------------------------------------------- apply_note_modifications
+
+def note(clip, note_id):
+    return next(n for n in clip.notes if n.note_id == note_id)
+
+
+def edit(inst, notes, **params):
+    return run(inst, "apply_note_modifications", notes=notes, **params)
+
+
+def test_apply_previews_by_default_and_changes_nothing(inst, clip):
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 40, "velocity": 64}]))
+    assert result["dry_run"] is True
+    assert result["applied"] is False
+    change = result["changes"][0]
+    assert change["note_id"] == 1
+    assert change["before"]["pitch"] == 36 and change["after"]["pitch"] == 40
+    assert change["before"]["velocity"] == 100.0 and change["after"]["velocity"] == 64.0
+    assert note(clip, 1).pitch == 36
+    assert clip.apply_calls == []
+
+
+def test_apply_edits_in_place_and_returns_before_and_after(inst, clip):
+    result = ok(edit(inst, [
+        {"note_id": 2, "start_time": 1.0, "duration": 0.75, "mute": False},
+        {"note_id": 3, "pitch": 43, "velocity": 55},
+    ], dry_run=False))
+    assert result["applied"] is True and result["verified"] is True
+    assert result["changed_count"] == 2
+    two = note(clip, 2)
+    assert (two.start_time, two.duration, two.mute, two.pitch) == (1.0, 0.75, False, 38)
+    three = note(clip, 3)
+    assert (three.pitch, three.velocity, three.start_time) == (43, 55.0, 2.0)
+    by_id = dict((c["note_id"], c) for c in result["changes"])
+    assert by_id[2]["before"]["start_time"] == 1.1
+    assert by_id[2]["after"]["start_time"] == 1.0
+    assert by_id[3]["after"]["pitch"] == 43
+    # ids survive and the other notes are untouched
+    assert [n.note_id for n in clip.notes] == [1, 2, 3, 4]
+    assert (note(clip, 1).pitch, note(clip, 4).velocity) == (36, 70.0)
+
+
+def test_only_the_changed_notes_are_handed_to_live(inst, clip):
+    ok(edit(inst, [{"note_id": 4, "velocity": 10}], dry_run=False))
+    assert clip.apply_calls == [[4]]
+
+
+def test_a_no_op_edit_is_reported_and_not_sent_to_live(inst, clip):
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 36}], dry_run=False))
+    assert result["changed_count"] == 0
+    assert result["unchanged_note_ids"] == [1]
+    assert result["applied"] is False
+    assert clip.apply_calls == []
+
+
+def test_unknown_ids_are_an_error_and_nothing_is_changed(inst, clip):
+    message = err(edit(inst, [{"note_id": 1, "pitch": 40},
+                              {"note_id": 99, "pitch": 41}], dry_run=False))
+    assert "Unknown note_id(s) 99" in message
+    assert clip.apply_calls == []
+    assert note(clip, 1).pitch == 36
+
+
+def test_a_note_moved_beyond_the_clip_end_is_still_verified(inst, clip):
+    result = ok(edit(inst, [{"note_id": 1, "start_time": 6.0}], dry_run=False))
+    assert result["verified"] is True
+    assert note(clip, 1).start_time == 6.0
+
+
+def test_a_value_live_did_not_keep_is_flagged(inst, clip, monkeypatch):
+    monkeypatch.setattr(clip, "apply_note_modifications", lambda notes: None)
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
+    assert result["verified"] is False
+    assert "note 1 pitch is 36, wanted 40" in result["mismatches"][0]
+
+
+@pytest.mark.parametrize("notes,needle", [
+    (None, "non-empty list"),
+    ([], "non-empty list"),
+    ("x", "non-empty list"),
+    ([5], "must be an object"),
+    ([{"pitch": 40}], "needs a note_id"),
+    ([{"note_id": "1", "pitch": 40}], "note_id must be an integer"),
+    ([{"note_id": True, "pitch": 40}], "note_id must be an integer"),
+    ([{"note_id": 1}], "changes nothing"),
+    ([{"note_id": 1, "new_pitch": 40}], "unknown field"),
+    ([{"note_id": 1, "pitch": 128}], "pitch must be between"),
+    ([{"note_id": 1, "pitch": -1}], "pitch must be between"),
+    ([{"note_id": 1, "pitch": 40.5}], "whole number"),
+    ([{"note_id": 1, "start_time": -0.5}], "start_time must be >= 0"),
+    ([{"note_id": 1, "start_time": "1"}], "start_time must be a number"),
+    ([{"note_id": 1, "duration": 0}], "duration must be > 0"),
+    ([{"note_id": 1, "velocity": 0}], "velocity must be between"),
+    ([{"note_id": 1, "velocity": 128}], "velocity must be between"),
+    ([{"note_id": 1, "mute": 1}], "mute must be true or false"),
+    ([{"note_id": 1, "pitch": 40}, {"note_id": 1, "pitch": 41}], "more than once"),
+])
+def test_invalid_edits_are_refused_before_anything_changes(inst, clip, notes, needle):
+    assert needle in err(edit(inst, notes, dry_run=False))
+    assert clip.apply_calls == []
+    assert [n.pitch for n in clip.notes] == [36, 38, 42, 60]
+
+
+def test_one_bad_entry_blocks_the_whole_batch(inst, clip):
+    err(edit(inst, [{"note_id": 1, "pitch": 40}, {"note_id": 2, "velocity": 500}],
+             dry_run=False))
+    assert note(clip, 1).pitch == 36
+
+
+def test_apply_refuses_audio_clips_and_empty_slots(script_module, inst):
+    audio = FakeClip(midi=False)
+    other = make_inst(script_module, FakeSong(audio))
+    assert "not a MIDI clip" in err(edit(other, [{"note_id": 1, "pitch": 40}]))
+    assert "No clip in slot" in err(
+        edit(inst, [{"note_id": 1, "pitch": 40}], clip_index=1))
+
+
+def test_apply_on_a_live_without_the_extended_api_says_so(script_module):
+    class Old(object):
+        is_midi_clip = True
+        name = "old"
+        length = 4.0
+
+    inst = make_inst(script_module, FakeSong(Old()))
+    assert "Live 11+" in err(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
+
+
+def test_apply_is_scheduled_on_the_main_thread(inst):
+    edit(inst, [{"note_id": 1, "pitch": 40}])
+    assert inst.scheduled == [(0, "main_thread_task")]
+
+
 # ------------------------------------------------------ server tool wrappers
 
 class FakeConnection(object):
@@ -651,3 +783,40 @@ def test_remove_tool_reports_script_errors(conn):
     conn.raise_exc = Exception("Clip is not a MIDI clip")
     out = call(server.remove_notes_from_clip, None, 0, 1, 0.0, 2.5, 36, 8, confirm=True)
     assert out.startswith("Error removing notes from clip:")
+
+
+def test_apply_tool_previews_by_default_and_sends_dry_run_true(conn):
+    conn.responses = [{"changed_count": 1, "changes": []}]
+    notes = [{"note_id": 1, "pitch": 40}]
+    out = call(server.apply_note_modifications, None, 0, 1, notes)
+    assert out.startswith("NOT APPLIED (preview only)")
+    assert "confirm=true" in out
+    assert conn.sent == [("apply_note_modifications", {
+        "track_index": 0, "clip_index": 1, "notes": notes, "dry_run": True})]
+
+
+def test_apply_tool_with_confirm_sends_dry_run_false(conn):
+    conn.responses = [{"applied": True, "verified": True}]
+    out = call(server.apply_note_modifications, None, 0, 1,
+               [{"note_id": 1, "pitch": 40}], confirm=True)
+    assert out.startswith("Applied note modifications.")
+    assert [c[1]["dry_run"] for c in conn.sent] == [False]
+
+
+def test_apply_tool_is_destructive_and_defaults_confirm_false():
+    tool = _tool("apply_note_modifications")
+    assert tool.annotations.destructiveHint is True
+    schema = tool.inputSchema
+    for name in ("track_index", "clip_index", "notes"):
+        assert name in schema["required"]
+    assert "confirm" not in schema["required"]
+    assert schema["properties"]["confirm"]["default"] is False
+    assert "user_prompt" in schema["properties"]
+    assert "apply_note_modifications" in MODIFYING_TOOLS
+
+
+def test_apply_tool_reports_script_errors(conn):
+    conn.raise_exc = Exception("Unknown note_id(s) 99 in this clip")
+    out = call(server.apply_note_modifications, None, 0, 1,
+               [{"note_id": 99, "pitch": 40}], confirm=True)
+    assert out.startswith("Error applying note modifications:")

@@ -140,6 +140,7 @@ class AbletonConnection:
             "clear_notes_from_clip",
             "set_clip_loop",
             "remove_notes_from_clip",
+            "apply_note_modifications",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "undo", "redo",
@@ -1121,6 +1122,72 @@ def remove_notes_from_clip(
     except Exception as e:
         logger.error(f"Error removing notes from clip: {str(e)}")
         return f"Error removing notes from clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("apply_note_modifications")
+@trajectory_tool("apply_note_modifications")
+def apply_note_modifications(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    notes: List[Dict[str, Union[int, float, bool]]],
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Edit EXISTING notes of a Session MIDI clip in place, by note_id, in two
+    steps. This rewrites notes (Live's undo, Cmd/Ctrl+Z, reverts it).
+
+    Read the clip with get_clip_notes first: every note has a note_id. Each
+    entry here is {"note_id": 12, ...} plus any of pitch, start_time (beats),
+    duration (beats), velocity (1-127) and mute; only the fields you give
+    change. An unknown note_id is an error and nothing changes. Ids are only
+    valid until notes are added or removed, so re-read before editing.
+
+    Step 1: call with confirm=false (the default). Nothing changes; you get the
+    before and the proposed after of every note that would change.
+    Step 2: call again with the same notes and confirm=true to apply them. The
+    result lists before and after as read back from Live, and flags any value
+    Live did not keep.
+
+    Needs Live 11 or newer. To add notes use add_notes_to_clip; to delete
+    notes use remove_notes_from_clip.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - notes: List of {"note_id": int, and any of "pitch", "start_time", "duration", "velocity", "mute"}
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("apply_note_modifications")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "notes": notes,
+        }
+        if not confirm:
+            preview = ableton.send_command(
+                "apply_note_modifications", dict(params, dry_run=True))
+            return (
+                "NOT APPLIED (preview only). These notes would change: "
+                + json.dumps(preview, indent=2)
+                + "\nTo apply, call apply_note_modifications again with the same "
+                "notes and confirm=true."
+            )
+        result = ableton.send_command(
+            "apply_note_modifications", dict(params, dry_run=False))
+        return "Applied note modifications. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error applying note modifications: {str(e)}")
+        return f"Error applying note modifications: {str(e)}"
 
 
 @mcp.tool()
