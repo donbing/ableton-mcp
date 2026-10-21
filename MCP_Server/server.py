@@ -144,7 +144,8 @@ class AbletonConnection:
             # Arrangement view commands
             "switch_to_arrangement_view", "set_current_song_time",
             "duplicate_session_clip_to_arrangement",
-            "create_locator"
+            "create_locator",
+            "create_return_track", "load_device_on_return",
         ]
 
         # Commands whose work on Live's main thread can take noticeably longer
@@ -2067,6 +2068,73 @@ def set_send(
     except Exception as e:
         logger.error(f"Error setting send: {str(e)}")
         return f"Error setting send: {str(e)}"
+
+@mcp.tool()
+@telemetry_tool("create_return_track")
+@trajectory_tool("create_return_track")
+def create_return_track(ctx: Context, name: str = "", user_prompt: str = "") -> str:
+    """
+    Add a return track to the Live Set and return the new list of return tracks.
+
+    Side effects: the Set gains a return track, and so a new send on every
+    track. Undoable with Live's undo. Live Lite allows only 2 return tracks:
+    when the Set is full nothing is created and an explanatory error is returned.
+
+    Parameters:
+    - name: Optional name for the new return track (empty keeps Live's default)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("create_return_track")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track", {"name": name})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
+
+
+@mcp.tool()
+@rich_telemetry_tool("load_device_on_return")
+@trajectory_tool("load_device_on_return")
+def load_device_on_return(ctx: Context, return_track_index: int, uri: str,
+                          user_prompt: str = "") -> str:
+    """
+    Load an effect from the browser onto a return track, by browser URI.
+
+    Side effects: Live loads browser items onto the selected track, so the
+    return track is selected for the load and the previously selected track is
+    restored afterwards (the reply says whether that worked). The return track
+    gains a device. After a short settle the reply lists the return's devices
+    as read back from Live; "loaded" is true only if that list grew. Find URIs
+    with get_browser_tree / get_browser_items_at_path. Return tracks take audio
+    effects; instruments are not expected to load there.
+
+    Parameters:
+    - return_track_index: Index of the return track (0 = A)
+    - uri: Browser URI of the device to load
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("load_device_on_return")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command("load_device_on_return", {
+            "return_track_index": return_track_index,
+            "uri": uri,
+        })
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error loading device on return track: {str(e)}")
+        return f"Error loading device on return track: {str(e)}"
+
 
 # Main execution
 def main():

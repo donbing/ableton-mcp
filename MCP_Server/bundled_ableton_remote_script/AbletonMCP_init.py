@@ -71,6 +71,10 @@ METER_SCALE = {
                     "outside it (unverified)"),
 }
 
+# load_device_on_return waits this long after browser.load_item before it
+# reads the return's device list back, so the list reflects the finished load.
+LOAD_SETTLE_SECONDS = 0.3
+
 SCRIPT_CAPABILITIES = [
     "get_session_info",
     "get_track_info",
@@ -105,6 +109,8 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "create_return_track",
+    "load_device_on_return",
 ]
 
 def create_instance(c_instance):
@@ -362,7 +368,9 @@ class AbletonMCP(ControlSurface):
                                  "map_rack_magnitude", "inspect_rack",
                                  "create_locator",
                                  # Mixer – must run on the main thread
-                                 "set_track_volume", "set_track_panning", "set_send"]:
+                                 "set_track_volume", "set_track_panning", "set_send",
+                                 # Return tracks
+                                 "create_return_track", "load_device_on_return"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -498,6 +506,13 @@ class AbletonMCP(ControlSurface):
                                 params.get("db", None),
                                 params.get("value", None),
                                 params.get("track_type", "track"))
+                        # ── Return tracks ──────────────────────────────────────────
+                        elif command_type == "create_return_track":
+                            result = self._create_return_track(params.get("name", ""))
+                        elif command_type == "load_device_on_return":
+                            result = self._load_device_on_return(
+                                params.get("return_track_index", 0),
+                                params.get("uri", ""))
 
                         # Put the result in the queue
                         response_queue.put({"status": "success", "result": result})
@@ -524,6 +539,11 @@ class AbletonMCP(ControlSurface):
                         response["message"] = task_response.get("message", "Unknown error")
                     else:
                         response["result"] = task_response.get("result", {})
+                        if command_type == "load_device_on_return":
+                            # Settle on this client thread (never on Live's
+                            # main thread), then read the device list back.
+                            response["result"] = self._verify_load_on_return(
+                                response["result"])
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
@@ -1822,6 +1842,155 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
             raise
+
+    # ── Return tracks ─────────────────────────────────────────────────────────
+    # create_return_track and load_device_on_return adapted from the open
+    # upstream PR ahujasid/ableton-mcp#99 (Zachary May), with guards added.
+
+    def _call_on_main_thread(self, fn, timeout=10.0):
+        """Run fn() on Live's main thread and return its value (or raise)."""
+        replies = queue.Queue()
+
+        def task():
+            try:
+                replies.put(("ok", fn()))
+            except Exception as e:
+                replies.put(("error", e))
+
+        try:
+            self.schedule_message(0, task)
+        except AssertionError:
+            task()
+        try:
+            status, value = replies.get(timeout=timeout)
+        except queue.Empty:
+            raise RuntimeError("Timeout waiting for Live's main thread")
+        if status == "error":
+            raise value
+        return value
+
+    def _return_tracks_summary(self):
+        """Index, name and device names of every return track."""
+        return [{"index": i, "name": t.name,
+                 "devices": [d.name for d in t.devices]}
+                for i, t in enumerate(self._song.return_tracks)]
+
+    def _create_return_track(self, name=""):
+        """Add one return track to the Set and return the new return list.
+
+        Side effects: the Set gains a return track (and so a new send on every
+        track); undoable with Live's undo. Live Lite allows only 2 return
+        tracks: when the Set is full (Live raises, or the count does not
+        grow) this raises a readable error and nothing is changed. The
+        optional name is applied to the new return; a rename failure does not
+        undo the creation and is reported as name_error.
+        """
+        try:
+            if name is None:
+                name = ""
+            if not isinstance(name, str):
+                raise TypeError("name must be a string, got %r" % (name,))
+            before = list(self._song.return_tracks)
+            full_hint = (
+                "No return track was created. Live Lite allows only 2 return "
+                "tracks; this Set has %d (%s)."
+                % (len(before), ", ".join(t.name for t in before) or "none"))
+            try:
+                self._song.create_return_track()
+            except Exception as e:
+                raise RuntimeError("Live refused to create a return track (%s). %s"
+                                   % (e, full_hint))
+            after = list(self._song.return_tracks)
+            if len(after) <= len(before):
+                raise RuntimeError(full_hint)
+            fresh = [t for t in after if not any(t == b for b in before)]
+            track = fresh[-1] if fresh else after[-1]
+            result = {"created": True}
+            if name:
+                try:
+                    track.name = name
+                except Exception as e:
+                    result["name_error"] = str(e)
+            result["index"] = next(
+                (i for i, t in enumerate(self._song.return_tracks) if t == track),
+                len(after) - 1)
+            result["name"] = track.name
+            result["return_tracks"] = self._return_tracks_summary()
+            return result
+        except Exception as e:
+            self.log_message("Error creating return track: " + str(e))
+            raise
+
+    def _load_device_on_return(self, return_track_index, uri):
+        """Load a browser item onto a return track (main-thread step).
+
+        Live loads a browser item onto the SELECTED track, so this selects the
+        return, loads, then restores the previously selected track. Side
+        effects: the Set's selected track briefly changes (restored in a
+        finally block; selection_restored reports whether it worked), and the
+        return track gains a device. The device list is read back by
+        _verify_load_on_return after a settle delay, not here.
+        """
+        try:
+            track = self._resolve_track(return_track_index, "return")
+            if not isinstance(uri, str) or not uri:
+                raise ValueError("uri is required")
+            app = self.application()
+            item = self._find_browser_item_by_uri(app.browser, uri)
+            if not item:
+                raise ValueError("Browser item with URI '%s' not found" % uri)
+            view = self._song.view
+            previous = view.selected_track
+            devices_before = [d.name for d in track.devices]
+            try:
+                view.selected_track = track
+                app.browser.load_item(item)
+            finally:
+                try:
+                    view.selected_track = previous
+                except Exception as e:
+                    self.log_message("Could not restore track selection: " + str(e))
+            return {
+                "return_track_index": return_track_index,
+                "return_track_name": track.name,
+                "item_name": item.name,
+                "uri": uri,
+                "devices_before": devices_before,
+                "selection_restored": view.selected_track == previous,
+            }
+        except Exception as e:
+            self.log_message("Error loading device on return track: " + str(e))
+            raise
+
+    def _verify_load_on_return(self, result):
+        """Settle, then read the return's device list back (never raises).
+
+        Runs on the client thread so Live's main thread is not blocked while
+        waiting; the read itself is scheduled onto the main thread. loaded is
+        true only when the device count grew.
+        """
+        result = dict(result)
+        try:
+            time.sleep(LOAD_SETTLE_SECONDS)
+            index = result["return_track_index"]
+
+            def read():
+                track = self._resolve_track(index, "return")
+                return track.name, [d.name for d in track.devices]
+
+            name, after = self._call_on_main_thread(read)
+            before = result.get("devices_before", [])
+            result["devices_after"] = after
+            result["loaded"] = len(after) > len(before) and name == result.get("return_track_name")
+            if not result["loaded"]:
+                result["warning"] = (
+                    "The return track's device list did not grow after loading; "
+                    "the item may not be loadable on a return track (for "
+                    "example an instrument), or the load has not finished.")
+        except Exception as e:
+            result["loaded"] = False
+            result["warning"] = "Could not verify the load: %s" % e
+        return result
 
     # ── Browser implementations ───────────────────────────────────────────────
 
