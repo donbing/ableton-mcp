@@ -138,6 +138,8 @@ class AbletonConnection:
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "delete_track",
+            "create_scene", "delete_scene", "duplicate_scene", "fire_scene",
+            "set_scene_name", "stop_all_clips",
             "delete_arrangement_clips", "delete_device",
             "clear_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
@@ -1412,6 +1414,191 @@ def delete_track(
     except Exception as e:
         logger.error(f"Error deleting track: {str(e)}")
         return f"Error deleting track: {str(e)}"
+
+
+# ── Session scenes ───────────────────────────────────────────────────────────
+# Adapted from ahujasid/ableton-mcp#99 (Zachary May). Scene indices shift after
+# every create, duplicate and delete, so each reply carries the re-indexed list.
+
+def _scene_command(command: str, params: Dict[str, Any], doing: str) -> str:
+    """Shared body of the scene tools: capability check, send, JSON reply."""
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability(command)
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command(command, params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error {doing}: {str(e)}")
+        return f"Error {doing}: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_scenes")
+@trajectory_tool("get_scenes", modifying=False)
+def get_scenes(ctx: Context, user_prompt: str = "") -> str:
+    """
+    List the Session scenes (the rows of the Session view).
+
+    Each scene has: index, name (an empty string means the scene is unnamed),
+    tempo (-1 = the scene has no tempo of its own), is_triggered (queued to
+    launch) and clip_count (clips it holds across all tracks).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _scene_command("get_scenes", {}, "getting scenes")
+
+
+@mcp.tool()
+@telemetry_tool("create_scene")
+@trajectory_tool("create_scene")
+def create_scene(ctx: Context, index: int = -1, name: str = "",
+                 user_prompt: str = "") -> str:
+    """
+    Create an empty scene. Scenes after it move down by one; the reply has the
+    new, re-indexed scene list. Live Lite limits how many scenes a set may have:
+    when Live refuses, this returns a readable error and changes nothing.
+
+    Parameters:
+    - index: Position for the new scene (-1, the default, appends at the end)
+    - name: Optional name for the new scene
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    params: Dict[str, Any] = {"index": index}
+    if name:
+        params["name"] = name
+    return _scene_command("create_scene", params, "creating scene")
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_scene")
+@trajectory_tool("delete_scene")
+def delete_scene(
+    ctx: Context,
+    scene_index: int,
+    expected_name: str,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete one scene and the clips in it, in two steps. DESTRUCTIVE: later scene
+    indices shift down by one.
+
+    Step 1: call with confirm=false (the default). Nothing is deleted; you get a
+    preview with the scene's name, tempo, how many clips it holds (and which),
+    and the scene list as it would look afterwards.
+    Step 2: call again with the same scene_index and expected_name and
+    confirm=true to delete it.
+
+    Deletion only happens when confirm=true AND expected_name equals the scene's
+    current name. A mismatch (usually a stale index) deletes nothing. A scene
+    with no name has the name "" (empty string): pass "" exactly. The last
+    remaining scene is refused. Deletions go into Live's undo history
+    (Cmd/Ctrl+Z).
+
+    Parameters:
+    - scene_index: Index of the scene to delete
+    - expected_name: The scene's exact current name (required safety check)
+    - confirm: false = preview only (default), true = delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_scene")
+        if missing:
+            return missing
+        if expected_name is None:
+            return ("Error deleting scene: expected_name is required. Read the "
+                    "scene's current name with get_scenes and pass it exactly "
+                    "(\"\" for an unnamed scene).")
+        ableton = get_ableton_connection()
+        params = {"scene_index": scene_index, "expected_name": expected_name}
+        if not confirm:
+            preview = ableton.send_command("delete_scene", dict(params, dry_run=True))
+            return (
+                "NOT DELETED (preview only). This would delete: "
+                + json.dumps(preview, indent=2)
+                + "\nTo delete, call delete_scene again with the same scene_index "
+                "and expected_name and confirm=true."
+            )
+        result = ableton.send_command("delete_scene", dict(params, dry_run=False))
+        return "Deleted scene. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting scene: {str(e)}")
+        return f"Error deleting scene: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_scene")
+@trajectory_tool("duplicate_scene")
+def duplicate_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Duplicate a scene, clips included. The copy goes right after the original, so
+    later scenes move down by one; the reply has the new scene list. Live Lite may
+    refuse extra scenes: you then get a readable error and nothing changes.
+
+    Parameters:
+    - scene_index: Index of the scene to duplicate
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _scene_command("duplicate_scene", {"scene_index": scene_index},
+                          "duplicating scene")
+
+
+@mcp.tool()
+@telemetry_tool("fire_scene")
+@trajectory_tool("fire_scene")
+def fire_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
+    """
+    Launch a scene: starts every clip in that row. THIS IS AUDIBLE and it starts
+    playback if the set is stopped. Tracks with a clip in the scene also leave the
+    Arrangement (they stay off it until the user presses Back to Arrangement), and
+    clips already playing on those tracks are replaced. Launch timing follows the
+    set's global launch quantization.
+
+    Parameters:
+    - scene_index: Index of the scene to launch
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _scene_command("fire_scene", {"scene_index": scene_index},
+                          "firing scene")
+
+
+@mcp.tool()
+@telemetry_tool("set_scene_name")
+@trajectory_tool("set_scene_name")
+def set_scene_name(ctx: Context, scene_index: int, name: str,
+                   user_prompt: str = "") -> str:
+    """
+    Rename a scene. Returns the previous name and the scene list.
+
+    Parameters:
+    - scene_index: Index of the scene
+    - name: New name ("" clears it back to unnamed)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _scene_command("set_scene_name",
+                          {"scene_index": scene_index, "name": name},
+                          "setting scene name")
+
+
+@mcp.tool()
+@telemetry_tool("stop_all_clips")
+@trajectory_tool("stop_all_clips")
+def stop_all_clips(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Stop every playing Session clip (like Live's Stop All Clips button). Audible:
+    playing material goes quiet, according to each clip's launch quantization. The
+    transport and the Arrangement are not touched.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _scene_command("stop_all_clips", {}, "stopping all clips")
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

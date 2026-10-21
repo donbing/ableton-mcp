@@ -17,6 +17,12 @@ try:
 except ImportError:
     import queue  # Python 3
 
+# JSON strings arrive as unicode on Python 2 and str on Python 3.
+try:
+    _STRING_TYPES = (basestring,)  # noqa: F821  (Python 2)
+except NameError:
+    _STRING_TYPES = (str,)
+
 # Constants for socket communication
 DEFAULT_PORT = 9877
 # Loopback, not 0.0.0.0. This socket takes unauthenticated commands that import
@@ -123,6 +129,13 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "get_scenes",
+    "create_scene",
+    "duplicate_scene",
+    "fire_scene",
+    "set_scene_name",
+    "stop_all_clips",
+    "delete_scene",
     "delete_arrangement_clips",
     "delete_device",
     "get_audio_clip_info",
@@ -362,6 +375,8 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "get_scenes":
+                response["result"] = self._get_scenes()
             elif command_type == "get_audio_clip_info":
                 response["result"] = self._get_audio_clip_info(
                     params.get("track_index", 0), params.get("clip_index", 0),
@@ -393,7 +408,10 @@ class AbletonMCP(ControlSurface):
                                  "map_rack_magnitude", "inspect_rack",
                                  "create_locator",
                                  # Mixer – must run on the main thread
-                                 "set_track_volume", "set_track_panning", "set_send"]:
+                                 "set_track_volume", "set_track_panning", "set_send",
+                                 # Session scenes – must run on the main thread
+                                 "create_scene", "duplicate_scene", "fire_scene",
+                                 "set_scene_name", "stop_all_clips", "delete_scene"]:
                 # Use a thread-safe approach with a response queue
                 response_queue = queue.Queue()
                 
@@ -553,6 +571,27 @@ class AbletonMCP(ControlSurface):
                                 params.get("db", None),
                                 params.get("value", None),
                                 params.get("track_type", "track"))
+                        # ── Session scene commands ─────────────────────────────────
+                        # No default scene_index: a call that forgets it must fail,
+                        # not quietly act on scene 0.
+                        elif command_type == "create_scene":
+                            result = self._create_scene(
+                                params.get("index", -1), params.get("name", ""))
+                        elif command_type == "duplicate_scene":
+                            result = self._duplicate_scene(params.get("scene_index"))
+                        elif command_type == "fire_scene":
+                            result = self._fire_scene(params.get("scene_index"))
+                        elif command_type == "set_scene_name":
+                            result = self._set_scene_name(
+                                params.get("scene_index"), params.get("name"))
+                        elif command_type == "stop_all_clips":
+                            result = self._stop_all_clips()
+                        elif command_type == "delete_scene":
+                            result = self._delete_scene(
+                                params.get("scene_index"),
+                                params.get("expected_name"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
                         elif command_type == "set_track_panning":
                             result = self._set_track_panning(
                                 params.get("track_index", 0),
@@ -1824,6 +1863,260 @@ class AbletonMCP(ControlSurface):
             return info
         except Exception as e:
             self.log_message("Error deleting track: " + str(e))
+            raise
+
+
+    # ── Session scenes ────────────────────────────────────────────────────────
+    # Scenes are the rows of the Session view. Indices shift after every create,
+    # duplicate and delete, so every reply carries the full, re-indexed list.
+    # Adapted from ahujasid/ableton-mcp#99 (Zachary May): the same Live calls,
+    # plus validation, verification that Live really acted (a Live Lite set
+    # refuses extra scenes), and the guarded delete_scene.
+
+    def _scene_clips(self, scene_index):
+        """The clips in one scene row: [{"track": ..., "clip": ...}], in track order."""
+        found = []
+        for track in list(self._song.tracks):
+            slots = track.clip_slots
+            if scene_index >= len(slots):
+                continue
+            slot = slots[scene_index]
+            if slot.has_clip:
+                try:
+                    clip_name = slot.clip.name
+                except Exception:
+                    clip_name = None
+                found.append({"track": track.name, "clip": clip_name})
+        return found
+
+    def _scene_summary(self, index, scene):
+        """One scene as a dict. tempo is -1 when the scene has no tempo of its own."""
+        try:
+            tempo = float(scene.tempo)
+        except Exception:
+            tempo = -1.0
+        if tempo <= 0:
+            tempo = -1.0
+        return {
+            "index": index,
+            "name": scene.name,
+            "tempo": tempo,
+            "is_triggered": bool(self._safe_attr(scene, "is_triggered", bool, False)),
+            "clip_count": len(self._scene_clips(index)),
+        }
+
+    def _scene_list(self):
+        return [self._scene_summary(i, s)
+                for i, s in enumerate(list(self._song.scenes))]
+
+    def _resolve_scene(self, scene_index, what="scene_index"):
+        """Validate a scene index and return (scene, scenes). Clear errors, no
+        opaque TypeError from list indexing."""
+        if isinstance(scene_index, bool) or not isinstance(scene_index, int):
+            raise TypeError("%s must be an integer, got %r" % (what, scene_index))
+        scenes = list(self._song.scenes)
+        if scene_index < 0 or scene_index >= len(scenes):
+            raise IndexError(
+                "scene index %d out of range (have %d scenes, valid 0..%d)"
+                % (scene_index, len(scenes), len(scenes) - 1))
+        return scenes[scene_index], scenes
+
+    def _scene_refused(self, action, count, error=None):
+        """A readable reason for a scene change Live did not make."""
+        reason = (": %s" % error) if error else ""
+        return RuntimeError(
+            "Live did not %s (the set has %d scenes)%s. If this is Live Lite, "
+            "it limits how many scenes a set can have; delete one or use a "
+            "full edition of Live." % (action, count, reason))
+
+    def _new_scene_index(self, before, after, fallback):
+        """Index of the one scene in `after` that was not in `before`, else fallback."""
+        added = [i for i, s in enumerate(after)
+                 if not any(s == b for b in before)]
+        return added[0] if len(added) == 1 else fallback
+
+    def _get_scenes(self):
+        """List every Session scene: index, name, tempo (-1 = none), is_triggered, clip_count."""
+        try:
+            scenes = self._scene_list()
+            return {"scene_count": len(scenes), "scenes": scenes}
+        except Exception as e:
+            self.log_message("Error getting scenes: " + str(e))
+            raise
+
+    def _create_scene(self, index=-1, name=""):
+        """Create an empty scene at index (-1 or len = append) and optionally name it."""
+        try:
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise TypeError("index must be an integer, got %r" % (index,))
+            if name is None:
+                name = ""
+            if not isinstance(name, _STRING_TYPES):
+                raise TypeError("name must be a string, got %r" % (name,))
+            before = list(self._song.scenes)
+            if index < -1 or index > len(before):
+                raise IndexError(
+                    "scene index %d out of range (use -1 to append, or 0..%d)"
+                    % (index, len(before)))
+            try:
+                self._song.create_scene(index)
+            except Exception as e:
+                raise self._scene_refused("create a scene", len(before), e)
+            after = list(self._song.scenes)
+            if len(after) != len(before) + 1:
+                raise self._scene_refused("create a scene", len(after))
+            new_index = self._new_scene_index(
+                before, after, len(after) - 1 if index == -1 else index)
+            if name:
+                try:
+                    after[new_index].name = name
+                except Exception as e:
+                    raise RuntimeError(
+                        "Scene %d was created but could not be named: %s"
+                        % (new_index, e))
+            return {
+                "created_index": new_index,
+                "name": after[new_index].name,
+                "scene_count": len(after),
+                "scenes": self._scene_list(),
+            }
+        except Exception as e:
+            self.log_message("Error creating scene: " + str(e))
+            raise
+
+    def _duplicate_scene(self, scene_index):
+        """Duplicate a scene (clips included); the copy goes right after the original."""
+        try:
+            scene, before = self._resolve_scene(scene_index)
+            try:
+                self._song.duplicate_scene(scene_index)
+            except Exception as e:
+                raise self._scene_refused("duplicate the scene", len(before), e)
+            after = list(self._song.scenes)
+            if len(after) != len(before) + 1:
+                raise self._scene_refused("duplicate the scene", len(after))
+            new_index = self._new_scene_index(before, after, scene_index + 1)
+            return {
+                "source_index": scene_index,
+                "new_index": new_index,
+                "name": after[new_index].name,
+                "scene_count": len(after),
+                "scenes": self._scene_list(),
+            }
+        except Exception as e:
+            self.log_message("Error duplicating scene: " + str(e))
+            raise
+
+    def _fire_scene(self, scene_index):
+        """Launch every clip in a scene. AUDIBLE, and it takes the tracks that
+        have a clip in the scene off the Arrangement until Back to Arrangement."""
+        try:
+            scene, _ = self._resolve_scene(scene_index)
+            name = scene.name
+            scene.fire()
+            return {
+                "fired": True,
+                "index": scene_index,
+                "name": name,
+                "clip_count": len(self._scene_clips(scene_index)),
+                "scenes": self._scene_list(),
+            }
+        except Exception as e:
+            self.log_message("Error firing scene: " + str(e))
+            raise
+
+    def _set_scene_name(self, scene_index, name):
+        """Rename a scene ('' restores Live's default look)."""
+        try:
+            if not isinstance(name, _STRING_TYPES):
+                raise TypeError("name must be a string, got %r" % (name,))
+            scene, _ = self._resolve_scene(scene_index)
+            previous = scene.name
+            scene.name = name
+            return {
+                "index": scene_index,
+                "previous_name": previous,
+                "name": scene.name,
+                "scenes": self._scene_list(),
+            }
+        except Exception as e:
+            self.log_message("Error setting scene name: " + str(e))
+            raise
+
+    def _delete_scene(self, scene_index, expected_name=None, dry_run=True):
+        """Preview or perform the deletion of one scene (and the clips in it).
+
+        Guards, all enforced here so a direct TCP caller gets them too:
+        - dry_run defaults to True; deleting requires dry_run to be False.
+        - Deleting requires expected_name (None is refused; '' is a valid name,
+          Live's unnamed scenes) to equal the scene's current name. Indices
+          shift after every create and delete, so a remembered index is the
+          realistic way to delete the wrong scene. A mismatch is an error even
+          in a preview.
+        - The last remaining scene is refused (Live needs at least one).
+
+        Always returns the facts about the scene (name, tempo, clips it holds)
+        and the scene list that would remain (preview) or does remain (after
+        deleting), re-indexed.
+        """
+        try:
+            scene, scenes = self._resolve_scene(scene_index)
+            if expected_name is not None and not isinstance(expected_name, _STRING_TYPES):
+                raise TypeError("expected_name must be a string, got %r" % (expected_name,))
+            if expected_name is not None and scene.name != expected_name:
+                raise ValueError(
+                    "Scene %d is '%s', not '%s'; indices may have shifted. "
+                    "Nothing was deleted." % (scene_index, scene.name, expected_name))
+            if not dry_run and expected_name is None:
+                raise ValueError("expected_name is required to delete a scene")
+            if len(scenes) <= 1:
+                raise ValueError(
+                    "Refusing to delete the last remaining scene; "
+                    "a Live Set needs at least one")
+
+            summary = self._scene_summary(scene_index, scene)
+            info = {
+                "scene_index": scene_index,
+                "name": summary["name"],
+                "tempo": summary["tempo"],
+                "clip_count": summary["clip_count"],
+                "clips": self._scene_clips(scene_index),
+            }
+            remaining = [self._scene_summary(i, s)
+                         for i, s in enumerate(scenes) if i != scene_index]
+            # Preview shows the post-delete numbering.
+            for new_index, entry in enumerate(remaining):
+                entry["index"] = new_index
+            if dry_run:
+                info["deleted"] = False
+                info["dry_run"] = True
+                info["remaining"] = remaining
+                return info
+
+            try:
+                self._song.delete_scene(scene_index)
+            except Exception as e:
+                raise RuntimeError("Live did not delete the scene: %s" % e)
+            after = list(self._song.scenes)
+            info["deleted"] = (len(after) == len(scenes) - 1
+                               and not any(scene == s for s in after))
+            info["remaining"] = self._scene_list()
+            if not info["deleted"]:
+                raise RuntimeError(
+                    "Live did not delete the scene (%d scenes before, %d after)"
+                    % (len(scenes), len(after)))
+            return info
+        except Exception as e:
+            self.log_message("Error deleting scene: " + str(e))
+            raise
+
+    def _stop_all_clips(self):
+        """Ask Live to stop every playing Session clip (like the Stop All Clips button)."""
+        try:
+            self._song.stop_all_clips()
+            return {"stop_requested": True}
+        except Exception as e:
+            self.log_message("Error stopping all clips: " + str(e))
             raise
 
 
