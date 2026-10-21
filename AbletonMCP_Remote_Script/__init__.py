@@ -107,6 +107,7 @@ SCRIPT_CAPABILITIES = [
     "undo_confirm_guard",
     "get_clip_info",
     "set_clip_loop",
+    "remove_notes_from_clip",
 ]
 
 def _finite_number(value, label):
@@ -117,6 +118,23 @@ def _finite_number(value, label):
     if math.isnan(number) or math.isinf(number):
         raise ValueError("%s must be finite, got %r" % (label, value))
     return number
+
+
+# How many notes a preview shows as a sample.
+NOTE_SAMPLE_SIZE = 10
+
+
+def _midi_int(value, label, low, high):
+    """An int in [low, high]. Integral floats (60.0) are accepted; bool is not."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("%s must be an integer, got %r" % (label, value))
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value) or value != int(value):
+            raise ValueError("%s must be a whole number, got %r" % (label, value))
+        value = int(value)
+    if value < low or value > high:
+        raise ValueError("%s must be between %d and %d, got %r" % (label, low, high, value))
+    return value
 
 
 def create_instance(c_instance):
@@ -365,6 +383,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_track",
                                  "clear_notes_from_clip",
                                  "set_clip_loop",
+                                 "remove_notes_from_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "undo", "redo",
@@ -412,6 +431,16 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._clear_notes_from_clip(track_index, clip_index)
+                        elif command_type == "remove_notes_from_clip":
+                            result = self._remove_notes_from_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("from_time"),
+                                params.get("time_span"),
+                                params.get("from_pitch"),
+                                params.get("pitch_span"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
                         elif command_type == "set_clip_loop":
                             result = self._set_clip_loop(
                                 params.get("track_index", 0),
@@ -1935,6 +1964,77 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error setting clip loop: " + str(e))
+            raise
+
+    def _remove_notes_from_clip(self, track_index, clip_index, from_time, time_span,
+                                from_pitch, pitch_span, dry_run=True):
+        """Preview or perform removal of the notes in a time/pitch window.
+
+        Every window parameter is required: there is no default that clears the
+        clip by accident (use clear_notes_from_clip for that, on purpose).
+        dry_run defaults to True and only reports the count and a sample of
+        the notes the window selects, using the very query the removal uses,
+        so the preview and the removal agree. Removing re-queries the window
+        afterwards and raises if notes are still there.
+        """
+        try:
+            start = _finite_number(from_time, "from_time")
+            span = _finite_number(time_span, "time_span")
+            if start < 0:
+                raise ValueError("from_time must be >= 0, got %r" % (from_time,))
+            if span <= 0:
+                raise ValueError("time_span must be > 0, got %r" % (time_span,))
+            low = _midi_int(from_pitch, "from_pitch", 0, 127)
+            pitches = _midi_int(pitch_span, "pitch_span", 1, 128)
+            if low + pitches > 128:
+                raise ValueError(
+                    "from_pitch + pitch_span must be <= 128, got %d" % (low + pitches))
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+
+            window = {"from_time": start, "time_span": span,
+                      "from_pitch": low, "pitch_span": pitches}
+            doomed = self._notes_in_range(clip, start, span, low, pitches)
+            doomed.sort(key=lambda n: (n["start_time"], n["pitch"]))
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "window": window,
+                "matched_count": len(doomed),
+                "sample": doomed[:NOTE_SAMPLE_SIZE],
+                "sample_truncated": len(doomed) > NOTE_SAMPLE_SIZE,
+            }
+            if dry_run:
+                result["removed"] = False
+                result["dry_run"] = True
+                return result
+            if not doomed:
+                result["removed"] = False
+                result["removed_count"] = 0
+                result["dry_run"] = False
+                return result
+
+            # Argument order: remove_notes_extended(from_pitch, pitch_span,
+            # from_time, time_span) vs the legacy remove_notes(from_time,
+            # from_pitch, time_span, pitch_span); same as _clear_notes_from_clip.
+            remover = getattr(clip, "remove_notes_extended", None)
+            if remover is not None:
+                remover(low, pitches, start, span)
+            else:
+                clip.remove_notes(start, low, span, pitches)
+
+            left = self._notes_in_range(clip, start, span, low, pitches)
+            result["removed_count"] = len(doomed) - len(left)
+            result["remaining_in_window"] = len(left)
+            result["removed"] = len(left) == 0
+            result["dry_run"] = False
+            if left:
+                raise RuntimeError(
+                    "Removed %d of %d notes; %d are still in the window"
+                    % (result["removed_count"], len(doomed), len(left)))
+            return result
+        except Exception as e:
+            self.log_message("Error removing notes from clip: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

@@ -139,6 +139,7 @@ class AbletonConnection:
             "delete_track",
             "clear_notes_from_clip",
             "set_clip_loop",
+            "remove_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "undo", "redo",
@@ -1051,6 +1052,76 @@ def clear_notes_from_clip(
     except Exception as e:
         logger.error(f"Error clearing notes from clip: {str(e)}")
         return f"Error clearing notes from clip: {str(e)}"
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("remove_notes_from_clip")
+@trajectory_tool("remove_notes_from_clip")
+def remove_notes_from_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    from_time: float,
+    time_span: float,
+    from_pitch: int,
+    pitch_span: int,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Remove the MIDI notes inside a time and pitch window of a Session clip, in
+    two steps. DESTRUCTIVE (Live's undo, Cmd/Ctrl+Z, can bring them back).
+
+    Step 1: call with confirm=false (the default). Nothing is removed; you get
+    the number of notes the window selects and a sample of them.
+    Step 2: call again with the same arguments and confirm=true to remove them.
+
+    The window is from_time/time_span in beats and from_pitch/pitch_span,
+    evaluated by Live's own note query; the preview runs the same query as the
+    removal, so it shows exactly what would go (Live decides how notes that
+    straddle the window edge count). All four window values are required. To
+    empty the whole clip use clear_notes_from_clip instead.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - from_time: Window start in beats (>= 0)
+    - time_span: Window length in beats (> 0)
+    - from_pitch: Lowest MIDI pitch in the window (0-127)
+    - pitch_span: Number of pitches in the window (1-128; from_pitch + pitch_span <= 128)
+    - confirm: false = preview only (default), true = remove
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("remove_notes_from_clip")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "from_time": from_time,
+            "time_span": time_span,
+            "from_pitch": from_pitch,
+            "pitch_span": pitch_span,
+        }
+        if not confirm:
+            preview = ableton.send_command(
+                "remove_notes_from_clip", dict(params, dry_run=True))
+            return (
+                "NOT REMOVED (preview only). This window selects "
+                + json.dumps(preview, indent=2)
+                + "\nTo remove these notes, call remove_notes_from_clip again with "
+                "the same arguments and confirm=true."
+            )
+        result = ableton.send_command(
+            "remove_notes_from_clip", dict(params, dry_run=False))
+        return "Removed notes. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error removing notes from clip: {str(e)}")
+        return f"Error removing notes from clip: {str(e)}"
+
 
 @mcp.tool()
 @telemetry_tool("set_clip_loop")

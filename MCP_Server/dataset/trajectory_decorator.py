@@ -37,6 +37,7 @@ MODIFYING_TOOLS = {
     "add_notes_to_clip",
     "set_clip_name",
     "set_clip_loop",
+    "remove_notes_from_clip",
     "set_arrangement_clip_name",
     "set_tempo",
     "undo",

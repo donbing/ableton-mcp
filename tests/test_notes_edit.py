@@ -387,6 +387,141 @@ def test_loop_is_scheduled_on_the_main_thread(inst):
     assert inst.scheduled == [(0, "main_thread_task")]
 
 
+# ------------------------------------------------------ remove_notes_from_clip
+
+# Selects notes 1 (pitch 36 at 0.0) and 2 (pitch 38 at 1.1); note 3 (pitch 42 at
+# 2.0) is outside the 1.5 beat span and note 4 outside the pitch range.
+WINDOW = dict(from_time=0.0, time_span=1.5, from_pitch=36, pitch_span=8)
+
+
+def ids(clip):
+    return [n.note_id for n in clip.notes]
+
+
+def test_remove_previews_by_default_and_removes_nothing(inst, clip):
+    result = ok(run(inst, "remove_notes_from_clip", **WINDOW))
+    assert result["dry_run"] is True
+    assert result["removed"] is False
+    assert result["matched_count"] == 2
+    assert [n["note_id"] for n in result["sample"]] == [1, 2]
+    assert ids(clip) == [1, 2, 3, 4]
+    assert clip.remove_calls == []
+
+
+def test_remove_with_dry_run_false_removes_exactly_the_window(inst, clip):
+    result = ok(run(inst, "remove_notes_from_clip", dry_run=False, **WINDOW))
+    assert result["removed"] is True
+    assert result["removed_count"] == 2
+    assert result["remaining_in_window"] == 0
+    assert ids(clip) == [3, 4]
+    # Live's order for the extended call is from_pitch, pitch_span, from_time, time_span.
+    assert clip.remove_calls == [(36, 8, 0.0, 1.5)]
+
+
+def test_preview_and_removal_agree_on_the_count(inst, clip):
+    window = dict(from_time=0.0, time_span=8.0, from_pitch=0, pitch_span=128)
+    preview = ok(run(inst, "remove_notes_from_clip", **window))
+    done = ok(run(inst, "remove_notes_from_clip", dry_run=False, **window))
+    assert preview["matched_count"] == done["removed_count"] == 4
+
+
+def test_the_sample_is_capped_and_sorted(script_module):
+    many = [FakeNote(i, 40, 8.0 - i * 0.25) for i in range(1, 21)]
+    clip = FakeClip(many, length=8.0)
+    inst = make_inst(script_module, FakeSong(clip))
+    result = ok(run(inst, "remove_notes_from_clip",
+                    from_time=0.0, time_span=8.0, from_pitch=0, pitch_span=128))
+    assert result["matched_count"] == 20
+    assert len(result["sample"]) == 10
+    assert result["sample_truncated"] is True
+    starts = [n["start_time"] for n in result["sample"]]
+    assert starts == sorted(starts)
+
+
+def test_removing_an_empty_window_is_a_noop_that_does_not_call_live(inst, clip):
+    result = ok(run(inst, "remove_notes_from_clip", dry_run=False,
+                    from_time=0.0, time_span=1.0, from_pitch=100, pitch_span=10))
+    assert result["removed_count"] == 0
+    assert clip.remove_calls == []
+    assert ids(clip) == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("window,needle", [
+    (dict(from_time=None, time_span=1.0, from_pitch=0, pitch_span=128), "from_time must be a number"),
+    (dict(from_time=0.0, time_span=None, from_pitch=0, pitch_span=128), "time_span must be a number"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=None, pitch_span=128), "from_pitch must be an integer"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=0, pitch_span=None), "pitch_span must be an integer"),
+    (dict(from_time=-1.0, time_span=1.0, from_pitch=0, pitch_span=128), "from_time must be >= 0"),
+    (dict(from_time=0.0, time_span=0.0, from_pitch=0, pitch_span=128), "time_span must be > 0"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=128, pitch_span=1), "from_pitch must be between"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=0, pitch_span=0), "pitch_span must be between"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=100, pitch_span=64), "must be <= 128"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=60.5, pitch_span=1), "whole number"),
+    (dict(from_time=0.0, time_span=1.0, from_pitch=True, pitch_span=1), "must be an integer"),
+])
+def test_remove_rejects_bad_windows_even_when_confirmed(inst, clip, window, needle):
+    assert needle in err(run(inst, "remove_notes_from_clip", dry_run=False, **window))
+    assert ids(clip) == [1, 2, 3, 4]
+    assert clip.remove_calls == []
+
+
+def test_remove_with_no_window_at_all_does_not_clear_the_clip(inst, clip):
+    err(run(inst, "remove_notes_from_clip", dry_run=False))
+    assert ids(clip) == [1, 2, 3, 4]
+
+
+def test_remove_refuses_audio_clips_and_empty_slots(script_module, inst):
+    audio = FakeClip(midi=False)
+    message = err(run(make_inst(script_module, FakeSong(audio)),
+                      "remove_notes_from_clip", **WINDOW))
+    assert "not a MIDI clip" in message
+    assert "No clip in slot" in err(run(inst, "remove_notes_from_clip", clip_index=1, **WINDOW))
+
+
+def test_integral_float_pitches_from_json_are_accepted(inst, clip):
+    window = dict(WINDOW, from_pitch=36.0, pitch_span=8.0)
+    assert ok(run(inst, "remove_notes_from_clip", **window))["matched_count"] == 2
+
+
+def test_notes_left_in_the_window_are_an_error_not_a_success(inst, clip, monkeypatch):
+    monkeypatch.setattr(clip, "remove_notes_extended", lambda *a: None)
+    message = err(run(inst, "remove_notes_from_clip", dry_run=False, **WINDOW))
+    assert "still in the window" in message
+
+
+def test_legacy_live_without_extended_calls_still_works(script_module):
+    class Legacy(object):
+        is_midi_clip = True
+        name = "legacy"
+        length = 4.0
+
+        def __init__(self):
+            self.notes = [(36, 0.0, 0.25, 100, False), (60, 3.0, 0.25, 90, False)]
+            self.removed = []
+
+        def get_notes(self, from_time, from_pitch, time_span, pitch_span):
+            return tuple(n for n in self.notes
+                         if from_time <= n[1] < from_time + time_span
+                         and from_pitch <= n[0] < from_pitch + pitch_span)
+
+        def remove_notes(self, from_time, from_pitch, time_span, pitch_span):
+            self.removed.append((from_time, from_pitch, time_span, pitch_span))
+            gone = self.get_notes(from_time, from_pitch, time_span, pitch_span)
+            self.notes = [n for n in self.notes if n not in gone]
+
+    legacy = Legacy()
+    inst = make_inst(script_module, FakeSong(legacy))
+    result = ok(run(inst, "remove_notes_from_clip", dry_run=False, **WINDOW))
+    assert result["removed_count"] == 1
+    assert legacy.removed == [(0.0, 36, 1.5, 8)]
+    assert len(legacy.notes) == 1
+
+
+def test_remove_is_scheduled_on_the_main_thread(inst):
+    run(inst, "remove_notes_from_clip", **WINDOW)
+    assert inst.scheduled == [(0, "main_thread_task")]
+
+
 # ------------------------------------------------------ server tool wrappers
 
 class FakeConnection(object):
@@ -480,3 +615,39 @@ def test_set_clip_loop_tool_reports_script_errors(conn):
     conn.raise_exc = Exception("loop_start (3) must be before loop_end (1)")
     assert call(server.set_clip_loop, None, 0, 0, 3.0, 1.0).startswith(
         "Error setting clip loop:")
+
+
+def test_remove_tool_previews_by_default_and_sends_dry_run_true(conn):
+    conn.responses = [{"matched_count": 2, "sample": []}]
+    out = call(server.remove_notes_from_clip, None, 0, 1, 0.0, 2.5, 36, 8)
+    assert out.startswith("NOT REMOVED (preview only)")
+    assert "confirm=true" in out
+    assert conn.sent == [("remove_notes_from_clip", {
+        "track_index": 0, "clip_index": 1, "from_time": 0.0, "time_span": 2.5,
+        "from_pitch": 36, "pitch_span": 8, "dry_run": True})]
+
+
+def test_remove_tool_with_confirm_sends_dry_run_false(conn):
+    conn.responses = [{"removed": True, "removed_count": 2}]
+    out = call(server.remove_notes_from_clip, None, 0, 1, 0.0, 2.5, 36, 8, confirm=True)
+    assert out.startswith("Removed notes.")
+    assert [c[1]["dry_run"] for c in conn.sent] == [False]
+
+
+def test_remove_tool_is_destructive_requires_the_window_and_defaults_confirm_false():
+    tool = _tool("remove_notes_from_clip")
+    assert tool.annotations.destructiveHint is True
+    schema = tool.inputSchema
+    for name in ("track_index", "clip_index", "from_time", "time_span",
+                 "from_pitch", "pitch_span"):
+        assert name in schema["required"]
+    assert "confirm" not in schema["required"]
+    assert schema["properties"]["confirm"]["default"] is False
+    assert "user_prompt" in schema["properties"]
+    assert "remove_notes_from_clip" in MODIFYING_TOOLS
+
+
+def test_remove_tool_reports_script_errors(conn):
+    conn.raise_exc = Exception("Clip is not a MIDI clip")
+    out = call(server.remove_notes_from_clip, None, 0, 1, 0.0, 2.5, 36, 8, confirm=True)
+    assert out.startswith("Error removing notes from clip:")
