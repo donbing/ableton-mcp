@@ -137,6 +137,7 @@ class AbletonConnection:
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "delete_track",
+            "delete_arrangement_clips", "delete_device",
             "clear_notes_from_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
@@ -1259,6 +1260,157 @@ def delete_track(
     except Exception as e:
         logger.error(f"Error deleting track: {str(e)}")
         return f"Error deleting track: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_arrangement_clips")
+@trajectory_tool("delete_arrangement_clips")
+def delete_arrangement_clips(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    start_time: float,
+    end_time: float,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete Arrangement clips on one track, in two steps. DESTRUCTIVE.
+
+    Selection rule: every clip whose START lies in [start_time, end_time) is
+    selected (start inclusive, end exclusive). A clip that starts before
+    start_time but runs into the range is NOT selected; neither is a clip that
+    starts exactly at end_time. Units are BEATS, absolute from the start of the
+    Arrangement (0.0 = the very beginning; 4.0 = bar 2 in 4/4). Use
+    get_arrangement_clips first to see start times.
+
+    Step 1: call with confirm=false (the default). Nothing is deleted; you get
+    the clips that would be deleted and the clips that would remain.
+    Step 2: call again with the same arguments and confirm=true.
+
+    Deletion only happens when confirm=true AND expected_name equals the
+    track's current name (a mismatch, usually a stale index, deletes nothing).
+    Refused, with nothing deleted: start_time >= end_time, more than 64 matching
+    clips, group tracks, return/master tracks (only regular tracks are
+    addressed), and Live versions without Track.delete_clip. The reply lists
+    the remaining clips, indexed as get_arrangement_clips indexes them: after a
+    delete, later clips have new indices, so re-read before using clip_index.
+    Session clips are not touched (use delete_clip for those).
+
+    Parameters:
+    - track_index: Index of the regular track
+    - expected_name: The track's exact current name (required safety check)
+    - start_time: Range start in beats from the start of the Arrangement
+    - end_time: Range end in beats (exclusive); must be greater than start_time
+    - confirm: false = preview only (default), true = delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_arrangement_clips")
+        if missing:
+            return missing
+        if not expected_name:
+            return ("Error deleting arrangement clips: expected_name is required. "
+                    "Read the track's current name with get_track_info and pass "
+                    "it exactly.")
+        if start_time >= end_time:
+            return ("Error deleting arrangement clips: start_time must be less "
+                    "than end_time (both in beats). Nothing was deleted.")
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "expected_name": expected_name,
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+        if not confirm:
+            preview = ableton.send_command(
+                "delete_arrangement_clips", dict(params, confirm=False))
+            return (
+                "NOT DELETED (preview only). This would delete: "
+                + json.dumps(preview, indent=2)
+                + "\nTo delete, call delete_arrangement_clips again with the "
+                "same arguments and confirm=true."
+            )
+        result = ableton.send_command(
+            "delete_arrangement_clips", dict(params, confirm=True))
+        return "Deleted arrangement clips. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting arrangement clips: {str(e)}")
+        return f"Error deleting arrangement clips: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_device")
+@trajectory_tool("delete_device")
+def delete_device(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    confirm: bool = False,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete one device from a track's device chain, in two steps. DESTRUCTIVE:
+    later devices in the chain shift down by one.
+
+    Step 1: call with confirm=false (the default). Nothing is deleted; you get
+    the track's device chain with the target marked "to_delete".
+    Step 2: call again with the same arguments and confirm=true.
+
+    Deletion only happens when confirm=true AND both names match: expected_name
+    is the track's exact current name and expected_device_name is the exact
+    name of the device at device_index. Either mismatch (a stale index) deletes
+    nothing. Only devices at the top level of the track's chain are addressed,
+    not devices nested inside a rack's chains. The master track is refused.
+    The reply carries the remaining chain with its new indices. Read the chain
+    with get_track_info (track_type "track") first.
+
+    Parameters:
+    - track_index: Index of the track (in song.tracks, or return_tracks if track_type="return")
+    - device_index: Index of the device in the track's chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - confirm: false = preview only (default), true = delete
+    - track_type: "track" (default) or "return". "master" is refused.
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_device")
+        if missing:
+            return missing
+        if not expected_name or not expected_device_name:
+            return ("Error deleting device: expected_name (the track) and "
+                    "expected_device_name (the device) are both required. Read "
+                    "them from the current chain and pass them exactly.")
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "device_index": device_index,
+            "expected_name": expected_name,
+            "expected_device_name": expected_device_name,
+            "track_type": track_type,
+        }
+        if not confirm:
+            preview = ableton.send_command("delete_device", dict(params, confirm=False))
+            return (
+                "NOT DELETED (preview only). This would delete: "
+                + json.dumps(preview, indent=2)
+                + "\nTo delete, call delete_device again with the same "
+                "arguments and confirm=true."
+            )
+        result = ableton.send_command("delete_device", dict(params, confirm=True))
+        return "Deleted device. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting device: {str(e)}")
+        return f"Error deleting device: {str(e)}"
 
 
 UNDO_REDO_WARNING = (
