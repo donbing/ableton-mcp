@@ -42,7 +42,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.9.1"
+SCRIPT_VERSION = "1.10.0"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -133,6 +133,11 @@ SCRIPT_CAPABILITIES = [
     "redo",
     # undo/redo take dry_run (default True): without it an undo would act at once
     "undo_confirm_guard",
+    "get_clip_info",
+    "set_clip_loop",
+    "remove_notes_from_clip",
+    "apply_note_modifications",
+    "quantize_clip",
     "create_return_track",
     "load_device_on_return",
     "set_time_signature",
@@ -155,6 +160,49 @@ SCRIPT_CAPABILITIES = [
     "set_audio_clip_gain",
     "set_audio_clip_pitch",
 ]
+
+def _finite_number(value, label):
+    """Return value as a float, rejecting bool, non-numbers, NaN and infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("%s must be a number, got %r" % (label, value))
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        raise ValueError("%s must be finite, got %r" % (label, value))
+    return number
+
+
+# Grid name -> (Live RecordingQuantization value for Clip.quantize, grid in beats).
+# 1, 2, 5 and 8 are confirmed by ahujasid/ableton-mcp#99 (quarter, eighth,
+# sixteenth, thirty-second). 3 (eighth triplet) and 6 (sixteenth triplet)
+# follow the same enum but are UNVERIFIED against a real Live.
+QUANTIZE_GRIDS = {
+    "1/4": (1, 1.0),
+    "1/8": (2, 0.5),
+    "1/8T": (3, 1.0 / 3.0),
+    "1/16": (5, 0.25),
+    "1/16T": (6, 1.0 / 6.0),
+    "1/32": (8, 0.125),
+}
+
+# Fields apply_note_modifications may change on an existing note.
+NOTE_EDIT_FIELDS = ("pitch", "start_time", "duration", "velocity", "mute")
+
+# How many notes a preview shows as a sample.
+NOTE_SAMPLE_SIZE = 10
+
+
+def _midi_int(value, label, low, high):
+    """An int in [low, high]. Integral floats (60.0) are accepted; bool is not."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("%s must be an integer, got %r" % (label, value))
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value) or value != int(value):
+            raise ValueError("%s must be a whole number, got %r" % (label, value))
+        value = int(value)
+    if value < low or value > high:
+        raise ValueError("%s must be between %d and %d, got %r" % (label, low, high, value))
+    return value
+
 
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
@@ -414,6 +462,10 @@ class AbletonMCP(ControlSurface):
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
                                  "clear_notes_from_clip",
+                                 "set_clip_loop",
+                                 "remove_notes_from_clip",
+                                 "apply_note_modifications",
+                                 "quantize_clip",
                                  "set_tempo", "fire_clip", "stop_clip",
                                  "start_playback", "stop_playback",
                                  "undo", "redo",
@@ -469,6 +521,38 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             result = self._clear_notes_from_clip(track_index, clip_index)
+                        elif command_type == "remove_notes_from_clip":
+                            result = self._remove_notes_from_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("from_time"),
+                                params.get("time_span"),
+                                params.get("from_pitch"),
+                                params.get("pitch_span"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
+                        elif command_type == "apply_note_modifications":
+                            result = self._apply_note_modifications(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("notes"),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
+                        elif command_type == "quantize_clip":
+                            result = self._quantize_clip(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("grid"),
+                                params.get("amount", 1.0),
+                                # Preview unless the caller explicitly opts out.
+                                params.get("dry_run", True))
+                        elif command_type == "set_clip_loop":
+                            result = self._set_clip_loop(
+                                params.get("track_index", 0),
+                                params.get("clip_index", 0),
+                                params.get("loop_start"),
+                                params.get("loop_end"),
+                                params.get("looping"))
                         elif command_type == "set_clip_name":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -705,6 +789,9 @@ class AbletonMCP(ControlSurface):
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
                 response["result"] = self._get_clip_notes(track_index, clip_index)
+            elif command_type == "get_clip_info":
+                response["result"] = self._get_clip_info(
+                    params.get("track_index", 0), params.get("clip_index", 0))
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
@@ -2614,6 +2701,506 @@ class AbletonMCP(ControlSurface):
             }
         except Exception as e:
             self.log_message("Error clearing notes from clip: " + str(e))
+            raise
+
+    def _session_clip(self, track_index, clip_index, midi=False):
+        """Return (track, clip) for a Session clip slot, with strict checks.
+
+        Indices must be real integers (a bool or float is an error rather than
+        silently coerced). midi=True also requires a MIDI clip.
+        """
+        for label, value in (("track_index", track_index), ("clip_index", clip_index)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError("%s must be an integer, got %r" % (label, value))
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index out of range")
+        track = self._song.tracks[track_index]
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise Exception("No clip in slot")
+        clip = slot.clip
+        if midi and not getattr(clip, "is_midi_clip", False):
+            raise Exception("Clip is not a MIDI clip")
+        return track, clip
+
+    def _note_summary(self, note):
+        """Plain dict of one note: a Live MidiNote object or a legacy tuple."""
+        if isinstance(note, (tuple, list)):
+            return {"pitch": int(note[0]), "start_time": float(note[1]),
+                    "duration": float(note[2]), "velocity": float(note[3]),
+                    "mute": bool(note[4]) if len(note) > 4 else False}
+        entry = {
+            "pitch": int(getattr(note, "pitch", 0)),
+            "start_time": float(getattr(note, "start_time", 0.0)),
+            "duration": float(getattr(note, "duration", 0.0)),
+            "velocity": float(getattr(note, "velocity", 0)),
+            "mute": bool(getattr(note, "mute", False)),
+        }
+        if hasattr(note, "note_id"):
+            try:
+                entry["note_id"] = int(note.note_id)
+            except Exception:
+                pass
+        return entry
+
+    def _notes_in_range(self, clip, from_time, time_span, from_pitch, pitch_span):
+        """Notes inside a time/pitch window, as plain dicts.
+
+        Uses get_notes_extended (Live 11+; argument order from_pitch,
+        pitch_span, from_time, time_span, as in _notes_from_clip) and falls
+        back to the legacy get_notes(from_time, from_pitch, time_span,
+        pitch_span), which carries no note_id.
+        """
+        getter = getattr(clip, "get_notes_extended", None)
+        if getter is not None:
+            raw = getter(from_pitch, pitch_span, from_time, time_span)
+        else:
+            raw = clip.get_notes(from_time, from_pitch, time_span, pitch_span)
+        return [self._note_summary(n) for n in raw]
+
+    def _get_clip_info(self, track_index, clip_index):
+        """Read-only facts about one Session clip (MIDI or audio)."""
+        try:
+            track, clip = self._session_clip(track_index, clip_index)
+            is_midi = bool(getattr(clip, "is_midi_clip", False))
+            info = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "name": self._safe_attr(clip, "name", str, ""),
+                "length": self._safe_attr(clip, "length", float, None),
+                "is_midi_clip": is_midi,
+                "is_audio_clip": bool(getattr(clip, "is_audio_clip", False)),
+                "is_playing": bool(self._safe_attr(clip, "is_playing", bool, False)),
+                "looping": bool(self._safe_attr(clip, "looping", bool, False)),
+                "loop_start": self._safe_attr(clip, "loop_start", float, None),
+                "loop_end": self._safe_attr(clip, "loop_end", float, None),
+                "start_marker": self._safe_attr(clip, "start_marker", float, None),
+                "end_marker": self._safe_attr(clip, "end_marker", float, None),
+                "muted": self._safe_attr(clip, "muted", bool, None),
+                "color_index": self._safe_attr(clip, "color_index", int, None),
+                "note_count": None,
+            }
+            if is_midi and info["length"] is not None:
+                try:
+                    info["note_count"] = len(self._notes_in_range(
+                        clip, 0.0, info["length"] + 1.0, 0, 128))
+                except Exception as e:
+                    self.log_message("get_clip_info note count failed: " + str(e))
+            return info
+        except Exception as e:
+            self.log_message("Error getting clip info: " + str(e))
+            raise
+
+    def _loop_state(self, clip):
+        return {
+            "loop_start": self._safe_attr(clip, "loop_start", float, None),
+            "loop_end": self._safe_attr(clip, "loop_end", float, None),
+            "looping": self._safe_attr(clip, "looping", bool, None),
+            "start_marker": self._safe_attr(clip, "start_marker", float, None),
+            "end_marker": self._safe_attr(clip, "end_marker", float, None),
+        }
+
+    def _write_loop_points(self, clip, loop_start, loop_end):
+        """Move the loop to [loop_start, loop_end] without an invalid step.
+
+        Live rejects a loop whose start is not before its end, even for the
+        instant between the two assignments. Writing loop_end first is valid
+        whenever the CURRENT start is before the NEW end (growing, or moving
+        the loop later); otherwise the new end is at or before the current
+        start, so the new start (which is before the new end) must go first.
+        At least one of the two orders is always valid because the current
+        loop has start < end. Unchanged values are not rewritten.
+        """
+        current_start = float(clip.loop_start)
+        current_end = float(clip.loop_end)
+        steps = [("loop_end", loop_end, current_end),
+                 ("loop_start", loop_start, current_start)]
+        if current_start >= loop_end:
+            steps.reverse()
+        for name, value, current in steps:
+            if value != current:
+                setattr(clip, name, value)
+
+    def _set_clip_loop(self, track_index, clip_index, loop_start, loop_end,
+                       looping=None):
+        """Set a Session clip's loop range (beats) and optionally looping.
+
+        Validates start < end, writes the two markers in an order Live accepts
+        (see _write_loop_points), then reads everything back. If Live did not
+        keep a value, the previous loop is restored and an error is raised, so
+        a reported success always means the clip now has that loop. Notes are
+        never touched.
+        """
+        try:
+            start = _finite_number(loop_start, "loop_start")
+            end = _finite_number(loop_end, "loop_end")
+            if start < 0:
+                raise ValueError("loop_start must be >= 0, got %r" % (loop_start,))
+            if start >= end:
+                raise ValueError(
+                    "loop_start (%r) must be before loop_end (%r)" % (loop_start, loop_end))
+            if looping is not None and not isinstance(looping, bool):
+                raise TypeError("looping must be true, false or omitted, got %r" % (looping,))
+            track, clip = self._session_clip(track_index, clip_index)
+
+            before = self._loop_state(clip)
+            try:
+                self._write_loop_points(clip, start, end)
+                if looping is not None:
+                    clip.looping = looping
+                after = self._loop_state(clip)
+                problems = []
+                if (after["loop_start"] is None
+                        or abs(after["loop_start"] - start) > 1e-6):
+                    problems.append("loop_start is %r, wanted %r"
+                                    % (after["loop_start"], start))
+                if after["loop_end"] is None or abs(after["loop_end"] - end) > 1e-6:
+                    problems.append("loop_end is %r, wanted %r"
+                                    % (after["loop_end"], end))
+                if looping is not None and after["looping"] != looping:
+                    problems.append("looping is %r, wanted %r"
+                                    % (after["looping"], looping))
+                if problems:
+                    raise RuntimeError("; ".join(problems))
+            except Exception as failure:
+                restored = True
+                try:
+                    if before["loop_start"] is not None and before["loop_end"] is not None:
+                        self._write_loop_points(
+                            clip, before["loop_start"], before["loop_end"])
+                    if looping is not None and before["looping"] is not None:
+                        clip.looping = before["looping"]
+                except Exception as restore_failure:
+                    restored = False
+                    self.log_message("set_clip_loop restore failed: " + str(restore_failure))
+                raise RuntimeError(
+                    "Live did not accept the loop (%s). %s" % (
+                        failure,
+                        "The previous loop was restored." if restored
+                        else "Restoring the previous loop ALSO failed; check the clip."))
+            return {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "before": before,
+                "after": after,
+            }
+        except Exception as e:
+            self.log_message("Error setting clip loop: " + str(e))
+            raise
+
+    def _remove_notes_from_clip(self, track_index, clip_index, from_time, time_span,
+                                from_pitch, pitch_span, dry_run=True):
+        """Preview or perform removal of the notes in a time/pitch window.
+
+        Every window parameter is required: there is no default that clears the
+        clip by accident (use clear_notes_from_clip for that, on purpose).
+        dry_run defaults to True and only reports the count and a sample of
+        the notes the window selects, using the very query the removal uses,
+        so the preview and the removal agree. Removing re-queries the window
+        afterwards and raises if notes are still there.
+        """
+        try:
+            start = _finite_number(from_time, "from_time")
+            span = _finite_number(time_span, "time_span")
+            if start < 0:
+                raise ValueError("from_time must be >= 0, got %r" % (from_time,))
+            if span <= 0:
+                raise ValueError("time_span must be > 0, got %r" % (time_span,))
+            low = _midi_int(from_pitch, "from_pitch", 0, 127)
+            pitches = _midi_int(pitch_span, "pitch_span", 1, 128)
+            if low + pitches > 128:
+                raise ValueError(
+                    "from_pitch + pitch_span must be <= 128, got %d" % (low + pitches))
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+
+            window = {"from_time": start, "time_span": span,
+                      "from_pitch": low, "pitch_span": pitches}
+            doomed = self._notes_in_range(clip, start, span, low, pitches)
+            doomed.sort(key=lambda n: (n["start_time"], n["pitch"]))
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "window": window,
+                "matched_count": len(doomed),
+                "sample": doomed[:NOTE_SAMPLE_SIZE],
+                "sample_truncated": len(doomed) > NOTE_SAMPLE_SIZE,
+            }
+            if dry_run:
+                result["removed"] = False
+                result["dry_run"] = True
+                return result
+            if not doomed:
+                result["removed"] = False
+                result["removed_count"] = 0
+                result["dry_run"] = False
+                return result
+
+            # Argument order: remove_notes_extended(from_pitch, pitch_span,
+            # from_time, time_span) vs the legacy remove_notes(from_time,
+            # from_pitch, time_span, pitch_span); same as _clear_notes_from_clip.
+            remover = getattr(clip, "remove_notes_extended", None)
+            if remover is not None:
+                remover(low, pitches, start, span)
+            else:
+                clip.remove_notes(start, low, span, pitches)
+
+            left = self._notes_in_range(clip, start, span, low, pitches)
+            result["removed_count"] = len(doomed) - len(left)
+            result["remaining_in_window"] = len(left)
+            result["removed"] = len(left) == 0
+            result["dry_run"] = False
+            if left:
+                raise RuntimeError(
+                    "Removed %d of %d notes; %d are still in the window"
+                    % (result["removed_count"], len(doomed), len(left)))
+            return result
+        except Exception as e:
+            self.log_message("Error removing notes from clip: " + str(e))
+            raise
+
+    def _validated_note_edits(self, notes):
+        """Validate apply_note_modifications input. Returns {note_id: {field: value}}."""
+        if not isinstance(notes, (list, tuple)) or not notes:
+            raise ValueError("notes must be a non-empty list of {note_id, ...changes}")
+        edits = {}
+        for position, entry in enumerate(notes):
+            label = "notes[%d]" % position
+            if not isinstance(entry, dict):
+                raise TypeError("%s must be an object, got %r" % (label, entry))
+            unknown = sorted(set(entry) - set(NOTE_EDIT_FIELDS) - set(["note_id"]))
+            if unknown:
+                raise ValueError(
+                    "%s has unknown field(s) %s; allowed: note_id, %s"
+                    % (label, ", ".join(unknown), ", ".join(NOTE_EDIT_FIELDS)))
+            if "note_id" not in entry:
+                raise ValueError("%s needs a note_id (from get_clip_notes)" % label)
+            note_id = entry["note_id"]
+            if isinstance(note_id, bool) or not isinstance(note_id, int):
+                raise TypeError("%s.note_id must be an integer, got %r" % (label, note_id))
+            if note_id in edits:
+                raise ValueError("note_id %d appears more than once" % note_id)
+            changes = {}
+            if "pitch" in entry:
+                changes["pitch"] = _midi_int(entry["pitch"], label + ".pitch", 0, 127)
+            if "start_time" in entry:
+                changes["start_time"] = _finite_number(entry["start_time"], label + ".start_time")
+                if changes["start_time"] < 0:
+                    raise ValueError("%s.start_time must be >= 0" % label)
+            if "duration" in entry:
+                changes["duration"] = _finite_number(entry["duration"], label + ".duration")
+                if changes["duration"] <= 0:
+                    raise ValueError("%s.duration must be > 0" % label)
+            if "velocity" in entry:
+                changes["velocity"] = _finite_number(entry["velocity"], label + ".velocity")
+                if changes["velocity"] < 1 or changes["velocity"] > 127:
+                    raise ValueError("%s.velocity must be between 1 and 127" % label)
+            if "mute" in entry:
+                if not isinstance(entry["mute"], bool):
+                    raise TypeError("%s.mute must be true or false" % label)
+                changes["mute"] = entry["mute"]
+            if not changes:
+                raise ValueError(
+                    "%s changes nothing; give at least one of %s"
+                    % (label, ", ".join(NOTE_EDIT_FIELDS)))
+            edits[note_id] = changes
+        return edits
+
+    def _apply_note_modifications(self, track_index, clip_index, notes, dry_run=True):
+        """Preview or perform in-place edits of EXISTING notes, by note_id.
+
+        notes: [{"note_id": 12, "pitch": 62, "velocity": 90, ...}, ...] with
+        ids as returned by get_clip_notes. Only the listed fields change;
+        everything else about the note (including its id) stays. Unknown ids
+        are an error and nothing is changed. This rewrites notes, so it
+        previews (before and proposed after) unless dry_run is explicitly
+        false. Needs Live 11+ (get_notes_extended / apply_note_modifications).
+
+        Only the notes that actually change are handed to Live. After applying,
+        the notes are read back by id and compared with what was asked.
+        """
+        try:
+            edits = self._validated_note_edits(notes)
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            getter = getattr(clip, "get_notes_extended", None)
+            applier = getattr(clip, "apply_note_modifications", None)
+            if getter is None or applier is None:
+                raise Exception(
+                    "This version of Live cannot edit notes in place "
+                    "(needs Clip.get_notes_extended / apply_note_modifications, Live 11+)")
+
+            latest_end = max([float(clip.length)] + [
+                c["start_time"] + c.get("duration", 0.0) for c in edits.values()
+                if "start_time" in c])
+            read_span = latest_end + 1.0
+            live_notes = list(getter(0, 128, 0.0, read_span))
+            by_id = {}
+            for note in live_notes:
+                note_id = getattr(note, "note_id", None)
+                if note_id is not None:
+                    by_id[int(note_id)] = note
+            missing = sorted(set(edits) - set(by_id))
+            if missing:
+                raise ValueError(
+                    "Unknown note_id(s) %s in this clip. Read the current ids with "
+                    "get_clip_notes (they change when notes are added or removed). "
+                    "Nothing was changed." % ", ".join(str(m) for m in missing))
+
+            changes = []
+            unchanged = []
+            to_apply = []
+            for note_id in sorted(edits):
+                note = by_id[note_id]
+                before = self._note_summary(note)
+                after = dict(before)
+                for field, value in edits[note_id].items():
+                    after[field] = value
+                if all(before[f] == after[f] for f in NOTE_EDIT_FIELDS):
+                    unchanged.append(note_id)
+                    continue
+                changes.append({"note_id": note_id, "before": before, "after": after})
+                to_apply.append(note)
+
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "changed_count": len(changes),
+                "unchanged_note_ids": unchanged,
+                "changes": changes,
+            }
+            if dry_run:
+                result["applied"] = False
+                result["dry_run"] = True
+                return result
+            result["dry_run"] = False
+            if not changes:
+                result["applied"] = False
+                return result
+
+            for change, note in zip(changes, to_apply):
+                for field in NOTE_EDIT_FIELDS:
+                    if change["after"][field] != change["before"][field]:
+                        setattr(note, field, change["after"][field])
+            applier(to_apply)
+
+            reread = {}
+            for note in getter(0, 128, 0.0, read_span):
+                note_id = getattr(note, "note_id", None)
+                if note_id is not None:
+                    reread[int(note_id)] = self._note_summary(note)
+            mismatches = []
+            for change in changes:
+                actual = reread.get(change["note_id"])
+                if actual is None:
+                    mismatches.append("note %d is no longer in the clip" % change["note_id"])
+                    change["after"] = None
+                    continue
+                for field in NOTE_EDIT_FIELDS:
+                    wanted = change["after"][field]
+                    got = actual[field]
+                    same = (got == wanted if field in ("mute", "pitch")
+                            else abs(float(got) - float(wanted)) <= 1e-6)
+                    if not same:
+                        mismatches.append("note %d %s is %r, wanted %r"
+                                          % (change["note_id"], field, got, wanted))
+                change["after"] = actual
+            result["applied"] = True
+            result["verified"] = not mismatches
+            if mismatches:
+                result["mismatches"] = mismatches
+            return result
+        except Exception as e:
+            self.log_message("Error applying note modifications: " + str(e))
+            raise
+
+    def _quantize_clip(self, track_index, clip_index, grid, amount=1.0, dry_run=True):
+        """Preview or perform Clip.quantize on a Session MIDI clip.
+
+        grid: one of QUANTIZE_GRIDS (1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32).
+        amount: 0..1, how far each note start moves toward the grid (1 = onto it).
+        This REWRITES note start times for the whole clip, so it previews
+        unless dry_run is explicitly false. The preview computes where each
+        start would land (an estimate: Live does the real rounding); the
+        applied result reports the before and after read back from Live.
+        """
+        try:
+            if not isinstance(grid, str):
+                raise TypeError("grid must be one of %s, got %r"
+                                % (", ".join(sorted(QUANTIZE_GRIDS)), grid))
+            key = grid.strip().upper()
+            if key not in QUANTIZE_GRIDS:
+                raise ValueError("Unknown grid %r; use one of %s"
+                                 % (grid, ", ".join(sorted(QUANTIZE_GRIDS))))
+            ratio = _finite_number(amount, "amount")
+            if ratio < 0 or ratio > 1:
+                raise ValueError("amount must be between 0 and 1, got %r" % (amount,))
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            if not callable(getattr(clip, "quantize", None)):
+                raise Exception("This clip cannot be quantized (Clip.quantize is unavailable)")
+            enum_value, size = QUANTIZE_GRIDS[key]
+
+            span = float(clip.length) + 1.0
+            notes = self._notes_in_range(clip, 0.0, span, 0, 128)
+            notes.sort(key=lambda n: (n["start_time"], n["pitch"]))
+            result = {
+                "track_index": track_index,
+                "clip_index": clip_index,
+                "clip_name": clip.name,
+                "grid": key,
+                "grid_beats": size,
+                "amount": ratio,
+                "note_count": len(notes),
+            }
+
+            def label(n):
+                return n.get("note_id", "%d@%g" % (n["pitch"], n["start_time"]))
+
+            if dry_run:
+                moves = []
+                for n in notes:
+                    target = round(n["start_time"] / size) * size
+                    landing = n["start_time"] + ratio * (target - n["start_time"])
+                    if abs(landing - n["start_time"]) > 1e-6:
+                        moves.append({"note": label(n), "pitch": n["pitch"],
+                                      "start_before": n["start_time"],
+                                      "start_estimated_after": landing})
+                result["dry_run"] = True
+                result["applied"] = False
+                result["estimated_moved_count"] = len(moves)
+                result["sample"] = moves[:NOTE_SAMPLE_SIZE]
+                result["sample_truncated"] = len(moves) > NOTE_SAMPLE_SIZE
+                result["estimate_note"] = (
+                    "Estimated from the grid; Live does the real rounding. "
+                    "Note starts change; durations are Live's to adjust.")
+                return result
+
+            result["dry_run"] = False
+            if not notes or ratio == 0:
+                result["applied"] = False
+                result["moved_count"] = 0
+                return result
+            clip.quantize(enum_value, ratio)
+            after = self._notes_in_range(clip, 0.0, span, 0, 128)
+            before_by = dict((label(n), n) for n in notes)
+            moves = []
+            for n in after:
+                old = before_by.get(label(n))
+                if old is not None and abs(old["start_time"] - n["start_time"]) > 1e-6:
+                    moves.append({"note": label(n), "pitch": n["pitch"],
+                                  "start_before": old["start_time"],
+                                  "start_after": n["start_time"]})
+            moves.sort(key=lambda m: (m["start_before"], m["pitch"]))
+            result["applied"] = True
+            result["moved_count"] = len(moves)
+            result["note_count_after"] = len(after)
+            result["sample"] = moves[:NOTE_SAMPLE_SIZE]
+            result["sample_truncated"] = len(moves) > NOTE_SAMPLE_SIZE
+            return result
+        except Exception as e:
+            self.log_message("Error quantizing clip: " + str(e))
             raise
 
     def _duplicate_session_clip_to_arrangement(self, track_index, clip_index, destination_time):

@@ -142,6 +142,10 @@ class AbletonConnection:
             "set_scene_name", "stop_all_clips",
             "delete_arrangement_clips", "delete_device",
             "clear_notes_from_clip",
+            "set_clip_loop",
+            "remove_notes_from_clip",
+            "apply_note_modifications",
+            "quantize_clip",
             "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
             "start_playback", "stop_playback", "load_instrument_or_effect",
             "undo", "redo",
@@ -569,6 +573,43 @@ def get_clip_notes(
     except Exception as e:
         logger.error(f"Error getting clip notes: {str(e)}")
         return f"Error getting clip notes: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@telemetry_tool("get_clip_info")
+@trajectory_tool("get_clip_info")
+def get_clip_info(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read the facts about one Session clip: name, length (beats), looping,
+    loop_start / loop_end and start_marker / end_marker (beats), is_playing,
+    muted, color_index, and for MIDI clips the note count. Fields Live does not
+    report are null. Read-only.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_clip_info")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_clip_info",
+            {"track_index": track_index, "clip_index": clip_index},
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip info: {str(e)}")
+        return f"Error getting clip info: {str(e)}"
 
 
 @mcp.tool()
@@ -1020,6 +1061,255 @@ def clear_notes_from_clip(
     except Exception as e:
         logger.error(f"Error clearing notes from clip: {str(e)}")
         return f"Error clearing notes from clip: {str(e)}"
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("remove_notes_from_clip")
+@trajectory_tool("remove_notes_from_clip")
+def remove_notes_from_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    from_time: float,
+    time_span: float,
+    from_pitch: int,
+    pitch_span: int,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Remove the MIDI notes inside a time and pitch window of a Session clip, in
+    two steps. DESTRUCTIVE (Live's undo, Cmd/Ctrl+Z, can bring them back).
+
+    Step 1: call with confirm=false (the default). Nothing is removed; you get
+    the number of notes the window selects and a sample of them.
+    Step 2: call again with the same arguments and confirm=true to remove them.
+
+    The window is from_time/time_span in beats and from_pitch/pitch_span,
+    evaluated by Live's own note query; the preview runs the same query as the
+    removal, so it shows exactly what would go (Live decides how notes that
+    straddle the window edge count). All four window values are required. To
+    empty the whole clip use clear_notes_from_clip instead.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - from_time: Window start in beats (>= 0)
+    - time_span: Window length in beats (> 0)
+    - from_pitch: Lowest MIDI pitch in the window (0-127)
+    - pitch_span: Number of pitches in the window (1-128; from_pitch + pitch_span <= 128)
+    - confirm: false = preview only (default), true = remove
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("remove_notes_from_clip")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "from_time": from_time,
+            "time_span": time_span,
+            "from_pitch": from_pitch,
+            "pitch_span": pitch_span,
+        }
+        if not confirm:
+            preview = ableton.send_command(
+                "remove_notes_from_clip", dict(params, dry_run=True))
+            return (
+                "NOT REMOVED (preview only). This window selects "
+                + json.dumps(preview, indent=2)
+                + "\nTo remove these notes, call remove_notes_from_clip again with "
+                "the same arguments and confirm=true."
+            )
+        result = ableton.send_command(
+            "remove_notes_from_clip", dict(params, dry_run=False))
+        return "Removed notes. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error removing notes from clip: {str(e)}")
+        return f"Error removing notes from clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("apply_note_modifications")
+@trajectory_tool("apply_note_modifications")
+def apply_note_modifications(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    notes: List[Dict[str, Union[int, float, bool]]],
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Edit EXISTING notes of a Session MIDI clip in place, by note_id, in two
+    steps. This rewrites notes (Live's undo, Cmd/Ctrl+Z, reverts it).
+
+    Read the clip with get_clip_notes first: every note has a note_id. Each
+    entry here is {"note_id": 12, ...} plus any of pitch, start_time (beats),
+    duration (beats), velocity (1-127) and mute; only the fields you give
+    change. An unknown note_id is an error and nothing changes. Ids are only
+    valid until notes are added or removed, so re-read before editing.
+
+    Step 1: call with confirm=false (the default). Nothing changes; you get the
+    before and the proposed after of every note that would change.
+    Step 2: call again with the same notes and confirm=true to apply them. The
+    result lists before and after as read back from Live, and flags any value
+    Live did not keep.
+
+    Needs Live 11 or newer. To add notes use add_notes_to_clip; to delete
+    notes use remove_notes_from_clip.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - notes: List of {"note_id": int, and any of "pitch", "start_time", "duration", "velocity", "mute"}
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("apply_note_modifications")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "notes": notes,
+        }
+        if not confirm:
+            preview = ableton.send_command(
+                "apply_note_modifications", dict(params, dry_run=True))
+            return (
+                "NOT APPLIED (preview only). These notes would change: "
+                + json.dumps(preview, indent=2)
+                + "\nTo apply, call apply_note_modifications again with the same "
+                "notes and confirm=true."
+            )
+        result = ableton.send_command(
+            "apply_note_modifications", dict(params, dry_run=False))
+        return "Applied note modifications. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error applying note modifications: {str(e)}")
+        return f"Error applying note modifications: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("quantize_clip")
+@trajectory_tool("quantize_clip")
+def quantize_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    grid: str,
+    amount: float = 1.0,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Quantize a Session MIDI clip to a grid, in two steps. REWRITES the start
+    time of the notes in the whole clip (Live's undo, Cmd/Ctrl+Z, reverts it).
+
+    Step 1: call with confirm=false (the default). Nothing changes; you get how
+    many notes would move and a sample of their estimated new starts.
+    Step 2: call again with the same arguments and confirm=true. The result
+    lists the starts as read back from Live.
+
+    Grids: 1/4, 1/8, 1/8T (eighth triplet), 1/16, 1/16T (sixteenth triplet),
+    1/32. amount runs from 0 (no movement) to 1 (every start lands on the grid);
+    lower values pull notes only part of the way, which keeps some feel.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - grid: One of 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32
+    - amount: 0.0 to 1.0, default 1.0
+    - confirm: false = preview only (default), true = quantize
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("quantize_clip")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "grid": grid,
+            "amount": amount,
+        }
+        if not confirm:
+            preview = ableton.send_command("quantize_clip", dict(params, dry_run=True))
+            return (
+                "NOT QUANTIZED (preview only). This would happen: "
+                + json.dumps(preview, indent=2)
+                + "\nTo quantize, call quantize_clip again with the same arguments "
+                "and confirm=true."
+            )
+        result = ableton.send_command("quantize_clip", dict(params, dry_run=False))
+        return "Quantized clip. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error quantizing clip: {str(e)}")
+        return f"Error quantizing clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_loop")
+@trajectory_tool("set_clip_loop")
+def set_clip_loop(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    loop_start: float,
+    loop_end: float,
+    looping: Optional[bool] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set the loop range of a Session clip, in beats, and optionally turn
+    looping on or off. Notes are not touched (a shorter loop only stops the
+    later notes from playing).
+
+    loop_start must be >= 0 and before loop_end. The Remote Script writes the
+    two markers in an order Live accepts, then reads the clip back; if Live
+    did not keep the values the previous loop is restored and an error is
+    returned. Use get_clip_info to see the current loop first.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - loop_start: Loop start in beats from the clip start
+    - loop_end: Loop end in beats; must be greater than loop_start
+    - looping: true/false to switch clip looping, omit to leave it unchanged
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_clip_loop")
+        if missing:
+            return missing
+        ableton = get_ableton_connection()
+        params = {
+            "track_index": track_index,
+            "clip_index": clip_index,
+            "loop_start": loop_start,
+            "loop_end": loop_end,
+        }
+        if looping is not None:
+            params["looping"] = looping
+        result = ableton.send_command("set_clip_loop", params)
+        return "Loop set. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting clip loop: {str(e)}")
+        return f"Error setting clip loop: {str(e)}"
+
 
 @mcp.tool()
 @rich_telemetry_tool("set_clip_name")
