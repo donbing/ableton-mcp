@@ -2455,6 +2455,11 @@ def create_locator(
     renamed instead of toggled off. Time is in beats from the start of the
     arrangement (e.g. 0.0 = start, 16.0 = bar 5 in 4/4).
 
+    The transport must be stopped: the playhead is moved to the locator time,
+    Live is given a moment to apply it, and it is put back afterwards (this
+    takes about a second). Live puts locators on whole beats, so a fractional
+    time lands on a beat and the reply says so.
+
     Parameters:
     - name: The locator label (e.g. "Chorus", "Verse 1", "Drop")
     - time: Beat position where the locator should sit
@@ -2471,10 +2476,13 @@ def create_locator(
             "create_locator",
             {"name": name, "time": time}
         )
-        return (
+        message = (
             f"Locator '{result.get('name', name)}' set at beat "
             f"{result.get('time', time)}"
         )
+        if result.get("note"):
+            message += f". {result['note']}"
+        return message
     except Exception as e:
         logger.error(f"Error creating locator: {str(e)}")
         return f"Error creating locator: {str(e)}"

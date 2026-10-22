@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.1**, **74 MCP tools** (upstream: 37), 852 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.2**, **74 MCP tools** (upstream: 37), 861 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -17,7 +17,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
 | Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
 
-**Verification status.** Release `v1.9.1-fork.1` and the slices ported in `v1.10.0-fork.1` were run on a real Live 12 Lite set (2026-10-22, results in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Run and working: scenes (create, rename, duplicate, delete, fire), stop_all_clips, time signature, metronome, arrangement loop, return device load/delete, clip loop, quantize, note remove, note edit, arrangement clip delete, audio-clip info/warp/gain/pitch, guarded delete_track, undo preview. One bug found and fixed in 1.10.1: `apply_note_modifications` was rejected by Live in every direct argument shape, so it now falls back to remove + `set_notes` (note ids change; verified by value; the reply says `method`). Still NOT run on Live: `jump_to_cue` with real cue points, `undo`/`redo` with `confirm=true`, group-track delete, Arrangement-clip audio properties, upstream PR #143 export. Every destructive tool previews by default.
+**Verification status.** Release `v1.9.1-fork.1` and the slices ported in `v1.10.0-fork.1` were run on a real Live 12 Lite set (2026-10-22, results in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Run and working: scenes (create, rename, duplicate, delete, fire), stop_all_clips, time signature, metronome, arrangement loop, return device load/delete, clip loop, quantize, note remove, note edit, arrangement clip delete, audio-clip info/warp/gain/pitch, guarded delete_track, undo preview. One bug found and fixed in 1.10.1: `apply_note_modifications` was rejected by Live in every direct argument shape, so it now falls back to remove + `set_notes` (note ids change; verified by value; the reply says `method`). `create_locator` was rewritten in 1.10.2 and run on Live (it now moves the playhead, waits for Live to apply it, toggles the cue, reads it back and restores the playhead; it refuses while the transport plays; Live puts locators on whole beats), and `jump_to_cue` was run with real cue points. Still NOT run on Live: `undo`/`redo` with `confirm=true`, group-track delete, Arrangement-clip audio properties, upstream PR #143 export. Every destructive tool previews by default.
 
 | Ported in 1.10.0 (run on a real Live 12 Lite on 2026-10-22, see status) | Tools | Origin |
 |---|---|---|
@@ -61,7 +61,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
 
-Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **reliable create/delete locator** (the current toggle races with the playhead move: two designs failed on real Live); return/master device parameters; device reorder; browser search and preview.
+Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **delete locator** tool (creating one is reliable since 1.10.2: the earlier races came from toggling in the same tick as the playhead move); return/master device parameters; device reorder; browser search and preview.
 
 ## Reconciling with upstream
 

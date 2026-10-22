@@ -42,7 +42,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.1"
+SCRIPT_VERSION = "1.10.2"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -451,6 +451,12 @@ class AbletonMCP(ControlSurface):
                 # _get_meters.
                 response["result"] = self._get_meters(
                     params.get("seconds", 2.0), params.get("hz", 20))
+            elif command_type == "create_locator":
+                # Deliberately NOT one main-thread task: it moves the playhead,
+                # waits for Live to apply it and only then toggles the cue. See
+                # _create_locator.
+                response["result"] = self._create_locator(
+                    params.get("name", ""), params.get("time", 0.0))
             # Commands that modify Live's state should be scheduled on the main thread
             elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
                                  "set_track_mute", "set_track_solo", "set_track_arm",
@@ -474,7 +480,6 @@ class AbletonMCP(ControlSurface):
                                  "switch_to_arrangement_view", "set_current_song_time",
                                  "duplicate_session_clip_to_arrangement",
                                  "map_rack_magnitude", "inspect_rack",
-                                 "create_locator",
                                  # Mixer – must run on the main thread
                                  "set_track_volume", "set_track_panning", "set_send",
                                  # Session scenes – must run on the main thread
@@ -665,10 +670,6 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             device_index = params.get("device_index", 0)
                             result = self._inspect_rack(track_index, device_index)
-                        elif command_type == "create_locator":
-                            name = params.get("name", "")
-                            time_val = params.get("time", 0.0)
-                            result = self._create_locator(name, time_val)
                         # ── Mixer commands ─────────────────────────────────────────
                         elif command_type == "set_track_volume":
                             result = self._set_track_volume(
@@ -3289,56 +3290,118 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error duplicating clip to arrangement: " + str(e))
             raise
 
+    # Seconds to wait after writing Song.current_song_time before toggling the
+    # cue. Live applies the new position one tick later, and Song.set_or_delete_cue
+    # uses the position that is already applied (measured on Live 12 Lite,
+    # 2026-10-23: toggling in the same tick put the cue at the OLD playhead and
+    # deleted a locator that was there).
+    LOCATOR_SETTLE_SECONDS = 0.4
+
     def _create_locator(self, name, time_val):
         """Create (or rename) a named locator at the given beat position.
 
-        Uses Live's Song.set_or_delete_cue(), which toggles a cue at the
-        current_song_time. We temporarily move the playhead, toggle, then
-        restore. If a cue already exists at that time we just rename it
-        instead of toggling (which would delete it).
+        Runs on the socket thread in steps, with each Live call on the main
+        thread: move the playhead, wait for Live to apply it, toggle the cue,
+        read it back, then put the playhead back. If a cue already exists at
+        the time it is only renamed (toggling would delete it). Refused while
+        the transport is playing, because the playhead moves during the wait.
         """
-        try:
-            song = self._song
-            target_time = float(time_val)
-            tolerance = 1e-3
+        target_time = float(time_val)
+        if not math.isfinite(target_time) or target_time < 0:
+            raise ValueError("time must be a number of beats >= 0")
+        tolerance = 1e-3
+        settle = self.LOCATOR_SETTLE_SECONDS
 
-            # See if a cue already exists at (or near) the target time
-            existing = None
-            for cue in song.cue_points:
+        def find_cue():
+            for cue in self._song.cue_points:
                 if abs(cue.time - target_time) < tolerance:
-                    existing = cue
-                    break
+                    return cue
+            return None
 
-            original_time = song.current_song_time
+        def prepare():
+            song = self._song
+            existing = find_cue()
+            if existing is not None:
+                return {"existing": True, "original": song.current_song_time}
+            if song.is_playing:
+                raise Exception(
+                    "Stop playback before creating a locator: the playhead has to be "
+                    "moved to the locator time and it would keep running")
+            before = [c.time for c in song.cue_points]
+            original = song.current_song_time
+            song.current_song_time = target_time
+            return {"existing": False, "original": original, "before": before}
 
-            if existing is None:
-                # Move playhead, toggle to create, then locate the new cue
-                song.current_song_time = target_time
-                song.set_or_delete_cue()
-                for cue in song.cue_points:
-                    if abs(cue.time - target_time) < tolerance:
-                        existing = cue
-                        break
-                # Restore playhead
-                try:
-                    song.current_song_time = original_time
-                except Exception:
-                    pass
+        def toggle():
+            # No read-back guard here: current_song_time reads back the value
+            # that was just written even while Live has not applied it yet.
+            self._song.set_or_delete_cue()
 
-            if existing is None:
-                raise Exception("Failed to create cue at time " + str(target_time))
+        try:
+            state = self._call_on_main_thread(prepare)
+            if not state["existing"]:
+                time.sleep(settle)
+                self._call_on_main_thread(toggle)
+                time.sleep(settle)
 
-            if name:
-                try:
-                    existing.name = str(name)
-                except Exception as e:
-                    self.log_message("Could not rename locator: " + str(e))
+            def new_cue():
+                known = state.get("before", [])
+                for candidate in self._song.cue_points:
+                    if not any(abs(candidate.time - t) < tolerance for t in known):
+                        return candidate
+                return None
 
-            return {
-                "success": True,
-                "time": existing.time,
-                "name": existing.name,
-            }
+            def inspect():
+                cue = find_cue()
+                if cue is None and not state["existing"]:
+                    # Song.set_or_delete_cue puts the cue on a whole beat, so a
+                    # fractional time lands up to one beat earlier.
+                    candidate = new_cue()
+                    if candidate is not None and abs(candidate.time - target_time) < 1.0:
+                        cue = candidate
+                return cue, new_cue()
+
+            cue, created = self._call_on_main_thread(inspect)
+            if cue is None and created is not None:
+                # A cue appeared somewhere else: Live toggled at the old playhead.
+                # Live has moved the playhead onto it, so toggling again removes it.
+                stray = created.time
+                self._call_on_main_thread(
+                    lambda: setattr(self._song, "current_song_time", stray))
+                time.sleep(settle)
+                self._call_on_main_thread(self._song.set_or_delete_cue)
+                time.sleep(settle)
+
+            def finish():
+                song = self._song
+                if not state["existing"]:
+                    try:
+                        song.current_song_time = state["original"]
+                    except Exception:
+                        pass
+                if cue is None:
+                    raise Exception(
+                        "Failed to create a cue at beat %s: Live did not apply the playhead "
+                        "move%s. The Set has %d cue point(s), it had %d."
+                        % (target_time,
+                           "; the stray cue it made at beat %s was removed" % created.time
+                           if created is not None else "",
+                           len(song.cue_points), len(state.get("before", []))))
+                if name:
+                    try:
+                        cue.name = str(name)
+                    except Exception as e:
+                        self.log_message("Could not rename locator: " + str(e))
+                reply = {"success": True, "time": cue.time, "name": cue.name,
+                         "created": not state["existing"],
+                         "cue_count": len(song.cue_points)}
+                if abs(cue.time - target_time) >= tolerance:
+                    reply["requested_time"] = target_time
+                    reply["note"] = ("Live puts locators on whole beats: the cue is at beat %s, "
+                                     "not %s" % (cue.time, target_time))
+                return reply
+
+            return self._call_on_main_thread(finish)
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
             raise
