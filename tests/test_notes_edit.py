@@ -134,6 +134,10 @@ class FakeClip(object):
                      and from_time <= n.start_time < from_time + time_span)
 
     def apply_note_modifications(self, notes):
+        # Real Live (12 Lite, 2026-10-22) rejects a list with "did not match C++ signature".
+        if not isinstance(notes, tuple):
+            raise TypeError("Python argument types did not match C++ signature: got %s"
+                            % type(notes).__name__)
         ids = [n.note_id for n in notes]
         self.apply_calls.append(ids)
         by_id = dict((n.note_id, n) for n in self.notes)

@@ -3084,7 +3084,8 @@ class AbletonMCP(ControlSurface):
                 for field in NOTE_EDIT_FIELDS:
                     if change["after"][field] != change["before"][field]:
                         setattr(note, field, change["after"][field])
-            applier(to_apply)
+            # Live's binding rejects a list here ("did not match C++ signature"); it takes a tuple.
+            applier(tuple(to_apply))
 
             reread = {}
             for note in getter(0, 128, 0.0, read_span):
