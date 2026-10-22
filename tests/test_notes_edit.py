@@ -154,6 +154,12 @@ class FakeClip(object):
                      and from_time <= n.start_time < from_time + time_span)
         self.notes = [n for n in self.notes if id(n) not in doomed]
 
+    def set_notes(self, notes):
+        # Legacy API: adds the notes, and Live hands out new ids.
+        for pitch, start, duration, velocity, mute in notes:
+            next_id = max([n.note_id for n in self.notes] + [0]) + 1
+            self.notes.append(FakeNote(next_id, pitch, start, duration, velocity, mute))
+
     def quantize(self, grid, amount):
         self.quantize_calls.append((grid, amount))
         size = {1: 1.0, 2: 0.5, 3: 1.0 / 3, 5: 0.25, 6: 1.0 / 6, 8: 0.125}[grid]
@@ -605,6 +611,19 @@ def test_edit_falls_back_to_handing_over_every_note_when_live_rejects_the_edited
     assert result["method"] == "all notes tuple"
     assert result["verified"] is True
     assert note(clip, 1).pitch == 40
+
+
+def test_edit_last_resort_replaces_notes_and_verifies_by_value(inst, clip, monkeypatch):
+    def refuse(notes):
+        raise TypeError("did not match C++ signature")
+    monkeypatch.setattr(clip, "apply_note_modifications", refuse)
+    count = len(clip.notes)
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 40, "start_time": 0.5}], dry_run=False))
+    assert result["method"].startswith("remove + set_notes")
+    assert result["note_ids_changed"] is True
+    assert result["verified"] is True
+    assert len(clip.notes) == count
+    assert any(n.pitch == 40 and n.start_time == 0.5 for n in clip.notes)
 
 
 def test_edit_names_every_attempt_when_live_rejects_all_of_them(inst, clip, monkeypatch):

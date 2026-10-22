@@ -3088,10 +3088,23 @@ class AbletonMCP(ControlSurface):
             result["method"] = method
 
             reread = {}
-            for note in getter(0, 128, 0.0, read_span):
+            reread_notes = list(getter(0, 128, 0.0, read_span))
+            for note in reread_notes:
                 note_id = getattr(note, "note_id", None)
                 if note_id is not None:
                     reread[int(note_id)] = self._note_summary(note)
+            if method.startswith("remove + set_notes"):
+                # Live gave the re-added notes new ids: find each edit by its values.
+                reread = {}
+                summaries = [self._note_summary(n) for n in reread_notes]
+                for change in changes:
+                    wanted = change["after"]
+                    for summary in summaries:
+                        if (summary["pitch"] == wanted["pitch"]
+                                and abs(summary["start_time"] - wanted["start_time"]) <= 1e-6):
+                            reread[change["note_id"]] = summary
+                            break
+                result["note_ids_changed"] = True
             mismatches = []
             for change in changes:
                 actual = reread.get(change["note_id"])
