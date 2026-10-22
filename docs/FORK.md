@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.0**, **74 MCP tools** (upstream: 37), 849 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.1**, **74 MCP tools** (upstream: 37), 852 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -17,9 +17,9 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
 | Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
 
-**Verification status.** The first table (release `v1.9.1-fork.1`) was run on a real Live 12 Lite set. The second table was ported from open upstream PRs in release `v1.10.0-fork.1` and are tested **only against a mocked LOM: NOT run on a real Live yet** (tracked in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Treat them as "should work, please report". Every destructive one previews by default and needs `confirm=true` plus the matching name(s).
+**Verification status.** Release `v1.9.1-fork.1` and the slices ported in `v1.10.0-fork.1` were run on a real Live 12 Lite set (2026-10-22, results in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Run and working: scenes (create, rename, duplicate, delete, fire), stop_all_clips, time signature, metronome, arrangement loop, return device load/delete, clip loop, quantize, note remove, note edit, arrangement clip delete, audio-clip info/warp/gain/pitch, guarded delete_track, undo preview. One bug found and fixed in 1.10.1: `apply_note_modifications` was rejected by Live in every direct argument shape, so it now falls back to remove + `set_notes` (note ids change; verified by value; the reply says `method`). Still NOT run on Live: `jump_to_cue` with real cue points, `undo`/`redo` with `confirm=true`, group-track delete, Arrangement-clip audio properties, upstream PR #143 export. Every destructive tool previews by default.
 
-| Ported in 1.10.0 (**not run on Live**) | Tools | Origin |
+| Ported in 1.10.0 (run on a real Live 12 Lite on 2026-10-22, see status) | Tools | Origin |
 |---|---|---|
 | Delete Arrangement clips | `delete_arrangement_clips(track_index, expected_name, start_time, end_time, confirm)`: clips that START in [start, end), refuses more than 64 matches | upstream #110 (Leo) and #119 (mateogon), authorship kept |
 | Delete device | `delete_device(track_index, device_index, expected_name, expected_device_name, confirm, track_type)` | upstream #23 (zzstoatzz), authorship kept |

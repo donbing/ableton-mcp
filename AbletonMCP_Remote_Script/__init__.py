@@ -42,7 +42,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.0"
+SCRIPT_VERSION = "1.10.1"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
