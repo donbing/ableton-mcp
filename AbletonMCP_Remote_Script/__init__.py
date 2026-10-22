@@ -3084,8 +3084,8 @@ class AbletonMCP(ControlSurface):
                 for field in NOTE_EDIT_FIELDS:
                     if change["after"][field] != change["before"][field]:
                         setattr(note, field, change["after"][field])
-            # Live's binding rejects a list here ("did not match C++ signature"); it takes a tuple.
-            applier(tuple(to_apply))
+            method = self._apply_modified_notes(clip, applier, to_apply, live_notes, changes)
+            result["method"] = method
 
             reread = {}
             for note in getter(0, 128, 0.0, read_span):
@@ -3116,6 +3116,36 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error applying note modifications: " + str(e))
             raise
+
+    def _apply_modified_notes(self, clip, applier, to_apply, live_notes, changes):
+        """Hand edited notes to Live and return the method that worked.
+
+        Real Live 12 Lite rejected both a list and a tuple of just the edited
+        notes ("did not match C++ signature", run of 2026-10-22), so try the
+        shapes in turn: the edited notes, then every note that was read (the
+        pattern AbletonOSC uses), then remove + set_notes as a last resort
+        (this one drops extra note fields such as probability and the note id).
+        """
+        errors = []
+        for label, argument in (("edited list", list(to_apply)),
+                                ("edited tuple", tuple(to_apply)),
+                                ("all notes tuple", tuple(live_notes))):
+            try:
+                applier(argument)
+                return label
+            except Exception as e:
+                errors.append("%s: %s" % (label, str(e).replace("\n", " ")[:160]))
+                self.log_message("apply_note_modifications with %s failed: %s" % (label, e))
+        remover = getattr(clip, "remove_notes_extended", None)
+        if remover is None or not hasattr(clip, "set_notes"):
+            raise Exception("Live rejected every way of applying the note edits: " + " | ".join(errors))
+        for change in changes:
+            before = change["before"]
+            remover(before["pitch"], 1, before["start_time"] - 1e-4, 2e-4)
+        clip.set_notes(tuple(
+            (c["after"]["pitch"], c["after"]["start_time"], c["after"]["duration"],
+             c["after"]["velocity"], c["after"]["mute"]) for c in changes))
+        return "remove + set_notes (extra note fields reset)"
 
     def _quantize_clip(self, track_index, clip_index, grid, amount=1.0, dry_run=True):
         """Preview or perform Clip.quantize on a Session MIDI clip.

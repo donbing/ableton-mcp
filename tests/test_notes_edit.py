@@ -595,6 +595,27 @@ def test_a_note_moved_beyond_the_clip_end_is_still_verified(inst, clip):
     assert note(clip, 1).start_time == 6.0
 
 
+def test_edit_falls_back_to_handing_over_every_note_when_live_rejects_the_edited_ones(
+        inst, clip, monkeypatch):
+    real = clip.apply_note_modifications
+    monkeypatch.setattr(clip, "apply_note_modifications",
+                        lambda notes: real(notes) if len(notes) == len(clip.notes)
+                        else (_ for _ in ()).throw(TypeError("did not match C++ signature")))
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
+    assert result["method"] == "all notes tuple"
+    assert result["verified"] is True
+    assert note(clip, 1).pitch == 40
+
+
+def test_edit_names_every_attempt_when_live_rejects_all_of_them(inst, clip, monkeypatch):
+    def refuse(notes):
+        raise TypeError("did not match C++ signature")
+    monkeypatch.setattr(clip, "apply_note_modifications", refuse)
+    monkeypatch.delattr(type(clip), "remove_notes_extended", raising=False)
+    message = err(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
+    assert "every way of applying" in message and "edited list" in message and "all notes tuple" in message
+
+
 def test_a_value_live_did_not_keep_is_flagged(inst, clip, monkeypatch):
     monkeypatch.setattr(clip, "apply_note_modifications", lambda notes: None)
     result = ok(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
