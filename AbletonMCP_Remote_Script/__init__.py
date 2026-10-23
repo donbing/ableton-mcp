@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.16"
+SCRIPT_VERSION = "1.10.17"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -167,6 +167,7 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "configure_simpler",
     "get_song_scale",
     "get_grooves",
     "insert_device",
@@ -573,6 +574,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
                                  "press_dialog_button",
+                                 "configure_simpler",
                                  "insert_device",
                                  "move_device",
                                  "duplicate_device",
@@ -850,6 +852,13 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0), params.get("clip_index", 0),
                                 params.get("to_track_index"), params.get("to_clip_index"),
                                 params.get("overwrite", False))
+                        elif command_type == "configure_simpler":
+                            result = self._configure_simpler(
+                                params.get("track_index", 0), params.get("device_index"),
+                                params.get("expected_name"), params.get("expected_device_name"),
+                                params.get("sample_path"), params.get("playback_mode"),
+                                params.get("retrigger"), params.get("slicing_playback_mode"),
+                                params.get("track_type", "track"))
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -6021,6 +6030,75 @@ class AbletonMCP(ControlSurface):
                     "copied": bool(dest.has_clip), "clip_name": dest.clip.name if dest.has_clip else None}
         except Exception as e:
             self.log_message("Error copying a clip to a slot: " + str(e))
+            raise
+
+    SIMPLER_MODES = {"classic": 0, "one-shot": 1, "oneshot": 1, "slicing": 2}
+    SIMPLER_SLICING = {"mono": 0, "poly": 1, "thru": 2}
+
+    def _simpler_state(self, device):
+        state = {"device": device.name, "class": device.class_name}
+        for key, attr, names in (("playback_mode", "playback_mode", self.SIMPLER_MODES),
+                                 ("slicing_playback_mode", "slicing_playback_mode", self.SIMPLER_SLICING)):
+            try:
+                value = int(getattr(device, attr))
+                state[key] = next((n for n, v in names.items() if v == value and n != "oneshot"), value)
+            except Exception:
+                pass
+        try:
+            state["retrigger"] = bool(device.retrigger)
+        except Exception:
+            pass
+        try:
+            state["sample_file"] = device.sample.file_path
+        except Exception:
+            state["sample_file"] = None
+        return state
+
+    def _configure_simpler(self, track_index, device_index, expected_name, expected_device_name,
+                           sample_path=None, playback_mode=None, retrigger=None,
+                           slicing_playback_mode=None, track_type="track"):
+        """Put a sample of your own into a Simpler and set how it plays.
+
+        sample_path: absolute path of an audio file (replaces the loaded sample; the file's own timing).
+        playback_mode: "classic" (key held plays it, envelopes shape it), "one-shot" (plays to the end
+        on a note-on, a drum hit) or "slicing". retrigger: a repeated note restarts the sample.
+        slicing_playback_mode: "mono", "poly" or "thru". Returns the state read back.
+        """
+        try:
+            track = self._named_track(track_index, expected_name, track_type)
+            device = self._named_device(track, device_index, expected_device_name)
+            if getattr(device, "class_name", "") != "OriginalSimpler":
+                raise ValueError("Device '%s' is a %s, not a Simpler (class OriginalSimpler)"
+                                 % (device.name, getattr(device, "class_name", "?")))
+            if sample_path is None and playback_mode is None and retrigger is None and slicing_playback_mode is None:
+                raise ValueError("Give sample_path, playback_mode, retrigger and/or slicing_playback_mode")
+            before = self._simpler_state(device)
+            if sample_path is not None:
+                if not isinstance(sample_path, str) or not os.path.isabs(sample_path) or not os.path.isfile(sample_path):
+                    raise ValueError("sample_path must be the absolute path of an existing audio file, got %r" % (sample_path,))
+                if not hasattr(device, "replace_sample"):
+                    raise RuntimeError("This version of Live has no Simpler.replace_sample")
+                try:
+                    device.replace_sample(sample_path)
+                except Exception as e:
+                    raise ValueError("Live could not load that file into the Simpler: %s" % str(e).strip()[:120])
+            if playback_mode is not None:
+                key = str(playback_mode).strip().lower()
+                if key not in self.SIMPLER_MODES:
+                    raise ValueError("playback_mode must be classic, one-shot or slicing")
+                device.playback_mode = self.SIMPLER_MODES[key]
+            if retrigger is not None:
+                if not isinstance(retrigger, bool):
+                    raise TypeError("retrigger must be true or false")
+                device.retrigger = retrigger
+            if slicing_playback_mode is not None:
+                key = str(slicing_playback_mode).strip().lower()
+                if key not in self.SIMPLER_SLICING:
+                    raise ValueError("slicing_playback_mode must be mono, poly or thru")
+                device.slicing_playback_mode = self.SIMPLER_SLICING[key]
+            return {"track_name": track.name, "before": before, "after": self._simpler_state(device)}
+        except Exception as e:
+            self.log_message("Error configuring the Simpler: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
