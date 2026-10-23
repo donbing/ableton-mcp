@@ -117,6 +117,17 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "insert_device",
+            "move_device",
+            "duplicate_device",
+            "set_song_scale",
+            "set_scene_tempo",
+            "set_groove",
+            "set_clip_groove",
+            "edit_warp_marker",
+            "duplicate_clip_loop",
+            "copy_note_region",
+            "copy_clip_to_slot",
             "press_dialog_button",
             "set_track_monitoring", "duplicate_track",
             "replace_clip_notes", "set_color",
@@ -3433,6 +3444,469 @@ def press_dialog_button(
     except Exception as e:
         logger.error(f"Error pressing a dialog button: {str(e)}")
         return f"Error pressing a dialog button: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("insert_device")
+@trajectory_tool("insert_device")
+def insert_device(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    device_name: str,
+    index: int = -1,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Insert a native Live device by name, without opening the browser: "Compressor", "Reverb",
+    "Utility", "Limiter", "Drum Rack", "Simpler", "Auto Filter"... The name is the one Live shows.
+    index is the chain position (-1 = the end). Live answers "not available" for a device this edition
+    lacks (Live Lite has no "EQ Eight" or "Glue Compressor") or "not found" for a wrong name. Needs Live
+    12.3 or newer. Returns the device chain before and after. For a preset or a sample use
+    search_browser_items and load_instrument_or_effect.
+
+    Parameters:
+    - track_index: Index within the chosen track_type
+    - expected_name: The track's exact current name (required safety check)
+    - device_name: Native device name
+    - index: Chain position, -1 = the end
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        return _json_call("insert_device", {"track_index": track_index, "expected_name": expected_name,
+                                            "device_name": device_name, "index": index,
+                                            "track_type": track_type}, "inserting a device")
+    except Exception as e:
+        logger.error(f"Error in insert_device: {str(e)}")
+        return f"Error in insert_device: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("move_device")
+@trajectory_tool("move_device")
+def move_device(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    new_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    track_type: str = "track",
+    to_track_index: Optional[int] = None,
+    to_expected_name: Optional[str] = None,
+    to_track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Move a device to another position of its chain (signal order matters: EQ before or after the
+    compressor), or to another track. Live refuses combinations that make no sense (an instrument after an
+    effect, an audio effect on a MIDI track before an instrument). Returns the chains afterwards.
+
+    Parameters:
+    - track_index: Track that holds the device
+    - device_index: Index of the device in its chain
+    - new_index: Position in the destination chain (0 = first)
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - track_type: "track" (default), "return" or "master"
+    - to_track_index: Destination track, to move the device to another track
+    - to_expected_name: The destination track's exact current name (required with to_track_index)
+    - to_track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        if to_track_index is not None and to_expected_name is None:
+            return "Error: to_expected_name is required with to_track_index."
+        params = {"track_index": track_index, "device_index": device_index, "new_index": new_index,
+                  "expected_name": expected_name, "expected_device_name": expected_device_name,
+                  "track_type": track_type}
+        if to_track_index is not None:
+            params.update({"to_track_index": to_track_index, "to_expected_name": to_expected_name,
+                           "to_track_type": to_track_type})
+        return _json_call("move_device", params, "moving a device")
+    except Exception as e:
+        logger.error(f"Error in move_device: {str(e)}")
+        return f"Error in move_device: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_device")
+@trajectory_tool("duplicate_device")
+def duplicate_device(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Duplicate a device with its settings; the copy goes right after it (parallel compression, a second
+    reverb with another setting, a copy of an amp). Returns the chain afterwards.
+
+    Parameters:
+    - track_index: Track that holds the device
+    - device_index: Index of the device in its chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        return _json_call("duplicate_device", {"track_index": track_index, "device_index": device_index,
+                                               "expected_name": expected_name,
+                                               "expected_device_name": expected_device_name,
+                                               "track_type": track_type}, "duplicating a device")
+    except Exception as e:
+        logger.error(f"Error in duplicate_device: {str(e)}")
+        return f"Error in duplicate_device: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_song_scale")
+def get_song_scale(
+    ctx: Context,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read the set's key and scale: root note, scale name, whether scale mode (in-key highlighting) is on,
+    and the notes of the scale. Live's default is C Major with scale mode on, which is not necessarily the
+    song's key: ask or measure before relying on it.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_song_scale", {}, "reading the scale")
+    except Exception as e:
+        logger.error(f"Error in get_song_scale: {str(e)}")
+        return f"Error in get_song_scale: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_song_scale")
+@trajectory_tool("set_song_scale")
+def set_song_scale(
+    ctx: Context,
+    root_note: Optional[str] = None,
+    scale_name: Optional[str] = None,
+    scale_mode: Optional[bool] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set the set's key and scale, so Live highlights the in-key notes in every MIDI clip and Scale-aware
+    devices follow. root_note: a note name ("C", "F#", "Bb") or 0-11 as text. scale_name as Live shows it:
+    Major, Minor, Dorian, Mixolydian, Lydian, Phrygian, Locrian, Whole Tone, Minor Pentatonic, Major
+    Pentatonic, Harmonic Minor, Melodic Minor, ... (an unknown name is refused). It does not transpose
+    anything. Returns the scale before and after.
+
+    Parameters:
+    - root_note: Key, as a name or 0-11 (0 = C)
+    - scale_name: Scale name
+    - scale_mode: true/false: Live's in-key note highlighting
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {}
+        if root_note is not None:
+            params["root_note"] = int(root_note) if str(root_note).strip().isdigit() else root_note
+        for key, value in (("scale_name", scale_name), ("scale_mode", scale_mode)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_song_scale", params, "setting the scale")
+    except Exception as e:
+        logger.error(f"Error in set_song_scale: {str(e)}")
+        return f"Error in set_song_scale: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_scene_tempo")
+@trajectory_tool("set_scene_tempo")
+def set_scene_tempo(
+    ctx: Context,
+    scene_index: int,
+    tempo: Optional[float] = None,
+    numerator: Optional[int] = None,
+    denominator: Optional[int] = None,
+    clear: bool = False,
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Give a Session scene its own tempo and/or time signature: launching the scene changes the set's tempo
+    (a slow verse, a faster chorus, a 6/8 bridge). clear=true removes both from the scene. Returns what
+    the scene holds afterwards. A scene with no tempo of its own leaves the set's tempo alone.
+
+    Parameters:
+    - scene_index: Index of the scene (see get_scenes)
+    - tempo: BPM, 20 to 999
+    - numerator, denominator: Time signature (give both; denominator 1, 2, 4, 8 or 16)
+    - clear: true = remove the scene's own tempo and time signature
+    - expected_name: Optional safety check: the scene's exact current name ("" if unnamed)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"scene_index": scene_index, "clear": clear}
+        for key, value in (("tempo", tempo), ("numerator", numerator), ("denominator", denominator),
+                           ("expected_name", expected_name)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_scene_tempo", params, "setting the scene tempo")
+    except Exception as e:
+        logger.error(f"Error in set_scene_tempo: {str(e)}")
+        return f"Error in set_scene_tempo: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_grooves")
+def get_grooves(
+    ctx: Context,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read the groove pool (the grooves loaded in the set, with timing, quantization, random and velocity
+    amounts) and the global groove and swing amounts. A groove shifts the timing and velocity of a clip's
+    notes the way a drummer would, and is the quickest "humanize". A clip takes one with set_clip_groove.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_grooves", {}, "reading the grooves")
+    except Exception as e:
+        logger.error(f"Error in get_grooves: {str(e)}")
+        return f"Error in get_grooves: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_groove")
+@trajectory_tool("set_groove")
+def set_groove(
+    ctx: Context,
+    groove_index: Optional[int] = None,
+    timing_amount: Optional[float] = None,
+    quantization_amount: Optional[float] = None,
+    random_amount: Optional[float] = None,
+    velocity_amount: Optional[float] = None,
+    groove_amount: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Change one groove's amounts (how much it shifts timing, how much it quantizes first, how much random
+    and velocity it adds) and/or the GLOBAL groove amount (0 to 1.3, 1.0 = 100%, scales every groove).
+    Read the ranges with get_grooves. Returns the pool afterwards.
+
+    Parameters:
+    - groove_index: Which groove of the pool (needed with the four amounts)
+    - timing_amount, quantization_amount, random_amount, velocity_amount: As get_grooves shows them
+    - groove_amount: The global amount
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {}
+        for key, value in (("groove_index", groove_index), ("timing_amount", timing_amount),
+                           ("quantization_amount", quantization_amount), ("random_amount", random_amount),
+                           ("velocity_amount", velocity_amount), ("groove_amount", groove_amount)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_groove", params, "setting the groove")
+    except Exception as e:
+        logger.error(f"Error in set_groove: {str(e)}")
+        return f"Error in set_groove: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_groove")
+@trajectory_tool("set_clip_groove")
+def set_clip_groove(
+    ctx: Context,
+    track_index: int,
+    groove_index: int,
+    clip_index: int = 0,
+    clip_start_time: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Give a clip a groove from the pool (see get_grooves). Works on Session clips and, with
+    clip_start_time, on Arrangement clips. The groove is applied live on playback; the notes are not
+    rewritten, and nothing is heard while the global groove amount is 0 (set it with set_groove).
+    Live's API cannot take a groove away from a clip; to silence one use set_groove (amounts to 0).
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - groove_index: Index in get_grooves
+    - clip_index: Session clip slot (ignored with clip_start_time)
+    - clip_start_time: Start beat of an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index, "groove_index": groove_index}
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
+        return _json_call("set_clip_groove", params, "setting the clip groove")
+    except Exception as e:
+        logger.error(f"Error in set_clip_groove: {str(e)}")
+        return f"Error in set_clip_groove: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("edit_warp_marker")
+@trajectory_tool("edit_warp_marker")
+def edit_warp_marker(
+    ctx: Context,
+    track_index: int,
+    action: str,
+    beat_time: float,
+    clip_index: int = 0,
+    seconds: Optional[float] = None,
+    distance: Optional[float] = None,
+    clip_start_time: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Edit the warp markers of a WARPED audio clip: line a recording up with the grid. Live stretches the
+    audio between markers. Read the current markers with get_audio_clip_info.
+    action "add": the audio at `seconds` into the FILE will play at `beat_time` (beats from the clip start).
+    action "move": the marker at `beat_time` moves by `distance` beats. action "remove": the marker at
+    `beat_time` goes. Typical use: find where a note really falls (scripts/ears onsets), add a marker at its
+    time in the file, and move it to the beat. Undoable. Returns the markers before and after.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - action: "add", "move" or "remove"
+    - beat_time: Beat of the marker (clip beats)
+    - clip_index: Session clip slot (ignored with clip_start_time)
+    - seconds: For "add": position in the audio file, in seconds
+    - distance: For "move": beats to move by (negative = earlier)
+    - clip_start_time: Start beat of an Arrangement clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index, "action": action, "beat_time": beat_time}
+        for key, value in (("seconds", seconds), ("distance", distance), ("clip_start_time", clip_start_time)):
+            if value is not None:
+                params[key] = value
+        return _json_call("edit_warp_marker", params, "editing a warp marker")
+    except Exception as e:
+        logger.error(f"Error in edit_warp_marker: {str(e)}")
+        return f"Error in edit_warp_marker: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_clip_loop")
+@trajectory_tool("duplicate_clip_loop")
+def duplicate_clip_loop(
+    ctx: Context,
+    track_index: int,
+    clip_index: int = 0,
+    clip_start_time: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Make a MIDI clip's loop twice as long, copying its notes (and envelopes) into the new half: a 4-beat
+    pattern becomes 8 beats you can then vary. Undoable. Returns the loop length and note count before and
+    after. (An Arrangement clip's loop is its content loop; its extent on the timeline does not change.)
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot (ignored with clip_start_time)
+    - clip_start_time: Start beat of an Arrangement MIDI clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index}
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
+        return _json_call("duplicate_clip_loop", params, "duplicating the clip loop")
+    except Exception as e:
+        logger.error(f"Error in duplicate_clip_loop: {str(e)}")
+        return f"Error in duplicate_clip_loop: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("copy_note_region")
+@trajectory_tool("copy_note_region")
+def copy_note_region(
+    ctx: Context,
+    track_index: int,
+    region_start: float,
+    region_length: float,
+    destination_time: float,
+    clip_index: int = 0,
+    pitch: int = -1,
+    transposition: int = 0,
+    clip_start_time: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Copy the notes inside a stretch of a MIDI clip to another time in the same clip, all pitches or one
+    pitch, transposed by semitones: repeat a motif a fifth higher (transposition=7), echo a bar, build a
+    sequence. Beats are from the clip start. The destination must start inside the clip (a copy at or after
+    the end would never play). Undoable. Returns the note counts.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - region_start: Start of the stretch to copy, in beats
+    - region_length: Its length in beats
+    - destination_time: Where the copy starts, in beats
+    - clip_index: Session clip slot (ignored with clip_start_time)
+    - pitch: Copy only this MIDI pitch (-1 = all)
+    - transposition: Semitones to transpose the copy by
+    - clip_start_time: Start beat of an Arrangement MIDI clip
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index, "region_start": region_start,
+                  "region_length": region_length, "destination_time": destination_time,
+                  "pitch": pitch, "transposition": transposition}
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
+        return _json_call("copy_note_region", params, "copying a note region")
+    except Exception as e:
+        logger.error(f"Error in copy_note_region: {str(e)}")
+        return f"Error in copy_note_region: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("copy_clip_to_slot")
+@trajectory_tool("copy_clip_to_slot")
+def copy_clip_to_slot(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    to_track_index: int,
+    to_clip_index: int,
+    overwrite: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Copy a Session clip into another slot: another scene of the same track, or a track of the same kind
+    (MIDI to MIDI, audio to audio). The destination slot must be empty unless overwrite is true (then the
+    clip there is deleted first). Undoable.
+
+    Parameters:
+    - track_index, clip_index: The clip to copy
+    - to_track_index, to_clip_index: The destination slot
+    - overwrite: true = replace what is in the destination slot
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("copy_clip_to_slot", {"track_index": track_index, "clip_index": clip_index,
+                                                 "to_track_index": to_track_index,
+                                                 "to_clip_index": to_clip_index,
+                                                 "overwrite": overwrite}, "copying a clip")
+    except Exception as e:
+        logger.error(f"Error in copy_clip_to_slot: {str(e)}")
+        return f"Error in copy_clip_to_slot: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
