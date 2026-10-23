@@ -8,6 +8,7 @@ import json
 import re
 import math
 import threading
+import types
 import collections
 import time
 import traceback
@@ -49,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.11"
+SCRIPT_VERSION = "1.10.12"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -725,8 +726,9 @@ class AbletonMCP(ControlSurface):
                                 params.get("expected_name"), params.get("parameter"),
                                 params.get("device_index"), params.get("arrangement", False),
                                 params.get("clip_start_time"), params.get("points"),
-                                params.get("mode", "steps"), params.get("resolution", 0.125),
-                                params.get("end"), params.get("confirm", False))
+                                params.get("mode", "linear"), params.get("resolution", 0.125),
+                                params.get("end"), params.get("confirm", False),
+                                params.get("shape"))
                         elif command_type == "clear_clip_envelope":
                             result = self._clear_clip_envelope(
                                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -4807,19 +4809,181 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error reading clip envelope: " + str(e))
             raise
 
+    ENVELOPE_SHAPES = ("sine", "triangle", "saw_up", "saw_down", "square",
+                       "random_steps", "random_smooth", "curve")
+    ENVELOPE_JUMP = 1.0 / 128.0     # beats between the two events of a vertical jump
+
+    def _envelope_event(self, time_val, value):
+        """A Live envelope event (a real breakpoint; Live draws straight lines between them)."""
+        try:
+            import Live
+            return Live.Envelope.EnvelopeEvent(float(time_val), float(value))
+        except Exception:
+            return types.SimpleNamespace(time=float(time_val), value=float(value))
+
+    def _envelope_shape_points(self, shape, lo, hi, span):
+        """Turn a shape spec into breakpoints. Returns (points, mode, summary).
+
+        shape: {"type": one of ENVELOPE_SHAPES, "start", "end" (beats, default the
+        clip), "period" beats or "cycles", "min", "max" (parameter units, default the
+        parameter's range), "phase" (0-1 of a cycle; sine starts at the middle going
+        up, phase 0.75 starts at the bottom), "points_per_cycle" (4-128, default 16),
+        "duty" (square, 0.01-0.99), "seed" (random), "exponent" (curve), "invert"}.
+        Straight lines between breakpoints are all Live offers (curve coefficients
+        are ignored), so a sine is drawn with points_per_cycle breakpoints per cycle:
+        16 is within 2% of the amplitude, 32 within 0.5%.
+        """
+        if not isinstance(shape, dict):
+            raise TypeError("shape must be an object like {\"type\": \"sine\", \"period\": 4}")
+        known = set(("type", "start", "end", "period", "cycles", "min", "max", "phase",
+                     "points_per_cycle", "duty", "seed", "exponent", "invert"))
+        unknown = sorted(set(shape) - known)
+        if unknown:
+            raise ValueError("shape has unknown field(s) %s; allowed: %s"
+                             % (", ".join(unknown), ", ".join(sorted(known))))
+        kind = shape.get("type")
+        if kind not in self.ENVELOPE_SHAPES:
+            raise ValueError("shape.type must be one of %s" % ", ".join(self.ENVELOPE_SHAPES))
+        num = self._require_finite_number
+        start = num(shape.get("start", 0.0), "shape.start")
+        end = span if shape.get("end") is None else num(shape["end"], "shape.end")
+        if start < 0 or end <= start or end > span + 1e-9:
+            raise ValueError("shape start/end must satisfy 0 <= start < end <= the clip's length (%s)" % span)
+        vmin = lo if shape.get("min") is None else num(shape["min"], "shape.min")
+        vmax = hi if shape.get("max") is None else num(shape["max"], "shape.max")
+        for label, v in (("min", vmin), ("max", vmax)):
+            if v < lo - 1e-9 or v > hi + 1e-9:
+                raise ValueError("shape.%s %s is outside the parameter's range %s..%s" % (label, v, lo, hi))
+        if vmax < vmin:
+            raise ValueError("shape.max must be >= shape.min")
+        if shape.get("invert") is not None and not isinstance(shape["invert"], bool):
+            raise TypeError("shape.invert must be true or false")
+        invert = bool(shape.get("invert", False))
+        phase = num(shape.get("phase", 0.0), "shape.phase")
+        ppc = shape.get("points_per_cycle", 16)
+        if isinstance(ppc, bool) or not isinstance(ppc, int) or ppc < 4 or ppc > 128:
+            raise ValueError("shape.points_per_cycle must be an integer 4-128")
+        if kind == "curve":
+            period = end - start
+        elif shape.get("period") is not None and shape.get("cycles") is not None:
+            raise ValueError("give shape.period or shape.cycles, not both")
+        elif shape.get("cycles") is not None:
+            cycles = num(shape["cycles"], "shape.cycles")
+            if cycles <= 0:
+                raise ValueError("shape.cycles must be > 0")
+            period = (end - start) / cycles
+        else:
+            period = num(shape.get("period", 4.0), "shape.period")
+        if period < 0.03125:
+            raise ValueError("the period is too short (%s beats; at least 0.03125)" % period)
+        mid, amp = (vmin + vmax) / 2.0, (vmax - vmin) / 2.0
+        sign = -1.0 if invert else 1.0
+
+        def frac(t):
+            return ((t - start) / period + phase) % 1.0
+
+        def at(unit):          # unit in -1..1 -> parameter value
+            return mid + sign * amp * unit
+
+        pts, mode = [], "linear"
+        eps = self.ENVELOPE_JUMP
+        if kind == "sine":
+            n = max(1, int(math.ceil((end - start) / period * ppc)))
+            for k in range(n + 1):
+                t = min(end, start + k * period / ppc)
+                pts.append((t, at(math.sin(2.0 * math.pi * frac(t)))))
+        elif kind == "triangle":
+            times = set([start, end])
+            m = int(math.floor((start - start) / period - 1))
+            while True:
+                for off in (0.25, 0.75):
+                    t = start + period * (m + off - phase)
+                    if start < t < end:
+                        times.add(t)
+                m += 1
+                if start + period * (m - 1 - phase) > end:
+                    break
+            for t in sorted(times):
+                pts.append((t, at(1.0 - 4.0 * abs(((frac(t) + 0.25) % 1.0) - 0.5))))
+        elif kind in ("saw_up", "saw_down"):
+            def saw(t):
+                x = frac(t)
+                return at((2.0 * x - 1.0) if kind == "saw_up" else (1.0 - 2.0 * x))
+            wraps, m = [], int(math.floor(-phase)) - 1
+            while True:
+                t = start + period * (m - phase)
+                if t > end:
+                    break
+                if start + eps < t < end - eps:
+                    wraps.append(t)
+                m += 1
+            pts.append((start, saw(start)))
+            for w in wraps:
+                pts.append((w - eps, saw(w - eps)))
+                pts.append((w, saw(w)))
+            if end - eps > pts[-1][0]:
+                pts.append((end - eps, saw(end - eps)))     # the top of the last ramp, before the clip ends
+            pts.append((end, saw(end)))
+        elif kind == "square":
+            mode = "steps"
+            duty = num(shape.get("duty", 0.5), "shape.duty")
+            if duty < 0.01 or duty > 0.99:
+                raise ValueError("shape.duty must be between 0.01 and 0.99")
+            high, low = at(1.0), at(-1.0)
+            pts.append((start, high if frac(start) < duty else low))
+            times = []
+            m = int(math.floor(-phase)) - 1
+            while True:
+                base = start + period * (m - phase)
+                if base > end:
+                    break
+                for t, value in ((base, high), (base + duty * period, low)):
+                    if start + 1e-9 < t < end - 1e-9:
+                        times.append((t, value))
+                m += 1
+            pts += sorted(times)
+        elif kind in ("random_steps", "random_smooth"):
+            import random
+            rng = random.Random(shape.get("seed", 0))
+            mode = "steps" if kind == "random_steps" else "linear"
+            n = max(1, int(math.ceil((end - start) / period)))
+            for k in range(n + (1 if mode == "linear" else 0)):
+                pts.append((min(end, start + k * period), vmin + (vmax - vmin) * rng.random()))
+            if mode == "steps":
+                pts = [(t, v) for t, v in pts if t < end - 1e-9]
+        else:   # curve
+            exponent = num(shape.get("exponent", 2.0), "shape.exponent")
+            if exponent <= 0 or exponent > 20:
+                raise ValueError("shape.exponent must be between 0 and 20")
+            for k in range(ppc + 1):
+                x = k / float(ppc)
+                value = vmin + (vmax - vmin) * (x ** exponent)
+                pts.append((start + x * (end - start), (vmax + vmin - value) if invert else value))
+        # drop points that landed on the same time with the same value, keep order
+        clean = []
+        for t, v in pts:
+            if clean and abs(clean[-1][0] - t) < 1e-9 and abs(clean[-1][1] - v) < 1e-12:
+                continue
+            clean.append((t, max(lo, min(hi, v))))
+        summary = {"type": kind, "start": start, "end": end, "period": period, "min": vmin,
+                   "max": vmax, "phase": phase, "invert": invert}
+        return clean, mode, summary
+
     def _set_clip_envelope(self, track_index, clip_index, expected_name, parameter,
                            device_index=None, arrangement=False, clip_start_time=None,
-                           points=None, mode="steps", resolution=0.125, end=None,
-                           confirm=False):
+                           points=None, mode="linear", resolution=0.125, end=None,
+                           confirm=False, shape=None):
         """Preview or write a clip's automation of one parameter.
 
+        Give points or shape.
         points: [{"time": beats from the clip start, "value": parameter units}, ...]
-        in increasing time. mode "steps": each value holds until the next point
-        (the last until end, default the clip's end). mode "ramp": values move in
-        straight lines between points, written as steps of `resolution` beats
-        (Live's step insert is the only write that works here). Existing
-        automation of this parameter between the first point and the end is
-        overwritten. Previews unless confirm is exactly True.
+        in increasing time. mode "linear" (default; "ramp" is the same): real
+        breakpoints, Live draws straight lines between them; after the last point the
+        value holds until `end` (default the clip's end). mode "steps": each value
+        holds until the next point. shape: a generated wave (sine, triangle, saw_up,
+        saw_down, square, random_steps, random_smooth, curve), see
+        _envelope_shape_points. Existing automation of this parameter between the first
+        point and the end is replaced. Previews unless confirm is exactly True.
         """
         try:
             do_apply = self._require_confirm_flag(confirm)
@@ -4827,71 +4991,95 @@ class AbletonMCP(ControlSurface):
             track, clip = self._envelope_clip(track_index, clip_index, expected_name, arrangement,
                                               clip_start_time)
             target = self._automation_target(track, parameter, device_index)
-            if mode not in ("steps", "ramp"):
-                raise ValueError("mode must be 'steps' or 'ramp'")
-            res = self._require_finite_number(resolution, "resolution")
-            if res < 0.03125 or res > 4.0:
-                raise ValueError("resolution must be between 0.03125 and 4 beats")
-            if not isinstance(points, (list, tuple)) or not points:
-                raise ValueError("points must be a non-empty list of {time, value}")
+            if mode == "ramp":
+                mode = "linear"
+            if mode not in ("steps", "linear"):
+                raise ValueError("mode must be 'linear' or 'steps' ('ramp' means linear)")
             span = self._clip_span(clip, arrangement)
-            stop = span if end is None else self._require_finite_number(end, "end")
             lo, hi = float(target.min), float(target.max)
-            pts = []
-            last = None
-            for i, pt in enumerate(points):
-                if not isinstance(pt, dict):
-                    raise TypeError("points[%d] must be an object" % i)
-                t = self._require_finite_number(pt.get("time"), "points[%d].time" % i)
-                v = self._require_finite_number(pt.get("value"), "points[%d].value" % i)
-                if t < 0 or t >= span:
-                    raise ValueError("points[%d].time %s is outside the clip (0 to %s beats)" % (i, t, span))
-                if v < lo - 1e-9 or v > hi + 1e-9:
-                    raise ValueError("points[%d].value %s is outside '%s' range %s..%s"
-                                     % (i, v, target.name, lo, hi))
-                if last is not None and t <= last:
-                    raise ValueError("points must be in increasing time (point %d)" % i)
-                last = t
-                pts.append((t, v))
-            if stop <= pts[0][0] or stop > span + 1e-9:
-                raise ValueError("end must be after the first point and not past the clip's end (%s)" % span)
-            steps = []   # (time, length, value)
-            for i, (t, v) in enumerate(pts):
-                nxt = pts[i + 1][0] if i + 1 < len(pts) else stop
-                if mode == "steps":
-                    steps.append((t, nxt - t, v))
-                else:
-                    if i + 1 < len(pts):
-                        v2 = pts[i + 1][1]
-                        n = max(1, int(round((nxt - t) / res)))
-                        for k in range(n):
-                            a = t + (nxt - t) * k / n
-                            b = t + (nxt - t) * (k + 1) / n
-                            steps.append((a, b - a, v + (v2 - v) * k / n))
-                    else:
+            summary = None
+            if shape is not None:
+                if points:
+                    raise ValueError("give points or shape, not both")
+                pts, mode, summary = self._envelope_shape_points(shape, lo, hi, span)
+                stop = summary["end"]
+            else:
+                if not isinstance(points, (list, tuple)) or not points:
+                    raise ValueError("points must be a non-empty list of {time, value} (or give shape)")
+                stop = span if end is None else self._require_finite_number(end, "end")
+                pts = []
+                last = None
+                for i, pt in enumerate(points):
+                    if not isinstance(pt, dict):
+                        raise TypeError("points[%d] must be an object" % i)
+                    t = self._require_finite_number(pt.get("time"), "points[%d].time" % i)
+                    v = self._require_finite_number(pt.get("value"), "points[%d].value" % i)
+                    too_late = t > span + 1e-9 if mode == "linear" else t >= span
+                    if t < 0 or too_late:
+                        raise ValueError("points[%d].time %s is outside the clip (0 to %s beats)" % (i, t, span))
+                    if v < lo - 1e-9 or v > hi + 1e-9:
+                        raise ValueError("points[%d].value %s is outside '%s' range %s..%s"
+                                         % (i, v, target.name, lo, hi))
+                    if last is not None and t <= last:
+                        raise ValueError("points must be in increasing time (point %d)" % i)
+                    last = t
+                    pts.append((t, v))
+                if stop <= pts[0][0] and not (mode == "linear" and len(pts) > 1 and stop >= pts[-1][0]):
+                    raise ValueError("end must be after the first point and not past the clip's end (%s)" % span)
+                if stop > span + 1e-9:
+                    raise ValueError("end must be after the first point and not past the clip's end (%s)" % span)
+            if mode == "steps":
+                steps = []   # (time, length, value)
+                for i, (t, v) in enumerate(pts):
+                    nxt = pts[i + 1][0] if i + 1 < len(pts) else stop
+                    if nxt - t > 1e-9:
                         steps.append((t, nxt - t, v))
-            if len(steps) > self.ENVELOPE_MAX_STEPS:
-                raise ValueError("%d steps; at most %d. Use mode 'steps', a larger resolution or fewer points."
-                                 % (len(steps), self.ENVELOPE_MAX_STEPS))
+                events = []
+                count = len(steps)
+            else:
+                events = list(pts)
+                if stop - events[-1][0] > 1e-6:          # hold the last value until `stop`
+                    events.append((stop, events[-1][1]))
+                steps = []
+                count = len(events)
+            if count > self.ENVELOPE_MAX_STEPS:
+                raise ValueError("%d events; at most %d. Use a longer period, fewer points_per_cycle "
+                                 "or a shorter range." % (count, self.ENVELOPE_MAX_STEPS))
             existing = clip.automation_envelope(target) is not None
             info = {"track_name": track.name, "clip_name": clip.name, "parameter": self._param_facts(target),
-                    "mode": mode, "point_count": len(pts), "step_count": len(steps),
+                    "mode": mode, "point_count": len(pts), "event_count": count,
                     "from": pts[0][0], "to": stop, "replaces_existing_automation": existing,
                     "applied": False, "dry_run": not do_apply}
+            if summary is not None:
+                info["shape"] = summary
             if not do_apply:
                 return info
             env = clip.automation_envelope(target)
             if env is None:
                 env = clip.create_automation_envelope(target)
-            for t, length, v in steps:
-                env.insert_step(float(t), float(length), float(v))
+            if mode == "steps":
+                for t, length, v in steps:
+                    env.insert_step(float(t), float(length), float(v))
+            else:
+                try:
+                    env.delete_events_in_range(float(events[0][0]) - 1e-6, float(stop) + 1e-6)
+                except Exception as e:
+                    self.log_message("delete_events_in_range failed: " + str(e))
+                for t, v in events:
+                    env.create_event(self._envelope_event(t, v))
+            sample = pts if len(pts) <= 16 else pts[::max(1, len(pts) // 16)]
             checks = []
-            for t, v in pts:
-                got = float(env.value_at_time(t + self.ENVELOPE_SAMPLE_OFFSET))
+            worst = 0.0
+            for t, v in sample:
+                got = float(env.value_at_time(min(t + self.ENVELOPE_SAMPLE_OFFSET, stop)))
                 checks.append({"time": t, "wanted": v, "read_back": got})
+                worst = max(worst, abs(got - v))
             tol = (hi - lo) * 0.01 + 1e-6
-            info["verified"] = all(abs(c["wanted"] - c["read_back"]) <= tol for c in checks)
-            info["checks"] = checks
+            if mode == "linear" and any(abs(events[k][0] - events[k + 1][0]) < 0.02 for k in range(len(events) - 1)):
+                tol = (hi - lo) * 0.05      # a vertical jump (saw) reads between its two events
+            info["verified"] = worst <= tol
+            info["max_error"] = worst
+            info["checks"] = checks[:8]
             info["applied"] = True
             return info
         except Exception as e:

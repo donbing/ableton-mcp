@@ -3005,30 +3005,44 @@ def set_clip_envelope(
     track_index: int,
     expected_name: str,
     parameter: str,
-    points: List[Dict[str, float]],
+    points: Optional[List[Dict[str, float]]] = None,
+    shape: Optional[Dict[str, Any]] = None,
     clip_index: int = 0,
     device_index: Optional[int] = None,
-    mode: str = "steps",
-    resolution: float = 0.125,
+    mode: str = "linear",
     end: Optional[float] = None,
     confirm: bool = False,
     user_prompt: str = "",
 ) -> str:
     """
-    Write a clip's automation of one parameter, in two steps. It OVERWRITES that
+    Write a clip's automation of one parameter, in two steps. It REPLACES that
     parameter's automation from the first point to the end of the written span.
+
+    Give either points or shape.
 
     points: [{"time": beats from the clip start, "value": the parameter's own
     units}] in increasing time (a volume of 0.85 is 0 dB; read get_clip_envelope or
-    get_device_parameters for ranges). mode "steps": each value holds until the next
-    point (the last until `end`, default the clip end). mode "ramp": straight lines
-    between points, written as steps of `resolution` beats (Live only lets this
-    write constant stretches). Values outside the parameter's range are an error.
+    get_device_parameters for ranges). mode "linear" (default; "ramp" is the same):
+    real breakpoints, Live draws straight lines between them, so a fade needs only
+    two points; after the last point the value holds until `end` (default the clip's
+    end). mode "steps": each value holds until the next point.
 
-    Step 1: confirm=false (default) previews (parameter range, steps, whether it
-    replaces automation). Step 2: the same call with confirm=true; the reply reads
-    the values back. Clip automation can only target parameters of the clip's own
-    track, and only Session clips can be written (copy the clip into the
+    shape: a generated wave, any of sine, triangle, saw_up, saw_down, square,
+    random_steps, random_smooth, curve. Fields: type (required); start, end (beats,
+    default the whole clip); period (beats) or cycles; min, max (the parameter's
+    own units, default its whole range); phase (0-1 of a cycle: a sine starts at the
+    middle going up, phase 0.75 starts at the bottom); points_per_cycle (4-128,
+    default 16); duty (square, 0.01-0.99); seed (random_*); exponent (curve: min to
+    max over start..end, 1 = straight, 2 = slow start); invert (true flips it).
+    Example, a pan sweep of 4 beats a cycle over the whole clip:
+    {"type": "sine", "period": 4, "min": -0.6, "max": 0.6}. Live only draws straight
+    lines (curve coefficients are ignored), so a sine is made of points_per_cycle
+    breakpoints per cycle: 16 is within 2% of the amplitude, 32 within 0.5%.
+
+    Step 1: confirm=false (default) previews (parameter, point and event counts,
+    whether it replaces automation). Step 2: the same call with confirm=true; the reply
+    reads the values back. Clip automation can only target parameters of the clip's
+    own track, and only Session clips can be written (copy the clip into the
     Arrangement afterwards with duplicate_to_arrangement: the automation comes
     along). Idea from upstream PR #23 (zzstoatzz).
 
@@ -3036,11 +3050,11 @@ def set_clip_envelope(
     - track_index: Track that owns the clip
     - expected_name: The track's exact current name (required safety check)
     - parameter: "volume", "pan", "send A"/"send B", or a device parameter name
-    - points: The breakpoints, as above
+    - points: The breakpoints, as above (or give shape)
+    - shape: A generated wave, as above (or give points)
     - clip_index: Session clip slot
     - device_index: Device holding the parameter; leave out for mixer parameters
-    - mode: "steps" (default) or "ramp"
-    - resolution: Beats per step in ramp mode (0.03125 to 4, default 0.125)
+    - mode: "linear" (default) or "steps"; ignored for shapes (a square holds, the others are linear)
     - end: Where the last point's stretch ends (default the clip end)
     - confirm: false = preview only (default), true = write
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
@@ -3048,10 +3062,12 @@ def set_clip_envelope(
     try:
         if expected_name is None:
             return "Error: expected_name is required (the track's exact current name)."
+        if (points is None) == (shape is None):
+            return "Error: give points or shape (exactly one)."
         params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name,
-                  "parameter": parameter, "points": points, "mode": mode,
-                  "resolution": resolution, "confirm": confirm}
-        for key, value in (("device_index", device_index), ("end", end)):
+                  "parameter": parameter, "mode": mode, "confirm": confirm}
+        for key, value in (("points", points), ("shape", shape), ("device_index", device_index),
+                           ("end", end)):
             if value is not None:
                 params[key] = value
         out = _json_call("set_clip_envelope", params, "writing clip envelope")
