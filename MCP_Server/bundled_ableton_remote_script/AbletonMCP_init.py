@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.9"
+SCRIPT_VERSION = "1.10.10"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -160,6 +160,8 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "set_track_monitoring",
+    "duplicate_track",
     "replace_clip_notes",
     "set_color",
     "get_tracks_overview",
@@ -466,7 +468,7 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_session_info()
             elif command_type == "get_track_info":
                 track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_info(track_index)
+                response["result"] = self._get_track_info(track_index, params.get("track_type", "track"))
             elif command_type == "get_mixer":
                 response["result"] = self._get_mixer(
                     params.get("track_index", 0), params.get("track_type", "track"))
@@ -540,6 +542,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "set_track_monitoring", "duplicate_track",
                                  "replace_clip_notes", "set_color",
                                  "set_clip_envelope", "clear_clip_envelope",
                                  "back_to_arrangement",
@@ -739,6 +742,13 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index"), params.get("clip_index"),
                                 params.get("scene_index"), params.get("track_type", "track"),
                                 params.get("expected_name"))
+                        elif command_type == "set_track_monitoring":
+                            result = self._set_track_monitoring(
+                                params.get("track_index", 0), params.get("state"),
+                                params.get("expected_name"))
+                        elif command_type == "duplicate_track":
+                            result = self._duplicate_track(
+                                params.get("track_index", 0), params.get("expected_name"))
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -945,7 +955,8 @@ class AbletonMCP(ControlSurface):
                     track_index, device_index,
                     name_contains=params.get("name_contains"),
                     limit=params.get("limit"),
-                    include_racks=params.get("include_racks", False))
+                    include_racks=params.get("include_racks", False),
+                    track_type=params.get("track_type", "track"))
             elif command_type == "get_session_snapshot":
                 include_notes = params.get("include_notes", True)
                 include_params = params.get("include_params", True)
@@ -965,6 +976,7 @@ class AbletonMCP(ControlSurface):
                             params.get("device_index", 0),
                             params.get("parameter_index", 0),
                             params.get("value", 0.0),
+                            params.get("track_type", "track"),
                         )
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -1176,9 +1188,21 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting meters: " + str(e))
             raise
 
-    def _get_track_info(self, track_index):
-        """Get information about a track"""
+    def _get_track_info(self, track_index, track_type="track"):
+        """Get information about a track (track_type "return" or "master": its devices and mixer)"""
         try:
+            if (track_type or "track").lower() != "track":
+                track = self._resolve_track(track_index, track_type)
+                return {
+                    "index": track_index if track_type.lower() != "master" else None,
+                    "track_type": track_type.lower(),
+                    "name": track.name,
+                    "volume": track.mixer_device.volume.value,
+                    "panning": track.mixer_device.panning.value,
+                    "devices": [{"index": i, "name": d.name, "class_name": d.class_name,
+                                 "type": self._get_device_type(d)}
+                                for i, d in enumerate(track.devices)],
+                }
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
             
@@ -4916,6 +4940,8 @@ class AbletonMCP(ControlSurface):
         if kind in ("audio", "midi", "group"):
             if getattr(track, "can_be_armed", False):
                 row["arm"] = bool(track.arm)
+            if hasattr(track, "current_monitoring_state"):
+                row["monitoring"] = self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")
             row["session_clips"] = sum(1 for slot in track.clip_slots if slot.has_clip)
             if kind != "group":
                 row["arrangement_clips"] = len(list(track.arrangement_clips))
@@ -5017,6 +5043,63 @@ class AbletonMCP(ControlSurface):
             return {"grid_beats": grid, "totals": totals, "tracks": report}
         except Exception as e:
             self.log_message("Error checking arrangement: " + str(e))
+            raise
+
+    # ── Monitoring and duplicating tracks ─────────────────────────────────────
+    # Duplicate track is from upstream PR #94 (Luke Gimza); the monitoring state
+    # (Track.current_monitoring_state: 0 In, 1 Auto, 2 Off) is new.
+
+    MONITORING_NAMES = {0: "in", 1: "auto", 2: "off"}
+
+    def _set_track_monitoring(self, track_index, state, expected_name=None):
+        """Set a track's monitoring: "in", "auto" or "off". Audio tracks and MIDI
+        tracks; the master, returns and tracks inside a group that follow it have
+        none. Returns the previous and the new state."""
+        try:
+            key = str(state).strip().lower()
+            names = dict((v, k) for k, v in self.MONITORING_NAMES.items())
+            if key not in names:
+                raise ValueError("state must be 'in', 'auto' or 'off', got %r" % (state,))
+            track = self._resolve_track(track_index, "track")
+            if expected_name is not None and track.name != expected_name:
+                raise ValueError("Track %s is '%s', not '%s'; nothing was changed."
+                                 % (track_index, track.name, expected_name))
+            if not hasattr(track, "current_monitoring_state"):
+                raise ValueError("Track '%s' has no monitoring state" % track.name)
+            before = self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")
+            track.current_monitoring_state = names[key]
+            return {"track_name": track.name, "previous": before,
+                    "state": self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")}
+        except Exception as e:
+            self.log_message("Error setting track monitoring: " + str(e))
+            raise
+
+    def _duplicate_track(self, track_index, expected_name):
+        """Duplicate a track (devices, clips and mixer), placed right after it.
+        Live Lite refuses past 8 tracks: the reply says so and nothing changes."""
+        try:
+            self._require_expected_name(expected_name, "track")
+            track = self._resolve_track(track_index, "track")
+            if track.name != expected_name:
+                raise ValueError("Track %s is '%s', not '%s'; nothing was changed."
+                                 % (track_index, track.name, expected_name))
+            before = len(self._song.tracks)
+            try:
+                self._song.duplicate_track(track_index)
+            except Exception as e:
+                raise RuntimeError("Live refused to duplicate the track (%s). Live Lite allows "
+                                   "8 tracks; the Set has %d." % (e, before))
+            after = len(self._song.tracks)
+            if after != before + 1:
+                raise RuntimeError("Live did not add a track (it has %d, it had %d)" % (after, before))
+            new = self._song.tracks[track_index + 1]
+            return {"source": track.name, "new_track_index": track_index + 1, "new_track_name": new.name,
+                    "track_count": after,
+                    "devices": [d.name for d in new.devices],
+                    "session_clips": sum(1 for slot in new.clip_slots if slot.has_clip),
+                    "note": "tracks after it moved down by one; the new track may have taken the arm"}
+        except Exception as e:
+            self.log_message("Error duplicating track: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
@@ -6428,7 +6511,7 @@ class AbletonMCP(ControlSurface):
     _RACK_SUMMARY_MAX_CHAINS = 32
 
     def _get_device_parameters(self, track_index, device_index, name_contains=None,
-                               limit=None, include_racks=False):
+                               limit=None, include_racks=False, track_type="track"):
         """Parameters of one device, each with Live's display string.
 
         name_contains: case-insensitive substring filter on parameter names.
@@ -6446,9 +6529,7 @@ class AbletonMCP(ControlSurface):
             if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)
                                       or limit < 0):
                 raise ValueError("limit must be a non-negative integer")
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
+            track = self._resolve_track(track_index, track_type)
             if device_index < 0 or device_index >= len(track.devices):
                 raise IndexError("Device index out of range")
             device = track.devices[device_index]
@@ -6588,11 +6669,10 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session snapshot: " + str(e))
             raise
 
-    def _set_device_parameter(self, track_index, device_index, parameter_index, value):
+    def _set_device_parameter(self, track_index, device_index, parameter_index, value,
+                              track_type="track"):
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
+            track = self._resolve_track(track_index, track_type)
             if device_index < 0 or device_index >= len(track.devices):
                 raise IndexError("Device index out of range")
             device = track.devices[device_index]
@@ -6608,6 +6688,7 @@ class AbletonMCP(ControlSurface):
             param.value = value
             return {
                 "track_index": track_index,
+                "track_type": (track_type or "track").lower(),
                 "device_index": device_index,
                 "parameter_index": parameter_index,
                 "name": param.name,

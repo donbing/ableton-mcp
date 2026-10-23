@@ -33,6 +33,8 @@ MODIFYING_TOOLS = {
     "set_track_arm",
     "delete_track",
     "delete_locator",
+    "set_track_monitoring",
+    "duplicate_track",
     "replace_clip_notes",
     "set_color",
     "set_device_routing",
