@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.15**, **97 MCP tools** (upstream: 37), 1120 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.16**, **110 MCP tools** (upstream: 37), 1167 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -95,6 +95,17 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | One undo step per tool call | every state-changing tool runs between `Song.begin_undo_step` and `end_undo_step` | measured: without them Live merged every API edit into one undo step; with them three tool calls took three undos, each reverting exactly one, and three redos restored them. Tools that work in several ticks (`create_locator`, `set_track_routing`, `set_device_routing`) are not wrapped: a step left open across ticks would swallow the user's own edits. The `undo` warning says so. |
 | Live's health | `get_live_status`: version and edition, CPU average and peak, performance impact per track (heaviest first), features the edition lacks, open dialog | |
 | Modal dialogs | `press_dialog_button(button_index, expected_message)`: Live reports the dialog's text and how many buttons it has, not their labels. The "number of tracks is limited to 8" box has 2 buttons and index 0 closes it | the Remote Script keeps answering while a dialog is open, so the dialog can be read and pressed from the tool |
+
+| Added in 1.10.16 (found by dumping Live's own API and crossing it with what the script uses; all run on a real Live 12 Lite, 2026-10-24) | Tools | Notes |
+|---|---|---|
+| Devices by name | `insert_device` (a native device by name at a chain position, no browser), `move_device` (inside the chain or to another track), `duplicate_device` | Live Lite answers "not available" for EQ Eight and Glue Compressor |
+| Key and scale | `get_song_scale`, `set_song_scale` | Live does NOT raise for an unknown scale name, it falls back to Major: the tool reads it back and puts the old scale back |
+| Scene tempo | `set_scene_tempo` (tempo, time signature, or clear) | launching the scene changes the set's tempo |
+| Grooves | `get_grooves`, `set_groove` (amounts and the global amount), `set_clip_groove` | the API cannot take a groove away from a clip (it refuses None) |
+| Warp markers | `edit_warp_marker` (add, move, remove) | `Clip.WarpMarker(seconds_in_file, beat)`: seconds first |
+| Clip copies | `duplicate_clip_loop` (double a MIDI loop with its notes), `copy_note_region` (repeat a stretch, transposed), `copy_clip_to_slot` | |
+| Parameters | `get_device_parameters` now returns `items` (the choices) for quantized parameters and `default` for the others | |
+| `get_live_status` | features this edition lacks come by name: Live Lite lacks `note_velocity_ranges_and_probabilities` | so the `probability` of a note may be stored but not played on Lite |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
