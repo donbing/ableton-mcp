@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.8"
+SCRIPT_VERSION = "1.10.9"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -603,11 +603,13 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             notes = params.get("notes", [])
-                            result = self._add_notes_to_clip(track_index, clip_index, notes)
+                            result = self._add_notes_to_clip(track_index, clip_index, notes,
+                                                             params.get("clip_start_time"))
                         elif command_type == "clear_notes_from_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
-                            result = self._clear_notes_from_clip(track_index, clip_index)
+                            result = self._clear_notes_from_clip(track_index, clip_index,
+                                                                 params.get("clip_start_time"))
                         elif command_type == "remove_notes_from_clip":
                             result = self._remove_notes_from_clip(
                                 params.get("track_index", 0),
@@ -617,14 +619,16 @@ class AbletonMCP(ControlSurface):
                                 params.get("from_pitch"),
                                 params.get("pitch_span"),
                                 # Preview unless the caller explicitly opts out.
-                                params.get("dry_run", True))
+                                params.get("dry_run", True),
+                                params.get("clip_start_time"))
                         elif command_type == "apply_note_modifications":
                             result = self._apply_note_modifications(
                                 params.get("track_index", 0),
                                 params.get("clip_index", 0),
                                 params.get("notes"),
                                 # Preview unless the caller explicitly opts out.
-                                params.get("dry_run", True))
+                                params.get("dry_run", True),
+                                params.get("clip_start_time"))
                         elif command_type == "quantize_clip":
                             result = self._quantize_clip(
                                 params.get("track_index", 0),
@@ -632,7 +636,8 @@ class AbletonMCP(ControlSurface):
                                 params.get("grid"),
                                 params.get("amount", 1.0),
                                 # Preview unless the caller explicitly opts out.
-                                params.get("dry_run", True))
+                                params.get("dry_run", True),
+                                params.get("clip_start_time"))
                         elif command_type == "set_clip_loop":
                             result = self._set_clip_loop(
                                 params.get("track_index", 0),
@@ -727,7 +732,7 @@ class AbletonMCP(ControlSurface):
                             result = self._replace_clip_notes(
                                 params.get("track_index", 0), params.get("clip_index", 0),
                                 params.get("expected_clip_name"), params.get("notes"),
-                                params.get("confirm", False))
+                                params.get("confirm", False), params.get("clip_start_time"))
                         elif command_type == "set_color":
                             result = self._set_color(
                                 params.get("kind"), params.get("color_index"),
@@ -927,10 +932,12 @@ class AbletonMCP(ControlSurface):
             elif command_type == "get_clip_notes":
                 track_index = params.get("track_index", 0)
                 clip_index = params.get("clip_index", 0)
-                response["result"] = self._get_clip_notes(track_index, clip_index)
+                response["result"] = self._get_clip_notes(track_index, clip_index,
+                                                          params.get("clip_start_time"))
             elif command_type == "get_clip_info":
                 response["result"] = self._get_clip_info(
-                    params.get("track_index", 0), params.get("clip_index", 0))
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("clip_start_time"))
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
@@ -1738,7 +1745,7 @@ class AbletonMCP(ControlSurface):
             return None
         return len(list(getter(0, 128, 0.0, float(clip.length))))
 
-    def _add_notes_to_clip(self, track_index, clip_index, notes):
+    def _add_notes_to_clip(self, track_index, clip_index, notes, clip_start_time=None):
         """Add MIDI notes to a Session clip and report what Live really kept.
 
         Each note: pitch (0-127), start_time (beats, inside the clip), duration,
@@ -1750,15 +1757,9 @@ class AbletonMCP(ControlSurface):
         the end). The reply counts the notes read back from the clip.
         """
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-            clip_slot = track.clip_slots[clip_index]
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-            clip = clip_slot.clip
+            track, clip = self._session_clip(track_index, clip_index, clip_start_time=clip_start_time)
+            if not getattr(clip, "is_midi_clip", False):
+                raise Exception("Clip is not a MIDI clip")
             accepted, rejected, uses_extended = self._validate_new_notes(clip, notes)
             before = self._count_clip_notes(clip)
             self._write_new_notes(clip, accepted, uses_extended)
@@ -1774,7 +1775,8 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error adding notes to clip: " + str(e))
             raise
 
-    def _replace_clip_notes(self, track_index, clip_index, expected_clip_name, notes, confirm=False):
+    def _replace_clip_notes(self, track_index, clip_index, expected_clip_name, notes, confirm=False,
+                            clip_start_time=None):
         """Preview or replace ALL the notes of a Session MIDI clip with new ones.
 
         Everything is validated before anything is removed; a note that would
@@ -1788,7 +1790,7 @@ class AbletonMCP(ControlSurface):
             if expected_clip_name is None or not isinstance(expected_clip_name, str):
                 raise ValueError("expected_clip_name is required (the clip's exact current name, "
                                  "\"\" for an unnamed clip)")
-            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            track, clip = self._session_clip(track_index, clip_index, midi=True, clip_start_time=clip_start_time)
             if clip.name != expected_clip_name:
                 raise ValueError("The clip is named '%s', not '%s'; nothing was changed."
                                  % (clip.name, expected_clip_name))
@@ -3021,7 +3023,7 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting arrangement clips: " + str(e))
             raise
 
-    def _clear_notes_from_clip(self, track_index, clip_index):
+    def _clear_notes_from_clip(self, track_index, clip_index, clip_start_time=None):
         """Remove all MIDI notes from a Session clip.
 
         Pairs with _add_notes_to_clip to make a real replace (clear, then add),
@@ -3029,20 +3031,7 @@ class AbletonMCP(ControlSurface):
         result can report how many were removed.
         """
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-
-            track = self._song.tracks[track_index]
-
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-
-            clip_slot = track.clip_slots[clip_index]
-
-            if not clip_slot.has_clip:
-                raise Exception("No clip in slot")
-
-            clip = clip_slot.clip
+            track, clip = self._session_clip(track_index, clip_index, clip_start_time=clip_start_time)
 
             if not clip.is_midi_clip:
                 raise Exception("Clip is not a MIDI clip; no notes to clear")
@@ -3081,12 +3070,28 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error clearing notes from clip: " + str(e))
             raise
 
-    def _session_clip(self, track_index, clip_index, midi=False):
+    def _session_clip(self, track_index, clip_index, midi=False, clip_start_time=None):
         """Return (track, clip) for a Session clip slot, with strict checks.
 
         Indices must be real integers (a bool or float is an error rather than
-        silently coerced). midi=True also requires a MIDI clip.
+        silently coerced). midi=True also requires a MIDI clip. With
+        clip_start_time (beats) the clip is instead the Arrangement clip that
+        starts there on that track, and clip_index is ignored: the note API
+        works on Arrangement MIDI clips too (measured on Live 12.4 Lite).
         """
+        if clip_start_time is not None:
+            if isinstance(track_index, bool) or not isinstance(track_index, int):
+                raise TypeError("track_index must be an integer, got %r" % (track_index,))
+            if track_index < 0 or track_index >= len(self._song.tracks):
+                raise IndexError("Track index out of range")
+            track = self._song.tracks[track_index]
+            if getattr(track, "is_foldable", False):
+                raise ValueError("Track '%s' is a group track and has no Arrangement clips of its own"
+                                 % track.name)
+            clip = self._arr_find(track, self._require_finite_number(clip_start_time, "clip_start_time"))
+            if midi and not getattr(clip, "is_midi_clip", False):
+                raise Exception("Clip is not a MIDI clip")
+            return track, clip
         for label, value in (("track_index", track_index), ("clip_index", clip_index)):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError("%s must be an integer, got %r" % (label, value))
@@ -3146,10 +3151,10 @@ class AbletonMCP(ControlSurface):
             raw = clip.get_notes(from_time, from_pitch, time_span, pitch_span)
         return [self._note_summary(n) for n in raw]
 
-    def _get_clip_info(self, track_index, clip_index):
+    def _get_clip_info(self, track_index, clip_index, clip_start_time=None):
         """Read-only facts about one Session clip (MIDI or audio)."""
         try:
-            track, clip = self._session_clip(track_index, clip_index)
+            track, clip = self._session_clip(track_index, clip_index, clip_start_time=clip_start_time)
             is_midi = bool(getattr(clip, "is_midi_clip", False))
             info = {
                 "track_index": track_index,
@@ -3277,7 +3282,7 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _remove_notes_from_clip(self, track_index, clip_index, from_time, time_span,
-                                from_pitch, pitch_span, dry_run=True):
+                                from_pitch, pitch_span, dry_run=True, clip_start_time=None):
         """Preview or perform removal of the notes in a time/pitch window.
 
         Every window parameter is required: there is no default that clears the
@@ -3299,7 +3304,7 @@ class AbletonMCP(ControlSurface):
             if low + pitches > 128:
                 raise ValueError(
                     "from_pitch + pitch_span must be <= 128, got %d" % (low + pitches))
-            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            track, clip = self._session_clip(track_index, clip_index, midi=True, clip_start_time=clip_start_time)
 
             window = {"from_time": start, "time_span": span,
                       "from_pitch": low, "pitch_span": pitches}
@@ -3402,7 +3407,8 @@ class AbletonMCP(ControlSurface):
             edits[note_id] = changes
         return edits
 
-    def _apply_note_modifications(self, track_index, clip_index, notes, dry_run=True):
+    def _apply_note_modifications(self, track_index, clip_index, notes, dry_run=True,
+                                  clip_start_time=None):
         """Preview or perform in-place edits of EXISTING notes, by note_id.
 
         notes: [{"note_id": 12, "pitch": 62, "velocity": 90, ...}, ...] with
@@ -3417,7 +3423,7 @@ class AbletonMCP(ControlSurface):
         """
         try:
             edits = self._validated_note_edits(notes)
-            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            track, clip = self._session_clip(track_index, clip_index, midi=True, clip_start_time=clip_start_time)
             getter = getattr(clip, "get_notes_extended", None)
             applier = getattr(clip, "apply_note_modifications", None)
             if getter is None or applier is None:
@@ -3581,7 +3587,8 @@ class AbletonMCP(ControlSurface):
              c["after"]["velocity"], c["after"]["mute"]) for c in changes))
         return "remove + set_notes (extra note fields reset)"
 
-    def _quantize_clip(self, track_index, clip_index, grid, amount=1.0, dry_run=True):
+    def _quantize_clip(self, track_index, clip_index, grid, amount=1.0, dry_run=True,
+                       clip_start_time=None):
         """Preview or perform Clip.quantize on a Session MIDI clip.
 
         grid: one of QUANTIZE_GRIDS (1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32).
@@ -3602,7 +3609,7 @@ class AbletonMCP(ControlSurface):
             ratio = _finite_number(amount, "amount")
             if ratio < 0 or ratio > 1:
                 raise ValueError("amount must be between 0 and 1, got %r" % (amount,))
-            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            track, clip = self._session_clip(track_index, clip_index, midi=True, clip_start_time=clip_start_time)
             if not callable(getattr(clip, "quantize", None)):
                 raise Exception("This clip cannot be quantized (Clip.quantize is unavailable)")
             enum_value, size = QUANTIZE_GRIDS[key]
@@ -6397,17 +6404,9 @@ class AbletonMCP(ControlSurface):
             self.log_message("master_track serialize failed: " + str(e))
             return None
 
-    def _get_clip_notes(self, track_index, clip_index):
+    def _get_clip_notes(self, track_index, clip_index, clip_start_time=None):
         try:
-            if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
-            track = self._song.tracks[track_index]
-            if clip_index < 0 or clip_index >= len(track.clip_slots):
-                raise IndexError("Clip index out of range")
-            slot = track.clip_slots[clip_index]
-            if not slot.has_clip:
-                raise Exception("No clip in slot")
-            clip = slot.clip
+            track, clip = self._session_clip(track_index, clip_index, clip_start_time=clip_start_time)
             if not getattr(clip, "is_midi_clip", False):
                 raise Exception("Clip is not a MIDI clip")
             notes = self._notes_from_clip(clip)

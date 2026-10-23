@@ -15,6 +15,8 @@ from tests.test_scenes import call, conn  # noqa: F401
 
 
 class Clip(object):
+    is_midi_clip = True
+
     def __init__(self, length=4.0, with_new_api=False):
         self.length = length
         self.notes = []

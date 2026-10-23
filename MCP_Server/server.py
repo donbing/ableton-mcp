@@ -526,6 +526,14 @@ def get_meters(
         return f"Error getting meters: {str(e)}"
 
 
+def _clip_ref(track_index: int, clip_index: int, clip_start_time: Optional[float] = None) -> dict:
+    """Which clip a note tool means: a Session slot, or an Arrangement clip by its start beat."""
+    ref = {"track_index": track_index, "clip_index": clip_index}
+    if clip_start_time is not None:
+        ref["clip_start_time"] = clip_start_time
+    return ref
+
+
 @mcp.tool()
 @telemetry_tool("get_clip_notes")
 @trajectory_tool("get_clip_notes")
@@ -533,16 +541,23 @@ def get_clip_notes(
     ctx: Context,
     track_index: int,
     clip_index: int,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
-    Read all MIDI notes from a Session-view clip.
+    Read all MIDI notes from a clip: a Session clip, or an Arrangement MIDI clip with
+    clip_start_time.
 
-    Returns pitch, start_time, duration, velocity, mute (and extended fields when available).
+    Returns pitch, start_time, duration, velocity, mute (and extended fields when
+    available). Times are in the clip's CONTENT, in beats: a clip that was trimmed
+    or split at its head keeps all its notes and starts playing at start_marker
+    (see get_arrangement_clips), so a note before start_marker is not heard.
 
     Parameters:
     - track_index: Track that owns the clip
     - clip_index: Session clip slot index
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -554,7 +569,7 @@ def get_clip_notes(
         ableton = get_ableton_connection()
         result = ableton.send_command(
             "get_clip_notes",
-            {"track_index": track_index, "clip_index": clip_index},
+            _clip_ref(track_index, clip_index, clip_start_time),
         )
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -569,6 +584,7 @@ def get_clip_info(
     ctx: Context,
     track_index: int,
     clip_index: int,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
@@ -580,6 +596,8 @@ def get_clip_info(
     Parameters:
     - track_index: Track that owns the clip
     - clip_index: Session clip slot index
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -591,7 +609,7 @@ def get_clip_info(
         ableton = get_ableton_connection()
         result = ableton.send_command(
             "get_clip_info",
-            {"track_index": track_index, "clip_index": clip_index},
+            _clip_ref(track_index, clip_index, clip_start_time),
         )
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -1000,6 +1018,7 @@ def add_notes_to_clip(
     track_index: int,
     clip_index: int,
     notes: List[Dict[str, Union[int, float, bool]]],
+    clip_start_time: Optional[float] = None,
     user_prompt: str = ""
 ) -> str:
     """
@@ -1014,15 +1033,15 @@ def add_notes_to_clip(
       velocity_deviation (-127..127), release_velocity (0-127). An unknown field
       is an error. A note that starts before 0 or at or after the clip's end
       would never play, so it is NOT added and is listed in the reply.
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("add_notes_to_clip", {
-            "track_index": track_index,
-            "clip_index": clip_index,
-            "notes": notes
-        })
+        params = _clip_ref(track_index, clip_index, clip_start_time)
+        params["notes"] = notes
+        result = ableton.send_command("add_notes_to_clip", params)
         added = result.get("note_count", len(notes)) if isinstance(result, dict) else len(notes)
         message = f"Added {added} notes to clip at track {track_index}, slot {clip_index}"
         rejected = result.get("rejected") if isinstance(result, dict) else None
@@ -1044,6 +1063,7 @@ def clear_notes_from_clip(
     ctx: Context,
     track_index: int,
     clip_index: int,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = ""
 ) -> str:
     """
@@ -1058,6 +1078,8 @@ def clear_notes_from_clip(
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1067,10 +1089,8 @@ def clear_notes_from_clip(
         if missing:
             return missing
         ableton = get_ableton_connection()
-        result = ableton.send_command("clear_notes_from_clip", {
-            "track_index": track_index,
-            "clip_index": clip_index
-        })
+        result = ableton.send_command(
+            "clear_notes_from_clip", _clip_ref(track_index, clip_index, clip_start_time))
         return "Cleared {n} note(s) from clip '{name}' (track {t}, slot {c})".format(
             n=result.get("cleared_count", "?"),
             name=result.get("clip_name", "clip"),
@@ -1093,6 +1113,7 @@ def remove_notes_from_clip(
     from_pitch: int,
     pitch_span: int,
     confirm: bool = False,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
@@ -1117,6 +1138,8 @@ def remove_notes_from_clip(
     - from_pitch: Lowest MIDI pitch in the window (0-127)
     - pitch_span: Number of pitches in the window (1-128; from_pitch + pitch_span <= 128)
     - confirm: false = preview only (default), true = remove
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1134,6 +1157,8 @@ def remove_notes_from_clip(
             "from_pitch": from_pitch,
             "pitch_span": pitch_span,
         }
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
         if not confirm:
             preview = ableton.send_command(
                 "remove_notes_from_clip", dict(params, dry_run=True))
@@ -1160,6 +1185,7 @@ def apply_note_modifications(
     clip_index: int,
     notes: List[Dict[str, Union[int, float, bool]]],
     confirm: bool = False,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
@@ -1186,6 +1212,8 @@ def apply_note_modifications(
     - clip_index: Session clip slot index
     - notes: List of {"note_id": int, and any of "pitch", "start_time", "duration", "velocity", "mute"}
     - confirm: false = preview only (default), true = apply
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1200,6 +1228,8 @@ def apply_note_modifications(
             "clip_index": clip_index,
             "notes": notes,
         }
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
         if not confirm:
             preview = ableton.send_command(
                 "apply_note_modifications", dict(params, dry_run=True))
@@ -1227,6 +1257,7 @@ def quantize_clip(
     grid: str,
     amount: float = 1.0,
     confirm: bool = False,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
@@ -1248,6 +1279,8 @@ def quantize_clip(
     - grid: One of 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32
     - amount: 0.0 to 1.0, default 1.0
     - confirm: false = preview only (default), true = quantize
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -1263,6 +1296,8 @@ def quantize_clip(
             "grid": grid,
             "amount": amount,
         }
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
         if not confirm:
             preview = ableton.send_command("quantize_clip", dict(params, dry_run=True))
             return (
@@ -3116,6 +3151,7 @@ def replace_clip_notes(
     expected_clip_name: str,
     notes: List[Dict[str, Union[int, float, bool]]],
     confirm: bool = False,
+    clip_start_time: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
@@ -3138,16 +3174,17 @@ def replace_clip_notes(
     - expected_clip_name: The clip's exact current name ("" for an unnamed clip)
     - notes: The new notes
     - confirm: false = preview only (default), true = replace
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         if expected_clip_name is None:
             return ("Error: expected_clip_name is required (the clip's exact current name; "
                     "\"\" for an unnamed clip).")
-        out = _json_call("replace_clip_notes", {
-            "track_index": track_index, "clip_index": clip_index,
-            "expected_clip_name": expected_clip_name, "notes": notes, "confirm": confirm},
-            "replacing clip notes")
+        params = _clip_ref(track_index, clip_index, clip_start_time)
+        params.update({"expected_clip_name": expected_clip_name, "notes": notes, "confirm": confirm})
+        out = _json_call("replace_clip_notes", params, "replacing clip notes")
         return out if confirm else (
             "NOT REPLACED (preview only). This would happen: " + out +
             "\nTo replace the notes, call replace_clip_notes again with the same arguments and confirm=true.")
