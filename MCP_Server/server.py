@@ -947,7 +947,8 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
 @mcp.tool()
 @rich_telemetry_tool("create_audio_clip")
 @trajectory_tool("create_audio_clip")
-def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str, user_prompt: str = "") -> str:
+def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str,
+                      warping: Optional[bool] = None, user_prompt: str = "") -> str:
     """
     Create a new audio clip in an audio track's clip slot by importing a file.
 
@@ -955,21 +956,37 @@ def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str
     ClipSlot.create_audio_clip Live API was introduced in 12.0.5 and is not
     available in earlier 12.0.x releases.
 
+    Live imports with auto-warp ON, which can round the clip's length to a
+    whole-bar / power-of-two number of beats, so the clip drifts against the set.
+    The reply says whether the clip is warped, the file's own length, and warns
+    when the two disagree; pass warping=false to keep the file's own timing (the
+    clip's length then reads in seconds).
+
     Parameters:
     - track_index: The index of the audio track to create the clip in
     - clip_index: The index of the clip slot to create the clip in
     - path: Absolute path to a supported audio file (e.g. a .wav). The target
       track must be an audio track and the clip slot must be empty.
+    - warping: Optional. false = switch warp off after importing, true = leave it on;
+      leave out to keep Live's default (on)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("create_audio_clip", {
-            "track_index": track_index,
-            "clip_index": clip_index,
-            "path": path
-        })
-        return f"Created audio clip '{result.get('name', 'clip')}' at track {track_index}, slot {clip_index} (length {result.get('length', '?')} beats)"
+        params = {"track_index": track_index, "clip_index": clip_index, "path": path}
+        if warping is not None:
+            params["warping"] = warping
+        result = ableton.send_command("create_audio_clip", params)
+        unit = result.get("length_unit", "beats")
+        message = (f"Created audio clip '{result.get('name', 'clip')}' at track {track_index}, "
+                   f"slot {clip_index} (length {result.get('length', '?')} {unit})")
+        if "warping" in result:
+            message += f", warping {'on' if result['warping'] else 'off'}"
+        if result.get("file_seconds") is not None:
+            message += f", file {result['file_seconds']:.3f} s"
+        if result.get("warning"):
+            message += f". WARNING: {result['warning']}"
+        return message
     except Exception as e:
         logger.error(f"Error creating audio clip: {str(e)}")
         return f"Error creating audio clip: {str(e)}"
@@ -1562,7 +1579,9 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, user_pro
                 devices = result.get("devices_after", [])
                 return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
         else:
-            return f"Failed to load instrument with URI '{uri}'"
+            warning = result.get("warning")
+            detail = f": {warning}" if warning else ""
+            return f"Failed to load instrument with URI '{uri}'{detail}"
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
         return f"Error loading instrument by URI: {str(e)}"
@@ -2363,7 +2382,10 @@ def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> st
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("set_current_song_time", {"time": time})
-        return f"Playhead moved to beat {result.get('current_song_time', time)}"
+        message = f"Playhead moved to beat {result.get('current_song_time', time)}"
+        if result.get("warning"):
+            message += f". WARNING: {result['warning']}"
+        return message
     except Exception as e:
         logger.error(f"Error setting arrangement time: {str(e)}")
         return f"Error setting arrangement time: {str(e)}"

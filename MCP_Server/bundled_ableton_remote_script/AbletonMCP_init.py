@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.6"
+SCRIPT_VERSION = "1.10.7"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -587,7 +587,8 @@ class AbletonMCP(ControlSurface):
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
                             path = params.get("path", "")
-                            result = self._create_audio_clip(track_index, clip_index, path)
+                            result = self._create_audio_clip(track_index, clip_index, path,
+                                                             params.get("warping"))
                         elif command_type == "add_notes_to_clip":
                             track_index = params.get("track_index", 0)
                             clip_index = params.get("clip_index", 0)
@@ -872,6 +873,10 @@ class AbletonMCP(ControlSurface):
                             # main thread), then read the device list back.
                             response["result"] = self._verify_load_on_return(
                                 response["result"])
+                        elif command_type in ("load_browser_item", "load_instrument_or_effect"):
+                            response["result"] = self._verify_load_on_track(response["result"])
+                        elif command_type == "set_current_song_time":
+                            response["result"] = self._verify_song_time(response["result"])
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
@@ -1549,7 +1554,7 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating clip: " + str(e))
             raise
 
-    def _create_audio_clip(self, track_index, clip_index, path):
+    def _create_audio_clip(self, track_index, clip_index, path, warping=None):
         """Create an audio clip in the specified audio track clip slot by importing a file.
 
         Requires Ableton Live 12.0.5 or newer (the underlying
@@ -1585,13 +1590,44 @@ class AbletonMCP(ControlSurface):
                     "version. Requires Live 12.0.5 or newer."
                 )
 
-            clip_slot.create_audio_clip(path)
+            if warping is not None and not isinstance(warping, bool):
+                raise TypeError("warping must be true or false")
 
+            clip_slot.create_audio_clip(path)
+            clip = clip_slot.clip
+
+            # Live imports with auto-warp on, which can round the length to a
+            # whole-bar / power-of-two beat count (upstream issue #137). Say what
+            # happened, and let the caller turn warp off.
+            if warping is not None and bool(clip.warping) != warping:
+                clip.warping = warping
             result = {
-                "name": clip_slot.clip.name,
-                "length": clip_slot.clip.length,
-                "is_audio_clip": clip_slot.clip.is_audio_clip
+                "name": clip.name,
+                "length": clip.length,
+                "is_audio_clip": clip.is_audio_clip,
+                "warping": bool(clip.warping),
             }
+            warp_name = getattr(clip, "warp_mode", None)
+            if warp_name is not None:
+                result["warp_mode"] = warp_name
+            result["length_unit"] = "beats" if clip.warping else "seconds"
+            try:
+                seconds = float(clip.sample_length) / float(clip.sample_rate)
+                result["file_seconds"] = seconds
+                if not clip.warping:
+                    # An unwarped clip plays the file at its own speed; Clip.length
+                    # still reads the warped value in the same tick, so give the file's.
+                    result["length"] = seconds
+                tempo = float(self._song.tempo)
+                result["file_beats_at_set_tempo"] = seconds * tempo / 60.0
+                if clip.warping and abs(float(clip.length) - result["file_beats_at_set_tempo"]) > 0.05:
+                    result["warning"] = (
+                        "Live's auto-warp set the length to %s beats; the file is %.3f s, which is "
+                        "%.3f beats at %s BPM. The clip is warped against the set. Pass warping=false "
+                        "to keep the file's own length and timing (the clip's length then reads in seconds)."
+                        % (float(clip.length), seconds, result["file_beats_at_set_tempo"], tempo))
+            except Exception:
+                pass
             return result
         except Exception as e:
             self.log_message("Error creating audio clip: " + str(e))
@@ -2776,8 +2812,12 @@ class AbletonMCP(ControlSurface):
     def _set_current_song_time(self, time_val):
         """Move the arrangement playhead to a position in beats"""
         try:
-            self._song.current_song_time = float(time_val)
-            return {"current_song_time": self._song.current_song_time}
+            requested = float(time_val)
+            self._song.current_song_time = requested
+            # Live applies the new position a moment later and reads the OLD one
+            # back until then; the dispatcher settles and reads again
+            # (_verify_song_time) before the reply goes out.
+            return {"requested": requested, "current_song_time": requested}
         except Exception as e:
             self.log_message("Error setting current song time: " + str(e))
             raise
@@ -4811,6 +4851,60 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error loading device on return track: " + str(e))
             raise
 
+    def _verify_load_on_track(self, result):
+        """Settle, then read the track's device list back (never raises).
+
+        Same idea as _verify_load_on_return, for a regular track: Live adds the
+        device a moment after load_item, so a read in the same tick shows the
+        chain as it was (upstream issue #134). loaded is true when the chain
+        changed; an instrument that replaces one of the same name leaves the
+        names unchanged, which is reported as a warning rather than a failure.
+        """
+        result = dict(result)
+        try:
+            time.sleep(LOAD_SETTLE_SECONDS)
+            index = result["track_index"]
+
+            def read():
+                track = self._song.tracks[index]
+                return track.name, [d.name for d in track.devices]
+
+            name, after = self._call_on_main_thread(read)
+            before = result.get("devices_before", [])
+            remaining = list(before)
+            new = []
+            for device in after:
+                if device in remaining:
+                    remaining.remove(device)
+                else:
+                    new.append(device)
+            result["devices_after"] = after
+            result["new_devices"] = new
+            result["loaded"] = after != before
+            if not result["loaded"]:
+                result["warning"] = (
+                    "The track's device list did not change after loading; the item may not "
+                    "be loadable on this track, may have replaced an identical device, or the "
+                    "load has not finished.")
+        except Exception as e:
+            result["loaded"] = False
+            result["warning"] = "Could not verify the load: %s" % e
+        return result
+
+    def _verify_song_time(self, result):
+        """Settle, then read the playhead back (never raises); upstream issue #134."""
+        result = dict(result)
+        try:
+            time.sleep(0.2)
+            result["current_song_time"] = self._call_on_main_thread(
+                lambda: self._song.current_song_time)
+            if abs(result["current_song_time"] - result.get("requested", 0.0)) > 1e-3:
+                result["warning"] = ("The playhead is at beat %s, not the requested %s"
+                                     % (result["current_song_time"], result.get("requested")))
+        except Exception as e:
+            result["warning"] = "Could not read the playhead back: %s" % e
+        return result
+
     def _verify_load_on_return(self, result):
         """Settle, then read the return's device list back (never raises).
 
@@ -5131,14 +5225,20 @@ class AbletonMCP(ControlSurface):
             # Select the track
             self._song.view.selected_track = track
             
+            devices_before = [d.name for d in track.devices]
+
             # Load the item
             app.browser.load_item(item)
             
+            # Live adds the device a moment later; the dispatcher settles and reads
+            # the chain back (_verify_load_on_track) before the reply goes out.
             result = {
                 "loaded": True,
                 "item_name": item.name,
                 "track_name": track.name,
-                "uri": item_uri
+                "track_index": track_index,
+                "uri": item_uri,
+                "devices_before": devices_before,
             }
             return result
         except Exception as e:
