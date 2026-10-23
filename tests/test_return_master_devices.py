@@ -164,6 +164,35 @@ def test_bad_monitoring_changes_nothing(script_module, kwargs, needle):
     assert inst._song.tracks[0].current_monitoring_state == 1
 
 
+class GroupTrack(object):
+    """hasattr is true for the monitoring state of a group track, but reading it raises."""
+    name, is_foldable, can_be_armed, devices = "Drums", True, False, []
+    mute, solo, color_index, group_track = False, False, 4, None
+    clip_slots = []
+    mixer_device = types.SimpleNamespace(volume=Param("Volume", 0, 1, 0.85), panning=Param("Pan", -1, 1, 0.0))
+
+    @property
+    def current_monitoring_state(self):
+        raise RuntimeError("Main and Return Tracks have no monitoring state!")
+
+
+def test_a_group_track_does_not_break_the_overview_or_the_monitoring_tool(script_module):
+    song = Song()
+    for plain in song.tracks + song.return_tracks + [song.master_track]:
+        plain.clip_slots, plain.arrangement_clips, plain.mute, plain.solo = [], [], False, False
+        plain.color_index, plain.group_track, plain.can_be_armed, plain.is_foldable = 1, None, False, False
+    song.tracks.append(GroupTrack())
+    song.scenes, song.cue_points, song.tempo, song.is_playing = [], [], 120.0, False
+    song.signature_numerator = song.signature_denominator = 4
+    inst = make_inst(script_module, song)
+    inst._get_device_type = lambda d: "audio_effect"
+    overview = ok(run(inst, "get_tracks_overview"))
+    group = overview["tracks"][-1]
+    assert group["kind"] == "group" and "monitoring" not in group
+    assert "has no monitoring state" in err(run(inst, "set_track_monitoring", track_index=1, state="in"))
+    assert overview["tracks"][0]["kind"] == "audio"
+
+
 def test_a_track_without_monitoring_is_refused(script_module):
     song = MonSong()
     del song.tracks[0].__dict__["current_monitoring_state"]

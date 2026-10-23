@@ -89,17 +89,22 @@ class FakeSong(object):
     """tracks / return_tracks / master_track + delete_track with shifting."""
 
     def __init__(self, tracks, group_deletes_members=True,
-                 drops_empty_group=False):
+                 drops_empty_group=False, refuses_last_child=False):
         self.tracks = list(tracks)
         self.return_tracks = [FakeTrack("A Reverb"), FakeTrack("B Delay")]
         self.master_track = FakeTrack("Master")
         self.group_deletes_members = group_deletes_members
         self.drops_empty_group = drops_empty_group
+        self.refuses_last_child = refuses_last_child
         self.delete_calls = []
 
     def delete_track(self, index):
         self.delete_calls.append(index)
-        victim = self.tracks.pop(index)
+        victim = self.tracks[index]
+        if self.refuses_last_child and victim.group_track is not None and sum(
+                1 for t in self.tracks if t.group_track is victim.group_track) == 1:
+            raise RuntimeError("Couldn't delete track.")       # measured on Live 12.4 Lite
+        self.tracks.pop(index)
         if victim.is_foldable and self.group_deletes_members:
             self.tracks = [t for t in self.tracks if t.group_track is not victim]
         if self.drops_empty_group and victim.group_track is not None:
@@ -494,3 +499,21 @@ def test_tool_returns_the_capability_message_for_an_old_script(conn, monkeypatch
     monkeypatch.setattr(sh, "require_capability", lambda name: "missing " + name)
     assert call(server.delete_track, None, 0, "x", confirm=True) == "missing delete_track"
     assert conn.sent == []
+
+
+def test_a_group_goes_in_one_delete_on_a_live_that_refuses_its_last_child(script_module):
+    """Measured on Live 12.4 Lite: deleting a group's members one by one fails on the last
+    one and leaves the set half deleted; deleting the group takes everything with it."""
+    song, inst = group_song(script_module, refuses_last_child=True)
+    reply = run(inst, track_index=1, expected_name="Group", dry_run=False)
+    assert reply["status"] == "success", reply
+    assert names(song) == ["Lead", "Outro"]
+    assert song.delete_calls == [1]
+
+
+def test_a_failure_partway_says_how_many_tracks_are_left_and_how_to_undo(script_module):
+    song, inst = group_song(script_module, group_deletes_members=False, refuses_last_child=True)
+    reply = run(inst, track_index=1, expected_name="Group", dry_run=False)
+    # the group goes first and its members stay; the last one cannot be removed
+    assert reply["status"] == "error"
+    assert "Live stopped partway" in reply["message"] and "Undo" in reply["message"]

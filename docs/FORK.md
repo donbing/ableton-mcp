@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.13**, **95 MCP tools** (upstream: 37), 1102 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.14**, **95 MCP tools** (upstream: 37), 1105 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -17,7 +17,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Parameter reads | `get_device_parameters` gains Live's display strings, `name_contains`, `limit` and a rack guard (racks returned 58-433 KB) | new, `feat/param-display-strings` |
 | Undo / redo | `undo`, `redo` guarded by `can_undo/can_redo` and `confirm=true` (Live merges every API edit into ONE undo step, so one undo can revert several changes) | new, `feat/undo-redo` |
 
-**Verification status.** Release `v1.9.1-fork.1` and the slices ported in `v1.10.0-fork.1` were run on a real Live 12 Lite set (2026-10-22, results in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Run and working: scenes (create, rename, duplicate, delete, fire), stop_all_clips, time signature, metronome, arrangement loop, return device load/delete, clip loop, quantize, note remove, note edit, arrangement clip delete, audio-clip info/warp/gain/pitch, guarded delete_track, undo preview. One bug found and fixed in 1.10.1: `apply_note_modifications` was rejected by Live in every direct argument shape, so it now falls back to remove + `set_notes` (note ids change; verified by value; the reply says `method`). `create_locator` was rewritten in 1.10.2 and run on Live (it now moves the playhead, waits for Live to apply it, toggles the cue, reads it back and restores the playhead; it refuses while the transport plays; Live puts locators on whole beats), and `jump_to_cue` was run with real cue points. Still NOT run on Live: `undo`/`redo` with `confirm=true`, group-track delete, Arrangement-clip audio properties, upstream PR #143 export. Every destructive tool previews by default.
+**Verification status.** Release `v1.9.1-fork.1` and the slices ported in `v1.10.0-fork.1` were run on a real Live 12 Lite set (2026-10-22, results in [issue #1](https://github.com/vittorfp/ableton-mcp/issues/1)). Run and working: scenes (create, rename, duplicate, delete, fire), stop_all_clips, time signature, metronome, arrangement loop, return device load/delete, clip loop, quantize, note remove, note edit, arrangement clip delete, audio-clip info/warp/gain/pitch, guarded delete_track, undo preview. One bug found and fixed in 1.10.1: `apply_note_modifications` was rejected by Live in every direct argument shape, so it now falls back to remove + `set_notes` (note ids change; verified by value; the reply says `method`). `create_locator` was rewritten in 1.10.2 and run on Live (it now moves the playhead, waits for Live to apply it, toggles the cue, reads it back and restores the playhead; it refuses while the transport plays; Live puts locators on whole beats), and `jump_to_cue` was run with real cue points. Still NOT run on Live:  group-track delete, Arrangement-clip audio properties, upstream PR #143 export. Every destructive tool previews by default.
 
 | Ported in 1.10.0 (run on a real Live 12 Lite on 2026-10-22, see status) | Tools | Origin |
 |---|---|---|
@@ -84,6 +84,11 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.13 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
 | Move or copy an Arrangement clip to another track | `move_arrangement_clip` takes `to_track_index` and `to_expected_name`; `new_start_time` defaults to the same beat | measured: `Track.duplicate_clip_to_arrangement` accepts a clip from another track of the same kind (MIDI to MIDI, audio to audio; Live answers "Incompatible track types" for the rest) and keeps its extent, content offset and notes. The preview lists what the destination loses. |
+
+| Fixed in 1.10.14 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Deleting a group track | `delete_track` on a group now deletes the group first, which takes its members with it | found on a real group: deleting the members one by one fails on the last one ("Couldn't delete track.") and left the set half deleted. If Live stops partway the error now says how many tracks are left and how to undo. A real delete of a group with 3 members, then one undo, brought all 7 tracks back. |
+| `get_tracks_overview` with a group | the monitoring state is read defensively (a group track raises when it is read); each member shows its `group` | |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
