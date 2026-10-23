@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.4"
+SCRIPT_VERSION = "1.10.5"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -160,6 +160,9 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "back_to_arrangement",
+    "get_track_routing",
+    "set_track_routing",
     "clear_arrangement_range",
     "trim_arrangement_clip",
     "split_arrangement_clip",
@@ -470,6 +473,17 @@ class AbletonMCP(ControlSurface):
                 # _get_meters.
                 response["result"] = self._get_meters(
                     params.get("seconds", 2.0), params.get("hz", 20))
+            elif command_type == "get_track_routing":
+                response["result"] = self._get_track_routing(
+                    params.get("track_index", 0), params.get("track_type", "track"))
+            elif command_type == "set_track_routing":
+                # Socket thread: Live updates the available channels a moment
+                # after the routing type changes, so the steps wait. See
+                # _set_track_routing.
+                response["result"] = self._set_track_routing(
+                    params.get("track_index", 0), params.get("track_type", "track"),
+                    params.get("expected_name"), params.get("direction"),
+                    params.get("routing_type"), params.get("routing_channel"))
             elif command_type == "delete_locator":
                 # Socket thread, like create_locator: it has to wait for Live.
                 response["result"] = self._delete_locator(
@@ -491,6 +505,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "back_to_arrangement",
                                  "clear_arrangement_range",
                                  "trim_arrangement_clip",
                                  "split_arrangement_clip",
@@ -654,6 +669,8 @@ class AbletonMCP(ControlSurface):
                                 params.get("end_time"),
                                 # Preview unless the caller explicitly opts in.
                                 params.get("confirm", False))
+                        elif command_type == "back_to_arrangement":
+                            result = self._back_to_arrangement()
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -3991,6 +4008,148 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating arrangement clip: " + str(e))
             raise
 
+
+    # ── Back to Arrangement, track routing ────────────────────────────────────
+    # back_to_arrangement is adapted from upstream PR ahujasid/ableton-mcp#119
+    # (mateogon); the routing tools from #99 (Zachary May), extended with channels,
+    # track_type and a name check.
+
+    def _back_to_arrangement(self):
+        """Hand playback back to the Arrangement (Live's Back to Arrangement button).
+
+        Launching a Session clip or scene takes those tracks off the Arrangement
+        until this is called. Song.back_to_arranger reads 1 while any track is
+        off it; writing 0 returns them. Live may apply it a moment after the
+        reply, so the reply gives the value read back and the requested one.
+        """
+        try:
+            song = self._song
+            if not hasattr(song, "back_to_arranger"):
+                raise RuntimeError("Song.back_to_arranger is not available in this version of Live")
+            before = bool(song.back_to_arranger)
+            song.back_to_arranger = 0
+            return {"before": before, "requested": False,
+                    "read_back": bool(song.back_to_arranger),
+                    "note": "Live may apply the change just after replying"}
+        except Exception as e:
+            self.log_message("Error going back to the arrangement: " + str(e))
+            raise
+
+    @staticmethod
+    def _routing_names(items):
+        return [r.display_name for r in items]
+
+    def _routing_state(self, track, direction):
+        """Current type and channel plus what Live offers, for one direction."""
+        attr = direction + "_routing_"
+        state = {}
+        if not hasattr(track, attr + "type"):
+            return None
+        current_type = getattr(track, attr + "type")
+        state["type"] = current_type.display_name
+        current_channel = getattr(track, attr + "channel", None)
+        state["channel"] = current_channel.display_name if current_channel is not None else None
+        state["available_types"] = self._routing_names(
+            getattr(track, "available_%s_routing_types" % direction, []))
+        state["available_channels"] = self._routing_names(
+            getattr(track, "available_%s_routing_channels" % direction, []))
+        return state
+
+    def _get_track_routing(self, track_index, track_type="track"):
+        """Input and output routing of a track: current type and channel, and the
+        types and channels Live offers for the current type. Every kind of track
+        (track, return, master) reports an input and an output when Live has them."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            result = {"track_index": track_index if (track_type or "track").lower() != "master" else None,
+                      "track_type": (track_type or "track").lower(), "track_name": track.name}
+            for direction in ("input", "output"):
+                result[direction] = self._routing_state(track, direction)
+            return result
+        except Exception as e:
+            self.log_message("Error getting track routing: " + str(e))
+            raise
+
+    @staticmethod
+    def _find_routing(items, wanted, what):
+        names = [r.display_name for r in items]
+        exact = [r for r in items if r.display_name == wanted]
+        if len(exact) == 1:
+            return exact[0]
+        folded = [r for r in items if r.display_name.lower() == str(wanted).lower()]
+        if len(exact) > 1 or len(folded) > 1:
+            raise ValueError(
+                "%d %ss are named '%s' (two tracks share a name), so it cannot be chosen by "
+                "name. Rename one of the tracks first." % (len(exact) or len(folded), what.lower(), wanted))
+        if len(folded) == 1:
+            return folded[0]
+        raise ValueError("%s '%s' not found. Available: %s" % (what, wanted, ", ".join(names) or "none"))
+
+    def _set_track_routing(self, track_index, track_type, expected_name, direction,
+                           routing_type=None, routing_channel=None):
+        """Set the input or output routing (type and/or channel) of a track.
+
+        direction: "input" or "output". routing_type and routing_channel are the
+        display names from get_track_routing; give either or both. A type change
+        is applied first, then Live is given a moment to list the channels for
+        the new type, then the channel is set. expected_name (the track's exact
+        current name) is required: a wrong output can silence a track, and it
+        catches a stale index. Returns the previous and the new routing.
+        """
+        if direction not in ("input", "output"):
+            raise ValueError("direction must be 'input' or 'output'")
+        if routing_type is None and routing_channel is None:
+            raise ValueError("Give routing_type and/or routing_channel (names from get_track_routing)")
+        self._require_expected_name(expected_name, "track")
+        settle = 0.3
+
+        def first():
+            track = self._resolve_track(track_index, track_type)
+            if track.name != expected_name:
+                raise ValueError("Track %s is '%s', not '%s'; indices may have shifted. "
+                                 "Nothing was changed." % (track_index, track.name, expected_name))
+            before = self._routing_state(track, direction)
+            if before is None:
+                raise ValueError("A %s track has no %s routing"
+                                 % ((track_type or "track").lower(), direction))
+            if routing_type is not None:
+                chosen = self._find_routing(
+                    getattr(track, "available_%s_routing_types" % direction),
+                    routing_type, "Routing type")
+                if chosen.display_name != before["type"]:
+                    setattr(track, direction + "_routing_type", chosen)
+            elif routing_channel is not None:
+                # fail early, before anything changes, if the channel is unknown
+                self._find_routing(getattr(track, "available_%s_routing_channels" % direction),
+                                   routing_channel, "Routing channel")
+            return before
+
+        try:
+            before = self._call_on_main_thread(first)
+            if routing_type is not None:
+                time.sleep(settle)
+
+            def second():
+                track = self._resolve_track(track_index, track_type)
+                if routing_channel is not None:
+                    chosen = self._find_routing(
+                        getattr(track, "available_%s_routing_channels" % direction),
+                        routing_channel, "Routing channel")
+                    setattr(track, direction + "_routing_channel", chosen)
+
+            self._call_on_main_thread(second)
+            time.sleep(settle)
+            after = self._call_on_main_thread(
+                lambda: self._routing_state(self._resolve_track(track_index, track_type), direction))
+            wanted_ok = ((routing_type is None or after["type"].lower() == str(routing_type).lower())
+                         and (routing_channel is None
+                              or str(after["channel"]).lower() == str(routing_channel).lower()))
+            return {"track_name": expected_name, "direction": direction,
+                    "before": {"type": before["type"], "channel": before["channel"]},
+                    "after": after, "verified": wanted_ok}
+        except Exception as e:
+            self.log_message("Error setting track routing: " + str(e))
+            raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
     # create_return_track and load_device_on_return adapted from the open

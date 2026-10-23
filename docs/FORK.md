@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.4**, **80 MCP tools** (upstream: 37), 926 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.5**, **83 MCP tools** (upstream: 37), 936 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -38,6 +38,11 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Timeouts and sockets | each command keeps its own timeout (a 65 s audio import no longer fails after 15 s), responses split inside a UTF-8 character are completed, failed sockets are closed. Also our upstream issue #136. | upstream #139 (Parker Rex) |
 | Quiet logs | expected errors (bad index, out-of-range value) log one line instead of a traceback. Also our upstream issue #135. | upstream #141 (Muhtasim Munif Fahim) |
 | Terms | `TERMS.md` now says dataset recording starts off | upstream #147 (dajiaohuang) |
+
+| Added in 1.10.5 (run on a real Live 12 Lite, 2026-10-23) | Tools | Origin |
+|---|---|---|
+| Back to Arrangement | `back_to_arrangement`: hand playback back to the Arrangement after `fire_clip` / `fire_scene` took tracks off it | adapted from upstream #119 (mateogon) |
+| Track routing | `get_track_routing` (current and available type and channel, for tracks, returns and master), `set_track_routing` (type and/or channel, input or output; needs `expected_name`; waits for Live to list the channels of a new type) | adapted from upstream #99 (Zachary May), extended with channels, `track_type` and the name check. Two tracks with the same name cannot be chosen by name (the error says so). |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
