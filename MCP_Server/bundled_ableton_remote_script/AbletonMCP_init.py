@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.12"
+SCRIPT_VERSION = "1.10.13"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -772,7 +772,8 @@ class AbletonMCP(ControlSurface):
                             result = self._move_arrangement_clip(
                                 params.get("track_index", 0), params.get("expected_name"),
                                 params.get("clip_start_time"), params.get("new_start_time"),
-                                params.get("copy", False), params.get("confirm", False))
+                                params.get("copy", False), params.get("confirm", False),
+                                params.get("to_track_index"), params.get("to_expected_name"))
                         elif command_type == "create_arrangement_clip":
                             result = self._create_arrangement_clip(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -4249,12 +4250,16 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _move_arrangement_clip(self, track_index, expected_name, clip_start_time,
-                               new_start_time, copy=False, confirm=False):
-        """Preview or move (or copy) one Arrangement clip on its own track.
+                               new_start_time=None, copy=False, confirm=False,
+                               to_track_index=None, to_expected_name=None):
+        """Preview or move (or copy) one Arrangement clip, on its own track or to another.
 
-        The clip keeps its extent and content offset. Whatever lies at the
-        destination is overwritten (the preview lists it). A move that overlaps
-        the clip's own old range goes through a scratch copy after the last clip.
+        The clip keeps its length, content offset and notes. Whatever lies at the
+        destination is overwritten (the preview lists it). A move on the same track that
+        overlaps the clip's own old range goes through a scratch copy after the last
+        clip. With to_track_index (and to_expected_name) the clip goes to another track
+        of a compatible kind (MIDI to MIDI, audio to audio; Live refuses the rest);
+        new_start_time then defaults to the same beat.
         """
         try:
             do_apply = self._require_confirm_flag(confirm)
@@ -4262,27 +4267,51 @@ class AbletonMCP(ControlSurface):
                 raise TypeError("copy must be true or false, got %r" % (copy,))
             track = self._arr_track(track_index, expected_name)
             clip_start = self._require_finite_number(clip_start_time, "clip_start_time")
-            dest = self._require_finite_number(new_start_time, "new_start_time")
-            if dest < 0:
-                raise ValueError("new_start_time must be >= 0")
             clip = self._arr_find(track, clip_start)
             s, e = float(clip.start_time), float(clip.end_time)
             extent = e - s
             eps = self.ARRANGEMENT_EPSILON
-            if abs(dest - s) < eps:
+            dest_track = track
+            if to_track_index is not None:
+                if isinstance(to_track_index, bool) or not isinstance(to_track_index, int):
+                    raise TypeError("to_track_index must be an integer")
+                if to_track_index != track_index:
+                    dest_track = self._arr_track(to_track_index, to_expected_name)
+            elif to_expected_name is not None:
+                raise ValueError("to_expected_name needs to_track_index")
+            other_track = dest_track is not track
+            if new_start_time is None:
+                if not other_track:
+                    raise ValueError("new_start_time is required (or give to_track_index)")
+                dest = s
+            else:
+                dest = self._require_finite_number(new_start_time, "new_start_time")
+            if dest < 0:
+                raise ValueError("new_start_time must be >= 0")
+            if not other_track and abs(dest - s) < eps:
                 raise ValueError("The clip already starts at beat %s" % dest)
-            overlaps_self = dest < e - eps and dest + extent > s + eps
+            overlaps_self = (not other_track) and dest < e - eps and dest + extent > s + eps
             if copy and overlaps_self:
                 raise ValueError("A copy cannot overlap the clip it is copied from")
-            effects = self._arr_effects(track, dest, dest + extent, ignore=clip)
+            if other_track and bool(getattr(dest_track, "has_midi_input", False)) != bool(
+                    getattr(track, "has_midi_input", False)):
+                raise ValueError("Track '%s' is %s and track '%s' is %s: a clip can only go to a track of "
+                                 "the same kind" % (track.name, "MIDI" if track.has_midi_input else "audio",
+                                                    dest_track.name, "MIDI" if dest_track.has_midi_input else "audio"))
+            effects = self._arr_effects(dest_track, dest, dest + extent, ignore=None if other_track else clip)
             info = self._arr_info(track, track_index, do_apply, clip=clip.name,
                                   mode="copy" if copy else "move",
                                   from_range=[s, e], to_range=[dest, dest + extent],
                                   overwrites=effects)
+            if other_track:
+                info["to_track"] = dest_track.name
             if not do_apply:
                 return info
             if not overlaps_self:
-                self._arr_dup(track, clip, dest)
+                try:
+                    dest_track.duplicate_clip_to_arrangement(clip, float(dest))
+                except Exception as err:
+                    raise RuntimeError("Live refused to place the clip on '%s': %s" % (dest_track.name, err))
                 if not copy:
                     self._arr_delete_at(track, s)
             else:
@@ -4295,14 +4324,16 @@ class AbletonMCP(ControlSurface):
                     for c in list(track.arrangement_clips):
                         if float(c.start_time) >= scratch - eps:
                             track.delete_clip(c)
-            landed = [c for c in track.arrangement_clips
+            landed = [c for c in dest_track.arrangement_clips
                       if abs(float(c.start_time) - dest) < eps
                       and abs(float(c.end_time) - (dest + extent)) < eps]
             gone = copy or not any(abs(float(c.start_time) - s) < eps and abs(float(c.end_time) - e) < eps
                                    for c in track.arrangement_clips)
             info["applied"] = True
             info["verified"] = len(landed) == 1 and gone
-            info["clips"] = self._arr_facts(track)
+            info["clips"] = self._arr_facts(dest_track)
+            if other_track:
+                info["source_clips"] = self._arr_facts(track)
             return info
         except Exception as e:
             self.log_message("Error moving arrangement clip: " + str(e))
