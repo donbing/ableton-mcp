@@ -436,3 +436,84 @@ def test_tools_send_confirm_true_only_when_asked(conn):
 
 def test_tools_need_the_track_name(conn):
     assert "expected_name is required" in call(server.split_arrangement_clip, None, 0, None, 8.0, 12.0, confirm=True)
+
+
+# ----------------------------------------------------- to another track
+
+@pytest.fixture
+def two(script_module):
+    a = Track("Piano")
+    a.arrangement_clips = [Clip(8, 16, "A"), Clip(24, 32, "B")]
+    b = Track("Strings")
+    b.arrangement_clips = [Clip(10, 12, "S")]
+    return a, b, make(script_module, a, b)
+
+
+def mv(inst, **params):
+    base = dict(track_index=0, expected_name="Piano", clip_start_time=8)
+    base.update(params)
+    return run(inst, "move_arrangement_clip", **base)
+
+
+def test_a_clip_moves_to_another_track_keeping_its_beat(two):
+    a, b, inst = two
+    result = ok(mv(inst, to_track_index=1, to_expected_name="Strings", confirm=True))
+    assert result["verified"] is True and result["to_track"] == "Strings"
+    assert spans(a) == [(24, 32, 0)]
+    assert spans(b) == [(8, 16, 0)]          # it overwrote the 10-12 clip that sat under it
+    assert [c["start_time"] for c in result["source_clips"]] == [24.0]
+
+
+def test_a_clip_is_copied_to_another_track_at_a_new_beat(two):
+    a, b, inst = two
+    ok(mv(inst, to_track_index=1, to_expected_name="Strings", new_start_time=40.0, copy=True, confirm=True))
+    assert spans(a) == [(8, 16, 0), (24, 32, 0)] and (40, 48, 0) in spans(b)
+
+
+def test_the_preview_lists_what_the_other_track_loses(two):
+    a, b, inst = two
+    preview = ok(mv(inst, to_track_index=1, to_expected_name="Strings"))
+    assert [o["name"] for o in preview["overwrites"]] == ["S"] and preview["applied"] is False
+    assert spans(b) == [(10, 12, 0)]
+
+
+def test_trimmed_content_offset_goes_with_the_clip(two):
+    a, b, inst = two
+    ok(run(inst, "trim_arrangement_clip", track_index=0, expected_name="Piano", clip_start_time=8,
+           new_start_time=11, confirm=True))
+    ok(mv(inst, clip_start_time=11, to_track_index=1, to_expected_name="Strings", new_start_time=50.0, confirm=True))
+    assert (50, 55, 3) in spans(b)
+
+
+def test_a_clip_cannot_go_to_a_track_of_another_kind(script_module):
+    a = Track("Piano")
+    a.arrangement_clips = [Clip(8, 16)]
+    b = Track("Guitar", midi=False)
+    reply = mv(make(script_module, a, b), to_track_index=1, to_expected_name="Guitar", confirm=True)
+    assert "same kind" in err(reply) and spans(a) == [(8, 16, 0)] and b.arrangement_clips == []
+
+
+def test_the_destination_track_needs_its_name_and_a_group_is_refused(two):
+    a, b, inst = two
+    assert "expected_name is required" in err(mv(inst, to_track_index=1, confirm=True))
+    assert "not 'Other'" in err(mv(inst, to_track_index=1, to_expected_name="Other", confirm=True))
+    b.is_foldable = True
+    assert "group track" in err(mv(inst, to_track_index=1, to_expected_name="Strings", confirm=True))
+    assert "to_expected_name needs to_track_index" in err(mv(inst, to_expected_name="Strings", new_start_time=40.0))
+    assert spans(a) == [(8, 16, 0), (24, 32, 0)]
+
+
+def test_giving_the_same_track_as_the_destination_is_a_plain_move(two):
+    a, b, inst = two
+    assert "new_start_time is required" in err(mv(inst, to_track_index=0, to_expected_name="Piano", confirm=True))
+    ok(mv(inst, to_track_index=0, to_expected_name="Piano", new_start_time=40.0, confirm=True))
+    assert spans(a) == [(24, 32, 0), (40, 48, 0)]
+
+
+def test_tool_forwards_the_other_track_and_needs_both_names(conn):
+    conn.response = {"applied": False}
+    call(server.move_arrangement_clip, None, 0, "Piano", 8.0, None, False, 1, "Strings")
+    assert conn.sent[-1][1]["to_track_index"] == 1 and "new_start_time" not in conn.sent[-1][1]
+    assert "to_expected_name is required" in call(server.move_arrangement_clip, None, 0, "Piano", 8.0, 40.0,
+                                                  False, 1, None)
+    assert "give new_start_time" in call(server.move_arrangement_clip, None, 0, "Piano", 8.0)

@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.12**, **95 MCP tools** (upstream: 37), 1094 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.13**, **95 MCP tools** (upstream: 37), 1102 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -30,7 +30,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 | Added in 1.10.3, written here (run on a real Live 12 Lite, 2026-10-23) | Tools | Notes |
 |---|---|---|
-| Arrangement clip editing | `clear_arrangement_range`, `trim_arrangement_clip`, `split_arrangement_clip`, `move_arrangement_clip` (also copy), `create_arrangement_clip` (MIDI with notes, or audio from a file) | all preview by default, need `expected_name` and `confirm=true`. Live has no setter for a clip's start or end, so these are built on what it does: a clip placed over others overwrites them like a paste (tail shortened, head starts later with its content offset kept, a middle splits), and `duplicate_clip_to_arrangement` keeps extent and offset. Audio tracks need one empty Session slot (a silent clip is used for a moment). Same track only. |
+| Arrangement clip editing | `clear_arrangement_range`, `trim_arrangement_clip`, `split_arrangement_clip`, `move_arrangement_clip` (also copy), `create_arrangement_clip` (MIDI with notes, or audio from a file) | all preview by default, need `expected_name` and `confirm=true`. Live has no setter for a clip's start or end, so these are built on what it does: a clip placed over others overwrites them like a paste (tail shortened, head starts later with its content offset kept, a middle splits), and `duplicate_clip_to_arrangement` keeps extent and offset. Audio tracks need one empty Session slot (a silent clip is used for a moment). Same track, or another track of the same kind since 1.10.13 (`to_track_index`). |
 | Locators | `delete_locator` (guarded) | same stepwise playhead move as `create_locator` |
 
 | Taken from open upstream PRs in 1.10.4, authorship kept | What | Origin |
@@ -81,6 +81,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 |---|---|---|
 | Automation with real breakpoints and wave shapes | `set_clip_envelope` now writes REAL breakpoints (mode `linear`, the default: a fade is two points) and takes `shape`: `sine`, `triangle`, `saw_up`, `saw_down`, `square`, `random_steps`, `random_smooth`, `curve`, with `period` or `cycles`, `min`/`max`, `phase`, `points_per_cycle`, `duty`, `seed`, `exponent`, `invert` | measured: `Envelope.create_event(Live.Envelope.EnvelopeEvent(time, value))` makes a breakpoint and Live draws straight lines between breakpoints; a zero-length `insert_step` is only a spike, and the Bezier control coefficients are ignored. A sine is `points_per_cycle` breakpoints per cycle (16: within 2% of the amplitude; 32: within 0.5%). `ramp` still works (same as linear); `steps` still holds each value. |
 
+| Added in 1.10.13 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Move or copy an Arrangement clip to another track | `move_arrangement_clip` takes `to_track_index` and `to_expected_name`; `new_start_time` defaults to the same beat | measured: `Track.duplicate_clip_to_arrangement` accepts a clip from another track of the same kind (MIDI to MIDI, audio to audio; Live answers "Incompatible track types" for the rest) and keeps its extent, content offset and notes. The preview lists what the destination loses. |
+
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
 ## Install
@@ -114,7 +118,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
 
-Not implemented anywhere we found, planned by us: moving a clip to ANOTHER track; return/master device parameters; device reorder; browser search and preview.
+Not implemented anywhere we found, planned by us: return/master device parameters; device reorder; browser search and preview.
 
 ## Reconciling with upstream
 

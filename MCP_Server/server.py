@@ -2665,34 +2665,49 @@ def move_arrangement_clip(
     track_index: int,
     expected_name: str,
     clip_start_time: float,
-    new_start_time: float,
+    new_start_time: Optional[float] = None,
     copy: bool = False,
+    to_track_index: Optional[int] = None,
+    to_expected_name: Optional[str] = None,
     confirm: bool = False,
     user_prompt: str = "",
 ) -> str:
     """
-    Move (or copy) one Arrangement clip to another beat on the same track, in
-    two steps. DESTRUCTIVE for whatever is at the destination.
+    Move (or copy) one Arrangement clip to another beat, on the same track or on
+    another track of the same kind, in two steps. DESTRUCTIVE for whatever is at the
+    destination.
 
-    The clip keeps its length and content offset. Clips already at the
-    destination are overwritten, like a paste (the preview lists them). Moving
-    to another track is not supported. Step 1 (confirm=false, default) previews;
-    step 2 applies.
+    The clip keeps its length, content offset and notes. Clips already at the
+    destination are overwritten, like a paste (the preview lists them). With
+    to_track_index and to_expected_name the clip goes to another track: MIDI to a
+    MIDI track, audio to an audio track (Live refuses a MIDI clip on an audio track);
+    new_start_time then defaults to the same beat. Step 1 (confirm=false, default)
+    previews; step 2 applies.
 
     Parameters:
-    - track_index: Index of the (non-group) track
+    - track_index: Index of the (non-group) track that holds the clip
     - expected_name: The track's exact current name (required safety check)
     - clip_start_time: Start beat of the clip to move
-    - new_start_time: Beat where it should start
-    - copy: true = leave the original in place (a copy cannot overlap it)
+    - new_start_time: Beat where it should start (optional when to_track_index is given)
+    - copy: true = leave the original in place (a copy on the same track cannot overlap it)
+    - to_track_index: Index of the destination track, to move or copy to another track
+    - to_expected_name: The destination track's exact current name (required with to_track_index)
     - confirm: false = preview only (default), true = apply
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        return _arrangement_edit("move_arrangement_clip", {
-            "track_index": track_index, "expected_name": expected_name,
-            "clip_start_time": clip_start_time, "new_start_time": new_start_time,
-            "copy": copy}, confirm, "copy the clip" if copy else "move the clip")
+        if to_track_index is not None and to_expected_name is None:
+            return "Error: to_expected_name is required with to_track_index (the destination track's exact name)."
+        if new_start_time is None and to_track_index is None:
+            return "Error: give new_start_time, or to_track_index to move the clip to another track."
+        params = {"track_index": track_index, "expected_name": expected_name,
+                  "clip_start_time": clip_start_time, "copy": copy}
+        for key, value in (("new_start_time", new_start_time), ("to_track_index", to_track_index),
+                           ("to_expected_name", to_expected_name)):
+            if value is not None:
+                params[key] = value
+        return _arrangement_edit("move_arrangement_clip", params, confirm,
+                                 "copy the clip" if copy else "move the clip")
     except Exception as e:
         logger.error(f"Error moving arrangement clip: {str(e)}")
         return f"Error moving arrangement clip: {str(e)}"
