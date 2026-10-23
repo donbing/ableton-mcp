@@ -42,7 +42,7 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.2"
+SCRIPT_VERSION = "1.10.3"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -154,6 +154,11 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "clear_arrangement_range",
+    "trim_arrangement_clip",
+    "split_arrangement_clip",
+    "move_arrangement_clip",
+    "create_arrangement_clip",
     "delete_arrangement_clips",
     "delete_device",
     "get_audio_clip_info",
@@ -473,6 +478,11 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "clear_arrangement_range",
+                                 "trim_arrangement_clip",
+                                 "split_arrangement_clip",
+                                 "move_arrangement_clip",
+                                 "create_arrangement_clip",
                                  "clear_notes_from_clip",
                                  "set_clip_loop",
                                  "remove_notes_from_clip",
@@ -631,6 +641,32 @@ class AbletonMCP(ControlSurface):
                                 params.get("end_time"),
                                 # Preview unless the caller explicitly opts in.
                                 params.get("confirm", False))
+                        elif command_type == "clear_arrangement_range":
+                            result = self._clear_arrangement_range(
+                                params.get("track_index", 0), params.get("expected_name"),
+                                params.get("start_time"), params.get("end_time"),
+                                params.get("confirm", False))
+                        elif command_type == "trim_arrangement_clip":
+                            result = self._trim_arrangement_clip(
+                                params.get("track_index", 0), params.get("expected_name"),
+                                params.get("clip_start_time"), params.get("new_start_time"),
+                                params.get("new_end_time"), params.get("confirm", False))
+                        elif command_type == "split_arrangement_clip":
+                            result = self._split_arrangement_clip(
+                                params.get("track_index", 0), params.get("expected_name"),
+                                params.get("clip_start_time"), params.get("split_time"),
+                                params.get("confirm", False))
+                        elif command_type == "move_arrangement_clip":
+                            result = self._move_arrangement_clip(
+                                params.get("track_index", 0), params.get("expected_name"),
+                                params.get("clip_start_time"), params.get("new_start_time"),
+                                params.get("copy", False), params.get("confirm", False))
+                        elif command_type == "create_arrangement_clip":
+                            result = self._create_arrangement_clip(
+                                params.get("track_index", 0), params.get("expected_name"),
+                                params.get("start_time"), params.get("length"),
+                                params.get("notes"), params.get("path"),
+                                params.get("name", ""), params.get("confirm", False))
                         elif command_type == "delete_device":
                             result = self._delete_device(
                                 params.get("track_index", 0),
@@ -2618,7 +2654,8 @@ class AbletonMCP(ControlSurface):
 
         Each clip dict contains:
           name, start_time, end_time, length, color,
-          is_midi_clip, is_audio_clip, is_playing
+          is_midi_clip, is_audio_clip, is_playing,
+          extent, start_marker, end_marker, loop_start, loop_end, looping
         """
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
@@ -2637,7 +2674,16 @@ class AbletonMCP(ControlSurface):
                     "color": clip.color,
                     "is_midi_clip": clip.is_midi_clip,
                     "is_audio_clip": clip.is_audio_clip,
-                    "is_playing": clip.is_playing
+                    "is_playing": clip.is_playing,
+                    # extent is what the clip occupies on the timeline; length
+                    # is the loop length. start_marker / loop_* say which part
+                    # of the material plays (a trimmed head moves start_marker).
+                    "extent": clip.end_time - clip.start_time,
+                    "start_marker": getattr(clip, "start_marker", None),
+                    "end_marker": getattr(clip, "end_marker", None),
+                    "loop_start": getattr(clip, "loop_start", None),
+                    "loop_end": getattr(clip, "loop_end", None),
+                    "looping": getattr(clip, "looping", None),
                 })
 
             return {
@@ -3491,6 +3537,450 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error deleting locator: " + str(e))
             raise
+
+    # ── Arrangement clip editing (clear / trim / split / move / create) ───────
+    # Live's API has no setter for an Arrangement clip's start or end. What it
+    # does have, measured on Live 12.4 Lite (2026-10-23): placing a clip over
+    # others OVERWRITES them like a paste does (a tail is shortened, a head
+    # starts later with its content offset kept, a middle splits the clip in
+    # two); Track.duplicate_clip_to_arrangement accepts an Arrangement clip and
+    # keeps its extent and content offset; Track.create_midi_clip(start, length)
+    # makes a clip of exactly that length. So "erase a range" is: place a clip
+    # over it and delete that clip. Trim, split and move are built from that.
+    # Every edit runs in one main-thread task (measured to work without waits).
+
+    ARRANGEMENT_EPSILON = 1e-3
+    ARRANGEMENT_MIN_PIECE = 0.0625   # beats; shorter trims and splits are refused
+
+    def _arr_track(self, track_index, expected_name):
+        if isinstance(track_index, bool) or not isinstance(track_index, int):
+            raise TypeError("track_index must be an integer, got %r" % (track_index,))
+        self._require_expected_name(expected_name, "track")
+        tracks = list(self._song.tracks)
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError(
+                "track index %d out of range (have %d)" % (track_index, len(tracks)))
+        track = tracks[track_index]
+        if track.name != expected_name:
+            raise ValueError(
+                "Track %d is '%s', not '%s'; indices may have shifted. Nothing was changed."
+                % (track_index, track.name, expected_name))
+        if getattr(track, "is_foldable", False):
+            raise ValueError(
+                "Track '%s' is a group track and has no Arrangement clips of its own; "
+                "target the tracks inside it" % track.name)
+        for needed in ("arrangement_clips", "delete_clip", "duplicate_clip_to_arrangement"):
+            if not hasattr(track, needed):
+                raise RuntimeError(
+                    "This version of Live has no Track.%s, so Arrangement clips cannot "
+                    "be edited through the API. Nothing was changed." % needed)
+        return track
+
+    @staticmethod
+    def _arr_clips(track):
+        return sorted(track.arrangement_clips, key=lambda c: float(c.start_time))
+
+    def _arr_facts(self, track):
+        return [{"index": i, "name": c.name, "start_time": float(c.start_time),
+                 "end_time": float(c.end_time),
+                 "extent": float(c.end_time) - float(c.start_time)}
+                for i, c in enumerate(self._arr_clips(track))]
+
+    def _arr_find(self, track, start_time):
+        eps = self.ARRANGEMENT_EPSILON
+        clips = self._arr_clips(track)
+        matches = [c for c in clips if abs(float(c.start_time) - start_time) < eps]
+        if not matches:
+            raise ValueError(
+                "No Arrangement clip starts at beat %s on '%s'. Clips start at: %s"
+                % (start_time, track.name,
+                   ", ".join("%s" % float(c.start_time) for c in clips) or "none"))
+        if len(matches) > 1:
+            raise ValueError("Two clips start at beat %s; refusing an ambiguous edit" % start_time)
+        return matches[0]
+
+    def _arr_effects(self, track, start, end, ignore=None):
+        """What overwriting [start, end) does to the clips already there."""
+        eps = self.ARRANGEMENT_EPSILON
+        effects = []
+        for c in self._arr_clips(track):
+            if c is ignore:
+                continue
+            cs, ce = float(c.start_time), float(c.end_time)
+            if cs >= end - eps or ce <= start + eps:
+                continue
+            if cs >= start - eps and ce <= end + eps:
+                effect = "removed"
+            elif cs < start - eps and ce > end + eps:
+                effect = "split in two"
+            elif cs < start - eps:
+                effect = "tail cut, now ends at %s" % start
+            else:
+                effect = "head cut, now starts at %s" % end
+            effects.append({"name": c.name, "start_time": cs, "end_time": ce, "effect": effect})
+        return effects
+
+    def _arr_dup(self, track, clip, time_val):
+        eps = self.ARRANGEMENT_EPSILON
+        track.duplicate_clip_to_arrangement(clip, float(time_val))
+        found = [c for c in track.arrangement_clips if abs(float(c.start_time) - time_val) < eps]
+        if len(found) != 1:
+            raise RuntimeError(
+                "Expected one clip at beat %s after duplicating, found %d" % (time_val, len(found)))
+        return found[0]
+
+    def _arr_delete_at(self, track, start_time, name=None):
+        eps = self.ARRANGEMENT_EPSILON
+        for c in list(track.arrangement_clips):
+            if abs(float(c.start_time) - start_time) < eps and (name is None or c.name == name):
+                track.delete_clip(c)
+                return True
+        return False
+
+    def _arr_scratch_time(self, track):
+        ends = [float(c.end_time) for c in track.arrangement_clips]
+        return float(math.ceil(max(ends + [0.0])) + 4)
+
+    def _arr_eraser_wav(self):
+        import tempfile
+        import wave
+        path = os.path.join(tempfile.gettempdir(), "ableton_mcp_eraser_60s.wav")
+        if not os.path.isfile(path):
+            w = wave.open(path, "wb")
+            try:
+                w.setnchannels(1)
+                w.setsampwidth(1)
+                w.setframerate(8000)
+                w.writeframes(bytes([128]) * 8000 * 60)
+            finally:
+                w.close()
+        return path
+
+    def _arr_erase(self, track, start, end):
+        """Remove whatever lies in [start, end) on this track.
+
+        Clips that cross an edge are shortened (their content offset is kept),
+        a clip that spans the whole range is split in two, a clip inside it is
+        removed. Nothing outside the range changes.
+        """
+        length = end - start
+        if length <= self.ARRANGEMENT_EPSILON:
+            return
+        if getattr(track, "has_midi_input", False):
+            eraser = track.create_midi_clip(start, length)
+            track.delete_clip(eraser)
+            return
+        slot = None
+        for candidate in track.clip_slots:
+            if not candidate.has_clip:
+                slot = candidate
+                break
+        if slot is None:
+            raise RuntimeError(
+                "Editing Arrangement clips on an audio track needs one empty Session "
+                "slot on it (a silent clip is placed there for a moment). Nothing was "
+                "changed; clear a slot first.")
+        path = self._arr_eraser_wav()
+        slot.create_audio_clip(path)
+        try:
+            eraser = slot.clip
+            limit = float(eraser.length)
+            pieces = max(1, int(math.ceil(length / limit)))
+            chunk = length / pieces
+            eraser.loop_start = 0.0
+            for i in range(pieces):
+                eraser.loop_end = chunk
+                at = start + i * chunk
+                track.duplicate_clip_to_arrangement(eraser, at)
+                for c in list(track.arrangement_clips):
+                    if (abs(float(c.start_time) - at) < self.ARRANGEMENT_EPSILON
+                            and getattr(c, "file_path", None) == path):
+                        track.delete_clip(c)
+                        break
+        finally:
+            slot.delete_clip()
+
+    def _arr_info(self, track, track_index, do_apply, **extra):
+        info = {"track_index": track_index, "track_name": track.name}
+        info.update(extra)
+        info["applied"] = False
+        info["dry_run"] = not do_apply
+        return info
+
+    def _clear_arrangement_range(self, track_index, expected_name, start_time, end_time,
+                                 confirm=False):
+        """Preview or clear [start_time, end_time) on one Arrangement track.
+
+        Clips crossing an edge are shortened, one spanning the range is split in
+        two, ones inside are removed. DESTRUCTIVE: it previews unless confirm is
+        exactly True. Clips are not moved to close the gap.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            track = self._arr_track(track_index, expected_name)
+            start = self._require_finite_number(start_time, "start_time")
+            end = self._require_finite_number(end_time, "end_time")
+            if start < 0 or end - start < self.ARRANGEMENT_MIN_PIECE:
+                raise ValueError("start_time must be >= 0 and the range at least %s beats"
+                                 % self.ARRANGEMENT_MIN_PIECE)
+            effects = self._arr_effects(track, start, end)
+            info = self._arr_info(track, track_index, do_apply, start_time=start,
+                                  end_time=end, affected=effects)
+            if not do_apply:
+                return info
+            if effects:
+                self._arr_erase(track, start, end)
+            leftover = self._arr_effects(track, start, end)
+            info["applied"] = True
+            info["verified"] = not leftover
+            info["clips"] = self._arr_facts(track)
+            return info
+        except Exception as e:
+            self.log_message("Error clearing arrangement range: " + str(e))
+            raise
+
+    def _trim_arrangement_clip(self, track_index, expected_name, clip_start_time,
+                               new_start_time=None, new_end_time=None, confirm=False):
+        """Preview or shorten one Arrangement clip from its start and/or end.
+
+        The clip is identified by its start beat. The content is kept (a later
+        start keeps the content offset); only the audible extent shrinks. It
+        cannot be lengthened. Touches nothing but this clip.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            track = self._arr_track(track_index, expected_name)
+            clip_start = self._require_finite_number(clip_start_time, "clip_start_time")
+            clip = self._arr_find(track, clip_start)
+            s, e = float(clip.start_time), float(clip.end_time)
+            if new_start_time is None and new_end_time is None:
+                raise ValueError("Give new_start_time and/or new_end_time")
+            ns = s if new_start_time is None else self._require_finite_number(
+                new_start_time, "new_start_time")
+            ne = e if new_end_time is None else self._require_finite_number(
+                new_end_time, "new_end_time")
+            eps = self.ARRANGEMENT_EPSILON
+            if ns < s - eps or ne > e + eps:
+                raise ValueError(
+                    "A clip can only be shortened: it spans [%s, %s), so new_start_time "
+                    "must be >= %s and new_end_time <= %s" % (s, e, s, e))
+            if ne - ns < self.ARRANGEMENT_MIN_PIECE:
+                raise ValueError("The trimmed clip would be shorter than %s beats"
+                                 % self.ARRANGEMENT_MIN_PIECE)
+            info = self._arr_info(track, track_index, do_apply, clip=clip.name,
+                                  from_range=[s, e], to_range=[ns, ne])
+            if not do_apply:
+                return info
+            name = clip.name
+            if ns > s + eps:
+                self._arr_erase(track, s, ns)
+            if ne < e - eps:
+                self._arr_erase(track, ne, e)
+            found = [c for c in track.arrangement_clips
+                     if abs(float(c.start_time) - ns) < eps and abs(float(c.end_time) - ne) < eps]
+            info["applied"] = True
+            info["verified"] = len(found) == 1
+            info["clips"] = self._arr_facts(track)
+            return info
+        except Exception as e:
+            self.log_message("Error trimming arrangement clip: " + str(e))
+            raise
+
+    def _split_arrangement_clip(self, track_index, expected_name, clip_start_time,
+                                split_time, confirm=False):
+        """Preview or split one Arrangement clip in two at a beat, with no gap.
+
+        Both halves keep the content (the right half starts at the matching
+        offset). Works through a scratch copy placed after the last clip on the
+        track, removed again at the end, so no other clip is touched.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            track = self._arr_track(track_index, expected_name)
+            clip_start = self._require_finite_number(clip_start_time, "clip_start_time")
+            at = self._require_finite_number(split_time, "split_time")
+            clip = self._arr_find(track, clip_start)
+            s, e = float(clip.start_time), float(clip.end_time)
+            piece = self.ARRANGEMENT_MIN_PIECE
+            if at - s < piece or e - at < piece:
+                raise ValueError(
+                    "split_time must be at least %s beats inside the clip [%s, %s)"
+                    % (piece, s, e))
+            info = self._arr_info(track, track_index, do_apply, clip=clip.name,
+                                  from_range=[s, e], to_ranges=[[s, at], [at, e]])
+            if not do_apply:
+                return info
+            eps = self.ARRANGEMENT_EPSILON
+            scratch = self._arr_scratch_time(track)
+            d = at - s
+            try:
+                self._arr_dup(track, clip, scratch)                  # copy of the whole clip
+                self._arr_erase(track, scratch, scratch + d)         # keep its right part
+                self._arr_erase(track, at, e)                        # shorten the original
+                remainder = [c for c in track.arrangement_clips
+                             if abs(float(c.start_time) - (scratch + d)) < eps]
+                if len(remainder) != 1:
+                    raise RuntimeError("The scratch copy did not come out as expected")
+                self._arr_dup(track, remainder[0], at)               # right part back in place
+            finally:
+                for c in list(track.arrangement_clips):
+                    if float(c.start_time) >= scratch - eps:
+                        track.delete_clip(c)
+            left = [c for c in track.arrangement_clips
+                    if abs(float(c.start_time) - s) < eps and abs(float(c.end_time) - at) < eps]
+            right = [c for c in track.arrangement_clips
+                     if abs(float(c.start_time) - at) < eps and abs(float(c.end_time) - e) < eps]
+            info["applied"] = True
+            info["verified"] = len(left) == 1 and len(right) == 1
+            info["clips"] = self._arr_facts(track)
+            return info
+        except Exception as e:
+            self.log_message("Error splitting arrangement clip: " + str(e))
+            raise
+
+    def _move_arrangement_clip(self, track_index, expected_name, clip_start_time,
+                               new_start_time, copy=False, confirm=False):
+        """Preview or move (or copy) one Arrangement clip on its own track.
+
+        The clip keeps its extent and content offset. Whatever lies at the
+        destination is overwritten (the preview lists it). A move that overlaps
+        the clip's own old range goes through a scratch copy after the last clip.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            if not isinstance(copy, bool):
+                raise TypeError("copy must be true or false, got %r" % (copy,))
+            track = self._arr_track(track_index, expected_name)
+            clip_start = self._require_finite_number(clip_start_time, "clip_start_time")
+            dest = self._require_finite_number(new_start_time, "new_start_time")
+            if dest < 0:
+                raise ValueError("new_start_time must be >= 0")
+            clip = self._arr_find(track, clip_start)
+            s, e = float(clip.start_time), float(clip.end_time)
+            extent = e - s
+            eps = self.ARRANGEMENT_EPSILON
+            if abs(dest - s) < eps:
+                raise ValueError("The clip already starts at beat %s" % dest)
+            overlaps_self = dest < e - eps and dest + extent > s + eps
+            if copy and overlaps_self:
+                raise ValueError("A copy cannot overlap the clip it is copied from")
+            effects = self._arr_effects(track, dest, dest + extent, ignore=clip)
+            info = self._arr_info(track, track_index, do_apply, clip=clip.name,
+                                  mode="copy" if copy else "move",
+                                  from_range=[s, e], to_range=[dest, dest + extent],
+                                  overwrites=effects)
+            if not do_apply:
+                return info
+            if not overlaps_self:
+                self._arr_dup(track, clip, dest)
+                if not copy:
+                    self._arr_delete_at(track, s)
+            else:
+                scratch = self._arr_scratch_time(track)
+                try:
+                    held = self._arr_dup(track, clip, scratch)
+                    self._arr_delete_at(track, s)
+                    self._arr_dup(track, held, dest)
+                finally:
+                    for c in list(track.arrangement_clips):
+                        if float(c.start_time) >= scratch - eps:
+                            track.delete_clip(c)
+            landed = [c for c in track.arrangement_clips
+                      if abs(float(c.start_time) - dest) < eps
+                      and abs(float(c.end_time) - (dest + extent)) < eps]
+            gone = copy or not any(abs(float(c.start_time) - s) < eps and abs(float(c.end_time) - e) < eps
+                                   for c in track.arrangement_clips)
+            info["applied"] = True
+            info["verified"] = len(landed) == 1 and gone
+            info["clips"] = self._arr_facts(track)
+            return info
+        except Exception as e:
+            self.log_message("Error moving arrangement clip: " + str(e))
+            raise
+
+    def _create_arrangement_clip(self, track_index, expected_name, start_time, length=None,
+                                 notes=None, path=None, name="", confirm=False):
+        """Preview or create a clip at a beat position in the Arrangement.
+
+        MIDI track: needs length (beats); notes are optional and must lie inside
+        the clip (a note past the end is an error, not silently dropped).
+        Audio track: needs path (an audio file); the clip is as long as the file.
+        Whatever lies where the new clip goes is overwritten (the preview lists it).
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            track = self._arr_track(track_index, expected_name)
+            start = self._require_finite_number(start_time, "start_time")
+            if start < 0:
+                raise ValueError("start_time must be >= 0")
+            is_midi = bool(getattr(track, "has_midi_input", False))
+            live_notes = []
+            if is_midi:
+                if path:
+                    raise ValueError("path is for audio tracks; this is a MIDI track")
+                length = self._require_finite_number(length, "length")
+                if length < self.ARRANGEMENT_MIN_PIECE:
+                    raise ValueError("length must be at least %s beats" % self.ARRANGEMENT_MIN_PIECE)
+                for position, note in enumerate(notes or []):
+                    label = "notes[%d]" % position
+                    if not isinstance(note, dict):
+                        raise TypeError("%s must be an object" % label)
+                    pitch = note.get("pitch")
+                    if isinstance(pitch, bool) or not isinstance(pitch, int) or not 0 <= pitch <= 127:
+                        raise ValueError("%s.pitch must be an integer 0-127" % label)
+                    n_start = self._require_finite_number(note.get("start_time", 0.0), label + ".start_time")
+                    n_dur = self._require_finite_number(note.get("duration", 0.25), label + ".duration")
+                    velocity = self._require_finite_number(note.get("velocity", 100), label + ".velocity")
+                    mute = note.get("mute", False)
+                    if not isinstance(mute, bool):
+                        raise TypeError("%s.mute must be true or false" % label)
+                    if n_start < 0 or n_dur <= 0 or n_start >= length:
+                        raise ValueError("%s must start inside the clip (0 <= start < %s) and have "
+                                         "a positive duration" % (label, length))
+                    if not 1 <= velocity <= 127:
+                        raise ValueError("%s.velocity must be 1-127" % label)
+                    live_notes.append((pitch, n_start, n_dur, velocity, mute))
+                span = length
+            else:
+                if notes:
+                    raise ValueError("notes are for MIDI tracks; this is an audio track")
+                if not isinstance(path, str) or not os.path.isfile(path):
+                    raise ValueError("path must be an existing audio file, got %r" % (path,))
+                span = None
+            if name is not None and not isinstance(name, str):
+                raise TypeError("name must be a string")
+            effects = self._arr_effects(track, start, start + span) if span else []
+            info = self._arr_info(track, track_index, do_apply, start_time=start,
+                                  length=span, kind="midi" if is_midi else "audio",
+                                  note_count=len(live_notes), overwrites=effects)
+            if not do_apply:
+                if not is_midi:
+                    info["note"] = "the clip is as long as the file; what it overwrites is listed after creation"
+                return info
+            eps = self.ARRANGEMENT_EPSILON
+            if is_midi:
+                clip = track.create_midi_clip(start, length)
+                if live_notes:
+                    clip.set_notes(tuple(live_notes))
+            else:
+                clip = track.create_audio_clip(path, start)
+                if clip is None:
+                    found = [c for c in track.arrangement_clips
+                             if abs(float(c.start_time) - start) < eps]
+                    clip = found[0] if len(found) == 1 else None
+                if clip is None:
+                    raise RuntimeError("Live did not report the new audio clip")
+            if name:
+                clip.name = name
+            info["applied"] = True
+            info["created"] = {"name": clip.name, "start_time": float(clip.start_time),
+                               "end_time": float(clip.end_time)}
+            info["clips"] = self._arr_facts(track)
+            return info
+        except Exception as e:
+            self.log_message("Error creating arrangement clip: " + str(e))
+            raise
+
 
     # ── Return tracks ─────────────────────────────────────────────────────────
     # create_return_track and load_device_on_return adapted from the open

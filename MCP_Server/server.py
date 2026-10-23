@@ -139,6 +139,11 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "clear_arrangement_range",
+            "trim_arrangement_clip",
+            "split_arrangement_clip",
+            "move_arrangement_clip",
+            "create_arrangement_clip",
             "create_scene", "delete_scene", "duplicate_scene", "fire_scene",
             "set_scene_name", "stop_all_clips",
             "delete_arrangement_clips", "delete_device",
@@ -2439,6 +2444,240 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+def _arrangement_edit(command: str, params: dict, confirm: bool, verb: str) -> str:
+    """Shared preview / apply step of the Arrangement clip edits."""
+    from .script_handshake import require_capability
+
+    missing = require_capability(command)
+    if missing:
+        return missing
+    if params.get("expected_name") is None:
+        return (f"Error: expected_name is required. Read the track's exact current "
+                f"name (get_track_info / get_arrangement_clips) and pass it unchanged.")
+    ableton = get_ableton_connection()
+    if not confirm:
+        preview = ableton.send_command(command, dict(params, confirm=False))
+        return (
+            "NOT CHANGED (preview only). This would happen: "
+            + json.dumps(preview, indent=2)
+            + f"\nTo {verb}, call {command} again with the same arguments and confirm=true."
+        )
+    result = ableton.send_command(command, dict(params, confirm=True))
+    return f"Done ({verb}). " + json.dumps(result, indent=2)
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("clear_arrangement_range")
+@trajectory_tool("clear_arrangement_range")
+def clear_arrangement_range(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    start_time: float,
+    end_time: float,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Clear a stretch of one Arrangement track, in two steps. DESTRUCTIVE.
+
+    Clips that cross the start or end of [start_time, end_time) are shortened
+    (their content stays where it was), a clip that spans the whole range is
+    split in two with a gap, clips inside the range are removed. Nothing is moved
+    to close the gap. Units are beats from the start of the Arrangement.
+
+    Step 1: confirm=false (default) previews which clips are affected and how.
+    Step 2: the same call with confirm=true applies it. expected_name must equal
+    the track's current name. Audio tracks need one empty Session slot (a silent
+    clip is placed there for a moment).
+
+    Parameters:
+    - track_index: Index of the (non-group) track
+    - expected_name: The track's exact current name (required safety check)
+    - start_time, end_time: Range in beats, start < end
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _arrangement_edit("clear_arrangement_range", {
+            "track_index": track_index, "expected_name": expected_name,
+            "start_time": start_time, "end_time": end_time}, confirm, "clear the range")
+    except Exception as e:
+        logger.error(f"Error clearing arrangement range: {str(e)}")
+        return f"Error clearing arrangement range: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("trim_arrangement_clip")
+@trajectory_tool("trim_arrangement_clip")
+def trim_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_start_time: float,
+    new_start_time: Optional[float] = None,
+    new_end_time: Optional[float] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Shorten one Arrangement clip from its start and/or its end, in two steps.
+
+    The clip is found by its start beat (see get_arrangement_clips). The content
+    is kept: a later start keeps the content offset, so the same material plays
+    at the same time. A clip can only be shortened, never lengthened. Only this
+    clip changes. Step 1 (confirm=false, default) previews; step 2 applies.
+
+    Parameters:
+    - track_index: Index of the (non-group) track
+    - expected_name: The track's exact current name (required safety check)
+    - clip_start_time: Start beat of the clip to trim
+    - new_start_time: New start beat (>= the current start), optional
+    - new_end_time: New end beat (<= the current end), optional
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "expected_name": expected_name,
+                  "clip_start_time": clip_start_time}
+        if new_start_time is not None:
+            params["new_start_time"] = new_start_time
+        if new_end_time is not None:
+            params["new_end_time"] = new_end_time
+        return _arrangement_edit("trim_arrangement_clip", params, confirm, "trim the clip")
+    except Exception as e:
+        logger.error(f"Error trimming arrangement clip: {str(e)}")
+        return f"Error trimming arrangement clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("split_arrangement_clip")
+@trajectory_tool("split_arrangement_clip")
+def split_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_start_time: float,
+    split_time: float,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Split one Arrangement clip in two at a beat, with no gap, in two steps.
+
+    Both halves keep the content (the right half starts at the matching offset).
+    It works through a temporary copy placed after the last clip on the track,
+    removed again, so other clips are not touched. Step 1 (confirm=false,
+    default) previews; step 2 applies.
+
+    Parameters:
+    - track_index: Index of the (non-group) track
+    - expected_name: The track's exact current name (required safety check)
+    - clip_start_time: Start beat of the clip to split
+    - split_time: Beat to cut at, inside the clip
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _arrangement_edit("split_arrangement_clip", {
+            "track_index": track_index, "expected_name": expected_name,
+            "clip_start_time": clip_start_time, "split_time": split_time},
+            confirm, "split the clip")
+    except Exception as e:
+        logger.error(f"Error splitting arrangement clip: {str(e)}")
+        return f"Error splitting arrangement clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("move_arrangement_clip")
+@trajectory_tool("move_arrangement_clip")
+def move_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_start_time: float,
+    new_start_time: float,
+    copy: bool = False,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Move (or copy) one Arrangement clip to another beat on the same track, in
+    two steps. DESTRUCTIVE for whatever is at the destination.
+
+    The clip keeps its length and content offset. Clips already at the
+    destination are overwritten, like a paste (the preview lists them). Moving
+    to another track is not supported. Step 1 (confirm=false, default) previews;
+    step 2 applies.
+
+    Parameters:
+    - track_index: Index of the (non-group) track
+    - expected_name: The track's exact current name (required safety check)
+    - clip_start_time: Start beat of the clip to move
+    - new_start_time: Beat where it should start
+    - copy: true = leave the original in place (a copy cannot overlap it)
+    - confirm: false = preview only (default), true = apply
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _arrangement_edit("move_arrangement_clip", {
+            "track_index": track_index, "expected_name": expected_name,
+            "clip_start_time": clip_start_time, "new_start_time": new_start_time,
+            "copy": copy}, confirm, "copy the clip" if copy else "move the clip")
+    except Exception as e:
+        logger.error(f"Error moving arrangement clip: {str(e)}")
+        return f"Error moving arrangement clip: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("create_arrangement_clip")
+@trajectory_tool("create_arrangement_clip")
+def create_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    start_time: float,
+    length: Optional[float] = None,
+    notes: Optional[List[Dict[str, Union[int, float, bool]]]] = None,
+    path: Optional[str] = None,
+    name: str = "",
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Create a clip directly in the Arrangement at a beat, in two steps.
+
+    MIDI track: give length (beats) and, optionally, notes (pitch, start_time,
+    duration, velocity, mute; start_time is relative to the clip and every note
+    must start inside it, otherwise this is an error rather than a silent drop).
+    Audio track: give path to an audio file; the clip is as long as the file.
+    Whatever lies where the clip goes is overwritten (the MIDI preview lists it).
+    Step 1 (confirm=false, default) previews; step 2 creates.
+
+    Parameters:
+    - track_index: Index of the (non-group) track
+    - expected_name: The track's exact current name (required safety check)
+    - start_time: Beat where the clip starts
+    - length: Length in beats (MIDI tracks)
+    - notes: Notes to put in the clip (MIDI tracks)
+    - path: Absolute path of an audio file (audio tracks)
+    - name: Optional clip name
+    - confirm: false = preview only (default), true = create
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "expected_name": expected_name,
+                  "start_time": start_time, "name": name}
+        for key, value in (("length", length), ("notes", notes), ("path", path)):
+            if value is not None:
+                params[key] = value
+        return _arrangement_edit("create_arrangement_clip", params, confirm,
+                                 "create the clip")
+    except Exception as e:
+        logger.error(f"Error creating arrangement clip: {str(e)}")
+        return f"Error creating arrangement clip: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

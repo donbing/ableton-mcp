@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.2**, **74 MCP tools** (upstream: 37), 861 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.3**, **80 MCP tools** (upstream: 37), 911 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -27,6 +27,11 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Returns and transport | `create_return_track`, `load_device_on_return`, `set_time_signature`, `set_metronome`, `get_arrangement_loop`, `set_arrangement_loop`, `get_cue_points`, `jump_to_cue` | upstream #99, adapted (no locator create/delete: that is a known race, see [issue #4](https://github.com/vittorfp/ableton-mcp/issues/4)) |
 | Audio clip properties | `get_audio_clip_info`, `set_audio_clip_warp`, `set_audio_clip_gain`, `set_audio_clip_pitch` (Session slot or Arrangement clip): lets you read and change the warp that `create_audio_clip` turns on and rounds | upstream #99 / #119, adapted |
 | Note editing | `get_clip_info`, `set_clip_loop`, `remove_notes_from_clip` and `apply_note_modifications` and `quantize_clip` (all three preview by default) | upstream #99, #84, #119, adapted |
+
+| Added in 1.10.3, written here (run on a real Live 12 Lite, 2026-10-23) | Tools | Notes |
+|---|---|---|
+| Arrangement clip editing | `clear_arrangement_range`, `trim_arrangement_clip`, `split_arrangement_clip`, `move_arrangement_clip` (also copy), `create_arrangement_clip` (MIDI with notes, or audio from a file) | all preview by default, need `expected_name` and `confirm=true`. Live has no setter for a clip's start or end, so these are built on what it does: a clip placed over others overwrites them like a paste (tail shortened, head starts later with its content offset kept, a middle splits), and `duplicate_clip_to_arrangement` keeps extent and offset. Audio tracks need one empty Session slot (a silent clip is used for a moment). Same track only. |
+| Locators | `delete_locator` (guarded) | same stepwise playhead move as `create_locator` |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
@@ -61,7 +66,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
 
-Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **delete-locator** tool is in `main` (since 1.10.3, see below); creating one has been reliable since 1.10.2; return/master device parameters; device reorder; browser search and preview.
+Not implemented anywhere we found, planned by us: moving a clip to ANOTHER track; return/master device parameters; device reorder; browser search and preview.
 
 ## Reconciling with upstream
 
