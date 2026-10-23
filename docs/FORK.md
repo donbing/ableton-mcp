@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.11**, **95 MCP tools** (upstream: 37), 1065 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.12**, **95 MCP tools** (upstream: 37), 1094 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -76,6 +76,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.11 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
 | Browser search | `search_browser_items(query, category, max_results, loadable_only, max_seconds)`: items whose name (or folders below the category root) contain every word, with the uri `load_instrument_or_effect` takes | idea from upstream #97 (vanjaoljaca). Breadth first with a time budget; `truncated` says when to narrow it. On the real browser: about 300 to 2500 items a second. |
+
+| Changed in 1.10.12 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Automation with real breakpoints and wave shapes | `set_clip_envelope` now writes REAL breakpoints (mode `linear`, the default: a fade is two points) and takes `shape`: `sine`, `triangle`, `saw_up`, `saw_down`, `square`, `random_steps`, `random_smooth`, `curve`, with `period` or `cycles`, `min`/`max`, `phase`, `points_per_cycle`, `duty`, `seed`, `exponent`, `invert` | measured: `Envelope.create_event(Live.Envelope.EnvelopeEvent(time, value))` makes a breakpoint and Live draws straight lines between breakpoints; a zero-length `insert_step` is only a spike, and the Bezier control coefficients are ignored. A sine is `points_per_cycle` breakpoints per cycle (16: within 2% of the amplitude; 32: within 0.5%). `ramp` still works (same as linear); `steps` still holds each value. |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
