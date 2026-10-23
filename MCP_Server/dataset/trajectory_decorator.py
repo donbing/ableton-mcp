@@ -32,6 +32,7 @@ MODIFYING_TOOLS = {
     "set_track_solo",
     "set_track_arm",
     "delete_track",
+    "delete_locator",
     "create_scene",
     "delete_scene",
     "duplicate_scene",

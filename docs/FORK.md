@@ -61,7 +61,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
 
-Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **delete locator** tool (creating one is reliable since 1.10.2: the earlier races came from toggling in the same tick as the playhead move); return/master device parameters; device reorder; browser search and preview.
+Not implemented anywhere we found, planned by us: **move / trim / split Arrangement clips and create one at a position**; a **delete-locator** tool is in `main` (since 1.10.3, see below); creating one has been reliable since 1.10.2; return/master device parameters; device reorder; browser search and preview.
 
 ## Reconciling with upstream
 

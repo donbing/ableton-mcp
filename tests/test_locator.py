@@ -112,3 +112,81 @@ def test_if_live_never_applies_the_move_the_stray_cue_is_removed(inst, song, mon
     assert "did not apply the playhead move" in message and "removed" in message
     assert "beat 90.0" in message
     assert song.cue_points == []
+
+
+# ------------------------------------------------------------- delete_locator
+
+from tests.test_scenes import call, conn  # noqa: E402,F401
+import MCP_Server.server as server  # noqa: E402
+from MCP_Server.dataset.trajectory_decorator import MODIFYING_TOOLS  # noqa: E402
+
+
+def delete(inst, time, expected_name, dry_run=True):
+    return inst._process_command({"type": "delete_locator", "params": {
+        "time": time, "expected_name": expected_name, "dry_run": dry_run}})
+
+
+def with_cues(inst, song, *cues):
+    for beat, label in cues:
+        ok(create(inst, beat, label))
+    song.tick()
+
+
+def test_delete_previews_by_default_and_changes_nothing(inst, song):
+    with_cues(inst, song, (16, "Verso"), (64, "Intro"))
+    result = ok(delete(inst, 64, "Intro"))
+    assert result["deleted"] is False and result["dry_run"] is True
+    assert result["remaining"] == [{"name": "Verso", "time": 16.0}]
+    assert [c.name for c in song.cue_points] == ["Verso", "Intro"]
+
+
+def test_delete_removes_the_locator_and_restores_the_playhead(inst, song):
+    with_cues(inst, song, (16, "Verso"), (64, "Intro"))
+    result = ok(delete(inst, 64, "Intro", dry_run=False))
+    assert result["deleted"] is True
+    assert [(c.name, c.time) for c in song.cue_points] == [("Verso", 16.0)]
+    song.tick()
+    assert song._applied == pytest.approx(90.85)
+
+
+def test_delete_with_the_wrong_name_deletes_nothing(inst, song):
+    with_cues(inst, song, (64, "Intro"))
+    assert "is 'Intro', not 'Outro'" in err(delete(inst, 64, "Outro", dry_run=False))
+    assert len(song.cue_points) == 1
+
+
+def test_delete_where_there_is_no_locator_lists_the_ones_that_exist(inst, song):
+    with_cues(inst, song, (64, "Intro"))
+    message = err(delete(inst, 65, "x", dry_run=False))
+    assert "No locator at beat 65.0" in message and "Intro @ 64.0" in message
+
+
+def test_delete_needs_both_time_and_name(inst, song):
+    assert "time is required" in err(delete(inst, None, "x"))
+    assert "expected_name is required" in err(delete(inst, 64, None))
+
+
+def test_delete_is_refused_while_playing_but_the_preview_works(inst, song):
+    with_cues(inst, song, (64, "Intro"))
+    song.is_playing = True
+    assert ok(delete(inst, 64, "Intro"))["deleted"] is False
+    assert "Stop playback" in err(delete(inst, 64, "Intro", dry_run=False))
+    assert len(song.cue_points) == 1
+
+
+def test_delete_tool_previews_by_default(conn):
+    conn.response = {"name": "Intro", "time": 64.0, "remaining": []}
+    out = call(server.delete_locator, None, 64.0, "Intro")
+    assert conn.sent == [("delete_locator", {"time": 64.0, "expected_name": "Intro", "dry_run": True})]
+    assert out.startswith("NOT DELETED")
+
+
+def test_delete_tool_deletes_only_with_confirm_and_needs_a_name(conn):
+    conn.response = {"deleted": True}
+    out = call(server.delete_locator, None, 64.0, "Intro", confirm=True)
+    assert conn.sent[-1][1]["dry_run"] is False and out.startswith("Deleted locator")
+    assert "expected_name is required" in call(server.delete_locator, None, 64.0, None, confirm=True)
+
+
+def test_delete_locator_is_a_modifying_tool():
+    assert "delete_locator" in MODIFYING_TOOLS

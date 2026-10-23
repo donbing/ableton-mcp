@@ -138,6 +138,7 @@ class AbletonConnection:
             "create_clip", "create_audio_clip", "add_notes_to_clip", "set_clip_name",
             "delete_clip",
             "delete_track",
+            "delete_locator",
             "create_scene", "delete_scene", "duplicate_scene", "fire_scene",
             "set_scene_name", "stop_all_clips",
             "delete_arrangement_clips", "delete_device",
@@ -2438,6 +2439,61 @@ def duplicate_to_arrangement(
     except Exception as e:
         logger.error(f"Error duplicating clip to arrangement: {str(e)}")
         return f"Error duplicating clip to arrangement: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_locator")
+@trajectory_tool("delete_locator")
+def delete_locator(
+    ctx: Context,
+    time: float,
+    expected_name: str,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete the locator (cue point) at a beat position, in two steps.
+
+    Step 1: call with confirm=false (the default). Nothing is deleted; you get
+    the locator's name and time and the locators that would remain.
+    Step 2: call again with the same time and expected_name and confirm=true.
+
+    Deletion only happens when confirm=true AND expected_name equals the name of
+    the locator at that time (read both with get_cue_points). The transport must
+    be stopped: the playhead is moved onto the locator, Live is given a moment,
+    and the playhead is put back (about a second). Deletions go into Live's
+    undo history.
+
+    Parameters:
+    - time: Beat position of the locator to delete (as get_cue_points shows it)
+    - expected_name: The locator's exact current name (required safety check)
+    - confirm: false = preview only (default), true = delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("delete_locator")
+        if missing:
+            return missing
+        if expected_name is None:
+            return ("Error deleting locator: expected_name is required. Read the "
+                    "locator's name with get_cue_points and pass it exactly.")
+        ableton = get_ableton_connection()
+        params = {"time": time, "expected_name": expected_name}
+        if not confirm:
+            preview = ableton.send_command("delete_locator", dict(params, dry_run=True))
+            return (
+                "NOT DELETED (preview only). This would delete: "
+                + json.dumps(preview, indent=2)
+                + "\nTo delete, call delete_locator again with the same time "
+                "and expected_name and confirm=true."
+            )
+        result = ableton.send_command("delete_locator", dict(params, dry_run=False))
+        return "Deleted locator. " + json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error deleting locator: {str(e)}")
+        return f"Error deleting locator: {str(e)}"
 
 
 @mcp.tool()

@@ -153,6 +153,7 @@ SCRIPT_CAPABILITIES = [
     "set_scene_name",
     "stop_all_clips",
     "delete_scene",
+    "delete_locator",
     "delete_arrangement_clips",
     "delete_device",
     "get_audio_clip_info",
@@ -451,6 +452,11 @@ class AbletonMCP(ControlSurface):
                 # _get_meters.
                 response["result"] = self._get_meters(
                     params.get("seconds", 2.0), params.get("hz", 20))
+            elif command_type == "delete_locator":
+                # Socket thread, like create_locator: it has to wait for Live.
+                response["result"] = self._delete_locator(
+                    params.get("time"), params.get("expected_name"),
+                    params.get("dry_run", True))
             elif command_type == "create_locator":
                 # Deliberately NOT one main-thread task: it moves the playhead,
                 # waits for Live to apply it and only then toggles the cue. See
@@ -3404,6 +3410,86 @@ class AbletonMCP(ControlSurface):
             return self._call_on_main_thread(finish)
         except Exception as e:
             self.log_message("Error creating locator: " + str(e))
+            raise
+
+    def _delete_locator(self, time_val, expected_name, dry_run=True):
+        """Preview or delete the locator at a beat position (guarded).
+
+        Needs the locator's exact current name as a stale-index check. Deleting
+        uses the same steps as create_locator: Song.set_or_delete_cue toggles at
+        the playhead position Live has already applied, so the playhead is moved
+        onto the cue, Live is given a moment, the cue is toggled off and the
+        playhead is put back. Refused while the transport plays.
+        """
+        if time_val is None:
+            raise ValueError("time is required: the beat of the locator to delete")
+        target_time = float(time_val)
+        if not math.isfinite(target_time) or target_time < 0:
+            raise ValueError("time must be a number of beats >= 0")
+        if expected_name is None:
+            raise ValueError("expected_name is required: read it with get_cue_points "
+                             "(locators have names like \"1\" until renamed)")
+        tolerance = 1e-3
+        settle = self.LOCATOR_SETTLE_SECONDS
+
+        def listing(exclude=None):
+            return [{"name": c.name, "time": c.time} for c in self._song.cue_points
+                    if exclude is None or abs(c.time - exclude) >= tolerance]
+
+        def find():
+            for cue in self._song.cue_points:
+                if abs(cue.time - target_time) < tolerance:
+                    return cue
+            return None
+
+        def inspect():
+            cue = find()
+            if cue is None:
+                raise Exception(
+                    "No locator at beat %s. Locators are at: %s"
+                    % (target_time, ", ".join("%s @ %s" % (c["name"], c["time"])
+                                              for c in listing()) or "none"))
+            if cue.name != expected_name:
+                raise Exception(
+                    "The locator at beat %s is '%s', not '%s'; nothing was deleted "
+                    "(the index may be stale)." % (target_time, cue.name, expected_name))
+            if not dry_run and self._song.is_playing:
+                raise Exception("Stop playback before deleting a locator: the playhead "
+                                "has to be moved onto it and it would keep running")
+            return {"name": cue.name, "time": cue.time, "remaining": listing(cue.time)}
+
+        try:
+            info = self._call_on_main_thread(inspect)
+            if dry_run:
+                info.update({"deleted": False, "dry_run": True})
+                return info
+
+            def move():
+                original = self._song.current_song_time
+                self._song.current_song_time = info["time"]
+                return original
+
+            original = self._call_on_main_thread(move)
+            time.sleep(settle)
+            self._call_on_main_thread(self._song.set_or_delete_cue)
+            time.sleep(settle)
+
+            def finish():
+                try:
+                    self._song.current_song_time = original
+                except Exception:
+                    pass
+                return find() is None, listing()
+
+            gone, remaining = self._call_on_main_thread(finish)
+            if not gone:
+                raise Exception(
+                    "The locator at beat %s is still there after the delete; "
+                    "check get_cue_points." % target_time)
+            info.update({"deleted": True, "dry_run": False, "remaining": remaining})
+            return info
+        except Exception as e:
+            self.log_message("Error deleting locator: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
