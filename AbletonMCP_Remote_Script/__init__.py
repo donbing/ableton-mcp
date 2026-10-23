@@ -8,6 +8,7 @@ import json
 import re
 import math
 import threading
+import collections
 import time
 import traceback
 
@@ -48,7 +49,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.10"
+SCRIPT_VERSION = "1.10.11"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -160,6 +161,7 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "search_browser_items",
     "set_track_monitoring",
     "duplicate_track",
     "replace_clip_notes",
@@ -916,6 +918,13 @@ class AbletonMCP(ControlSurface):
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
+            elif command_type == "search_browser_items":
+                # Socket thread, like the other browser reads: it can walk many
+                # items, so it works against a time budget.
+                response["result"] = self._search_browser_items(
+                    params.get("query"), params.get("category", "all"),
+                    params.get("max_results", 20), params.get("max_seconds", 6.0),
+                    params.get("loadable_only", False))
             elif command_type == "get_browser_item":
                 uri = params.get("uri", None)
                 path = params.get("path", None)
@@ -5100,6 +5109,83 @@ class AbletonMCP(ControlSurface):
                     "note": "tracks after it moved down by one; the new track may have taken the arm"}
         except Exception as e:
             self.log_message("Error duplicating track: " + str(e))
+            raise
+
+    # ── Browser search ────────────────────────────────────────────────────────
+    # Idea from upstream PR #97 (vanjaoljaca): look an item up by name instead of
+    # walking folders of 150+ items. Breadth first (what is near the top, like a
+    # device, comes before presets deep inside), with a time budget.
+
+    BROWSER_ROOTS = ("instruments", "sounds", "drums", "audio_effects", "midi_effects",
+                     "plugins", "user_library", "packs")
+
+    def _search_browser_items(self, query, category="all", max_results=20, max_seconds=6.0,
+                              loadable_only=False):
+        """Find browser items whose name or path contains every word of the query.
+
+        category: "all" or one of BROWSER_ROOTS. Results carry the uri that
+        load_instrument_or_effect takes. truncated is true when the time or the
+        result limit stopped the search before the whole tree was seen.
+        """
+        try:
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("query is required (words to look for in the item name)")
+            if category != "all" and category not in self.BROWSER_ROOTS:
+                raise ValueError("category must be 'all' or one of %s" % ", ".join(self.BROWSER_ROOTS))
+            limit = int(max_results)
+            seconds = float(max_seconds)
+            if limit < 1 or limit > 200 or seconds <= 0 or seconds > 30:
+                raise ValueError("max_results must be 1-200 and max_seconds 0-30")
+            words = [w for w in query.lower().split() if w]
+            app = self.application()
+            if not app:
+                raise RuntimeError("Could not access Live application")
+            browser = app.browser
+            roots = []
+            for name in (self.BROWSER_ROOTS if category == "all" else (category,)):
+                root = getattr(browser, name, None)
+                if root is not None:
+                    roots.append((name, root))
+            started = time.time()
+            # (item, root name, names of the folders below the root down to the item)
+            queue_ = collections.deque((root, name, "") for name, root in roots)
+            results = []
+            visited = 0
+            skipped = 0
+            truncated = False
+            while queue_:
+                if time.time() - started > seconds:
+                    truncated = True
+                    break
+                item, root_name, below = queue_.popleft()
+                visited += 1
+                name = getattr(item, "name", "") or ""
+                path = root_name + ("/" + below if below else "")
+                # words are looked for in the item's own name and the folders below
+                # the root, never in the root's name (every item is under one)
+                if below and all(w in below.lower() for w in words):
+                    loadable = bool(getattr(item, "is_loadable", False))
+                    if loadable or not loadable_only:
+                        results.append({"name": name, "path": path, "uri": getattr(item, "uri", None),
+                                        "is_loadable": loadable,
+                                        "is_device": bool(getattr(item, "is_device", False)),
+                                        "is_folder": bool(getattr(item, "is_folder", False))})
+                        if len(results) >= limit:
+                            truncated = bool(queue_)
+                            break
+                try:
+                    children = list(getattr(item, "children", None) or [])
+                except Exception:
+                    skipped += 1
+                    continue
+                for child in children:
+                    child_name = getattr(child, "name", "") or "?"
+                    queue_.append((child, root_name, below + "/" + child_name if below else child_name))
+            return {"query": query, "category": category, "count": len(results), "results": results,
+                    "visited": visited, "skipped": skipped, "truncated": truncated,
+                    "seconds": round(time.time() - started, 2)}
+        except Exception as e:
+            self.log_message("Error searching the browser: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────

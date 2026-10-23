@@ -3309,6 +3309,43 @@ def duplicate_track(
         return f"Error duplicating track: {str(e)}"
 
 
+@mcp.tool()
+@telemetry_tool("search_browser_items")
+def search_browser_items(
+    ctx: Context,
+    query: str,
+    category: str = "all",
+    max_results: int = 20,
+    loadable_only: bool = False,
+    max_seconds: float = 6.0,
+    user_prompt: str = "",
+) -> str:
+    """
+    Find instruments, effects, presets and samples in Live's browser by name,
+    instead of opening folders of 150+ items. Every word of the query must appear in
+    the item's name or path ("analog pad", "compressor", "808"). Results carry the
+    uri that load_instrument_or_effect takes. The search is breadth first (a device
+    comes before the presets inside it) and has a time budget: when truncated is
+    true, narrow the query or the category. Idea from upstream PR #97 (vanjaoljaca).
+
+    Parameters:
+    - query: Words to look for
+    - category: "all" (default) or instruments, sounds, drums, audio_effects,
+      midi_effects, plugins, user_library, packs
+    - max_results: 1-200 (default 20)
+    - loadable_only: true to leave out folders and other items that cannot be loaded
+    - max_seconds: Time budget, up to 30 (default 6)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("search_browser_items", {
+            "query": query, "category": category, "max_results": max_results,
+            "loadable_only": loadable_only, "max_seconds": max_seconds}, "searching the browser")
+    except Exception as e:
+        logger.error(f"Error searching the browser: {str(e)}")
+        return f"Error searching the browser: {str(e)}"
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
 @telemetry_tool("delete_locator")
 @trajectory_tool("delete_locator")

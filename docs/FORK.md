@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.10**, **94 MCP tools** (upstream: 37), 1054 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.11**, **95 MCP tools** (upstream: 37), 1065 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -72,6 +72,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Devices on returns and the master | `get_track_info`, `get_device_parameters` and `set_device_parameter` take `track_type` ("track", "return", "master") | closes the old gap "return-track and master device parameters cannot be written": the reverb and delay on the returns can now be read and set |
 | Monitoring | `set_track_monitoring` ("in", "auto", "off"); `get_tracks_overview` shows it | useful before recording a guitar or a mic |
 | Duplicate a track | `duplicate_track`: devices, clips and mixer, copy placed after the original; refused cleanly at Live Lite's 8-track limit | from upstream #94 (Luke Gimza) |
+
+| Added in 1.10.11 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Browser search | `search_browser_items(query, category, max_results, loadable_only, max_seconds)`: items whose name (or folders below the category root) contain every word, with the uri `load_instrument_or_effect` takes | idea from upstream #97 (vanjaoljaca). Breadth first with a time budget; `truncated` says when to narrow it. On the real browser: about 300 to 2500 items a second. |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
