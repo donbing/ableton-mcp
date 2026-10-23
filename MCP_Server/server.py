@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "press_dialog_button",
             "set_track_monitoring", "duplicate_track",
             "replace_clip_notes", "set_color",
             "set_device_routing", "set_clip_envelope", "clear_clip_envelope",
@@ -2159,6 +2160,11 @@ def undo(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
     undo may therefore revert many MCP changes at once (renames, tempo, mutes,
     track creation/deletion, everything since the user's last manual action) and
     also the user's own recent manual edits. It is not "undo the last tool call".
+    NOTE: since Remote Script 1.10.15 every MCP tool call is wrapped in its own undo
+    step, so with a current script one undo normally reverts only the LAST tool call
+    (tools that work in several steps, such as create_locator, set_track_routing and
+    set_device_routing, can take more than one undo). It still reverts the user's own
+    manual edits when no tool call came after them: read the session first.
 
     Step 1: call with confirm=false (the default). Nothing is changed; you get a
     preview with this warning plus can_undo / can_redo. Tell the user what an
@@ -3375,6 +3381,58 @@ def search_browser_items(
     except Exception as e:
         logger.error(f"Error searching the browser: {str(e)}")
         return f"Error searching the browser: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_live_status")
+def get_live_status(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Live's health in one read: version and edition, CPU load (average and peak) and the
+    performance impact of each track (heaviest first, to find the plugin that makes it
+    crackle), the features this edition lacks (Live Lite), and whether a dialog is open
+    (with its text and how many buttons it has).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_live_status", {}, "getting Live status")
+    except Exception as e:
+        logger.error(f"Error getting Live status: {str(e)}")
+        return f"Error getting Live status: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("press_dialog_button")
+@trajectory_tool("press_dialog_button")
+def press_dialog_button(
+    ctx: Context,
+    button_index: int,
+    expected_message: str,
+    user_prompt: str = "",
+) -> str:
+    """
+    Press a button of the modal dialog Live is showing (for example the "Couldn't create track"
+    box at Live Lite's limit, which otherwise waits for a click). Read the dialog first with
+    get_live_status. Live reports how many buttons there are but not their labels, so only press
+    a dialog whose buttons you know (an info box with one OK button is index 0); do not guess on a
+    "Save changes?" box. expected_message must be a piece of the dialog's own text: a different
+    dialog is never pressed by mistake.
+
+    Parameters:
+    - button_index: 0-based index of the button
+    - expected_message: A piece of the open dialog's text (case-insensitive)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_message is None:
+            return "Error: expected_message is required (a piece of the dialog's text)."
+        return _json_call("press_dialog_button", {"button_index": button_index,
+                                                  "expected_message": expected_message},
+                          "pressing a dialog button")
+    except Exception as e:
+        logger.error(f"Error pressing a dialog button: {str(e)}")
+        return f"Error pressing a dialog button: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

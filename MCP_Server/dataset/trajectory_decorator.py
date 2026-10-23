@@ -33,6 +33,7 @@ MODIFYING_TOOLS = {
     "set_track_arm",
     "delete_track",
     "delete_locator",
+    "press_dialog_button",
     "set_track_monitoring",
     "duplicate_track",
     "replace_clip_notes",
