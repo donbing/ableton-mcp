@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.14"
+SCRIPT_VERSION = "1.10.15"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -58,7 +58,12 @@ UNDO_WARNING = (
     "WARNING: Live merges API-originated edits into ONE undo step, so a single "
     "undo/redo may revert SEVERAL MCP changes (everything since the user's last "
     "manual action) and also the user's own recent manual edits. Verify the "
-    "session state afterwards.")
+    "session state afterwards. NOTE: since Remote Script 1.10.15 every MCP tool call "
+    "is wrapped in its own undo step, so with a current script one undo normally "
+    "reverts only the LAST tool call (tools that work in several steps, such as "
+    "create_locator, set_track_routing and set_device_routing, can take more than one "
+    "undo). Live's undo still reverts the user's own manual edits when no tool call "
+    "came after them: read the session first.")
 PROTOCOL_VERSION = 1
 
 # get_meters sampling limits. The window is capped so a request can never tie
@@ -162,6 +167,9 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "undo_steps",
+    "get_live_status",
+    "press_dialog_button",
     "search_browser_items",
     "set_track_monitoring",
     "duplicate_track",
@@ -491,6 +499,8 @@ class AbletonMCP(ControlSurface):
                 # _get_meters.
                 response["result"] = self._get_meters(
                     params.get("seconds", 2.0), params.get("hz", 20))
+            elif command_type == "get_live_status":
+                response["result"] = self._get_live_status()
             elif command_type == "get_track_routing":
                 response["result"] = self._get_track_routing(
                     params.get("track_index", 0), params.get("track_type", "track"))
@@ -545,6 +555,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "press_dialog_button",
                                  "set_track_monitoring", "duplicate_track",
                                  "replace_clip_notes", "set_color",
                                  "set_clip_envelope", "clear_clip_envelope",
@@ -582,6 +593,7 @@ class AbletonMCP(ControlSurface):
                 
                 # Define a function to execute on the main thread
                 def main_thread_task():
+                    undo_open = self._begin_undo_step(command_type)
                     try:
                         result = None
                         if command_type == "create_midi_track":
@@ -753,6 +765,9 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "duplicate_track":
                             result = self._duplicate_track(
                                 params.get("track_index", 0), params.get("expected_name"))
+                        elif command_type == "press_dialog_button":
+                            result = self._press_dialog_button(
+                                params.get("button_index"), params.get("expected_message"))
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -890,6 +905,8 @@ class AbletonMCP(ControlSurface):
                     except Exception as e:
                         self._log_command_error("Error in main thread task", e)
                         response_queue.put({"status": "error", "message": str(e)})
+                    finally:
+                        self._end_undo_step(undo_open)
                 
                 # Schedule the task to run on the main thread
                 try:
@@ -982,6 +999,7 @@ class AbletonMCP(ControlSurface):
                 response_queue = queue.Queue()
 
                 def main_thread_task():
+                    undo_open = self._begin_undo_step(command_type)
                     try:
                         result = self._set_device_parameter(
                             params.get("track_index", 0),
@@ -994,6 +1012,8 @@ class AbletonMCP(ControlSurface):
                     except Exception as e:
                         self._log_command_error("Error in main thread task", e)
                         response_queue.put({"status": "error", "message": str(e)})
+                    finally:
+                        self._end_undo_step(undo_open)
 
                 try:
                     self.schedule_message(0, main_thread_task)
@@ -5420,6 +5440,104 @@ class AbletonMCP(ControlSurface):
                     "seconds": round(time.time() - started, 2)}
         except Exception as e:
             self.log_message("Error searching the browser: " + str(e))
+            raise
+
+    # ── Undo steps, Live status and dialogs ───────────────────────────────────
+    # Measured on Live 12.4 Lite (2026-10-24): Song.begin_undo_step / end_undo_step make
+    # each wrapped edit its own undo step (without them Live merged every API edit into one).
+
+    def _begin_undo_step(self, command_type):
+        """Open an undo step around one main-thread command; True if one was opened.
+        Not around undo/redo themselves."""
+        if command_type in ("undo", "redo"):
+            return False
+        begin = getattr(self._song, "begin_undo_step", None)
+        if begin is None:
+            return False
+        try:
+            begin()
+            return True
+        except Exception as e:
+            self.log_message("begin_undo_step failed: " + str(e))
+            return False
+
+    def _end_undo_step(self, opened):
+        if not opened:
+            return
+        try:
+            self._song.end_undo_step()
+        except Exception as e:
+            self.log_message("end_undo_step failed: " + str(e))
+
+    def _get_live_status(self):
+        """Live's version and edition, CPU load (average and peak, and per track), the
+        features this edition lacks, and any open dialog. Every field is read on its own,
+        so one that this Live lacks does not stop the rest."""
+        app = self.application()
+        song = self._song
+        info = {}
+
+        def put(key, fn):
+            try:
+                info[key] = fn()
+            except Exception as e:
+                info[key] = None
+                info.setdefault("unavailable", []).append("%s (%s)" % (key, str(e)[:60]))
+
+        put("version", app.get_version_string)
+        put("build", app.get_build_id)
+        put("variant", app.get_variant)
+        put("cpu_average", lambda: float(app.average_process_usage))
+        put("cpu_peak", lambda: float(app.peak_process_usage))
+        put("features_this_edition_lacks", lambda: list(app.unavailable_features))
+        put("open_dialogs", lambda: int(app.open_dialog_count))
+        if info.get("open_dialogs"):
+            put("dialog_message", lambda: app.current_dialog_message)
+            put("dialog_button_count", lambda: int(app.current_dialog_button_count))
+        put("is_playing", lambda: bool(song.is_playing))
+        put("tempo", lambda: float(song.tempo))
+        put("exclusive_arm", lambda: bool(song.exclusive_arm))
+        put("exclusive_solo", lambda: bool(song.exclusive_solo))
+        impact = []
+        for kind, tracks in (("track", song.tracks), ("return", song.return_tracks)):
+            for i, t in enumerate(tracks):
+                try:
+                    value = float(t.performance_impact)
+                except Exception:
+                    continue
+                impact.append({"kind": kind, "index": i, "name": t.name, "performance_impact": value})
+        impact.sort(key=lambda r: -r["performance_impact"])
+        info["track_performance_impact"] = impact
+        return info
+
+    def _press_dialog_button(self, button_index, expected_message):
+        """Press a button of the dialog Live is showing (a modal "Couldn't create track", say).
+
+        Both guards are required: button_index (0-based; Live reports the button COUNT, not
+        their labels) and expected_message, a piece of the dialog's own text that must be in it,
+        so a different dialog that appeared in the meantime is never answered by mistake.
+        """
+        try:
+            app = self.application()
+            if isinstance(button_index, bool) or not isinstance(button_index, int):
+                raise TypeError("button_index must be an integer")
+            if not isinstance(expected_message, str) or not expected_message.strip():
+                raise ValueError("expected_message is required: a piece of the dialog's text "
+                                 "(read it with get_live_status)")
+            if int(app.open_dialog_count) < 1:
+                raise ValueError("No dialog is open")
+            message = app.current_dialog_message
+            if expected_message.lower() not in message.lower():
+                raise ValueError("The open dialog says %r, not something containing %r; nothing was pressed"
+                                 % (message, expected_message))
+            count = int(app.current_dialog_button_count)
+            if button_index < 0 or button_index >= count:
+                raise IndexError("button_index %d out of range: the dialog has %d button(s)" % (button_index, count))
+            app.press_current_dialog_button(button_index)
+            return {"pressed": button_index, "dialog": message, "button_count": count,
+                    "open_dialogs_after": int(app.open_dialog_count)}
+        except Exception as e:
+            self.log_message("Error pressing a dialog button: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────

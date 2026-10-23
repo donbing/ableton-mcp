@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.14**, **95 MCP tools** (upstream: 37), 1105 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.15**, **97 MCP tools** (upstream: 37), 1120 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -89,6 +89,12 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 |---|---|---|
 | Deleting a group track | `delete_track` on a group now deletes the group first, which takes its members with it | found on a real group: deleting the members one by one fails on the last one ("Couldn't delete track.") and left the set half deleted. If Live stops partway the error now says how many tracks are left and how to undo. A real delete of a group with 3 members, then one undo, brought all 7 tracks back. |
 | `get_tracks_overview` with a group | the monitoring state is read defensively (a group track raises when it is read); each member shows its `group` | |
+
+| Added in 1.10.15 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| One undo step per tool call | every state-changing tool runs between `Song.begin_undo_step` and `end_undo_step` | measured: without them Live merged every API edit into one undo step; with them three tool calls took three undos, each reverting exactly one, and three redos restored them. Tools that work in several ticks (`create_locator`, `set_track_routing`, `set_device_routing`) are not wrapped: a step left open across ticks would swallow the user's own edits. The `undo` warning says so. |
+| Live's health | `get_live_status`: version and edition, CPU average and peak, performance impact per track (heaviest first), features the edition lacks, open dialog | |
+| Modal dialogs | `press_dialog_button(button_index, expected_message)`: Live reports the dialog's text and how many buttons it has, not their labels. The "number of tracks is limited to 8" box has 2 buttons and index 0 closes it | the Remote Script keeps answering while a dialog is open, so the dialog can be read and pressed from the tool |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

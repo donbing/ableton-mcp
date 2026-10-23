@@ -36,7 +36,7 @@ NEW_CAPABILITIES = {
 
 
 # Capabilities that advertise a feature of an existing command, not a command.
-FEATURE_FLAGS = {"get_device_parameters_v2", "undo_confirm_guard"}
+FEATURE_FLAGS = {"get_device_parameters_v2", "undo_confirm_guard", "undo_steps"}
 
 
 def _load_script_module():
