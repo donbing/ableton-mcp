@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "set_device_routing", "set_clip_envelope", "clear_clip_envelope",
             "back_to_arrangement", "set_track_routing",
             "clear_arrangement_range",
             "trim_arrangement_clip",
@@ -984,12 +985,17 @@ def add_notes_to_clip(
     user_prompt: str = ""
 ) -> str:
     """
-    Add MIDI notes to a clip.
+    Add MIDI notes to a clip. The reply says how many notes the clip really holds
+    afterwards and lists any note that was refused.
 
     Parameters:
     - track_index: The index of the track containing the clip
     - clip_index: The index of the clip slot containing the clip
-    - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute
+    - notes: List of note dictionaries. Fields: pitch, start_time (beats from the
+      clip start), duration, velocity, mute, and optionally probability (0-1),
+      velocity_deviation (-127..127), release_velocity (0-127). An unknown field
+      is an error. A note that starts before 0 or at or after the clip's end
+      would never play, so it is NOT added and is listed in the reply.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -999,7 +1005,17 @@ def add_notes_to_clip(
             "clip_index": clip_index,
             "notes": notes
         })
-        return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
+        added = result.get("note_count", len(notes)) if isinstance(result, dict) else len(notes)
+        message = f"Added {added} notes to clip at track {track_index}, slot {clip_index}"
+        rejected = result.get("rejected") if isinstance(result, dict) else None
+        if rejected:
+            details = "; ".join(
+                f"note {r['index']} (pitch {r['pitch']}, start {r['start_time']}): {r['reason']}"
+                for r in rejected)
+            message += f". NOT added ({len(rejected)} of {len(notes)}): {details}"
+        if isinstance(result, dict) and result.get("warning"):
+            message += f". WARNING: {result['warning']}"
+        return message
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
         return f"Error adding notes to clip: {str(e)}"
@@ -2770,6 +2786,253 @@ def set_track_routing(
     except Exception as e:
         logger.error(f"Error setting track routing: {str(e)}")
         return f"Error setting track routing: {str(e)}"
+
+
+def _json_call(command: str, params: dict, error_label: str) -> str:
+    from .script_handshake import require_capability
+
+    missing = require_capability(command)
+    if missing:
+        return missing
+    return json.dumps(get_ableton_connection().send_command(command, params), indent=2)
+
+
+@mcp.tool()
+@telemetry_tool("get_device_routing")
+def get_device_routing(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Read a device's sidechain source ("Audio From") on Compressor, Gate, Glue
+    Compressor and the other devices that have one: the current type and channel,
+    the types and channels Live offers, and whether the device's sidechain is on
+    ("S/C On"). Find the device_index with get_track_info.
+
+    Parameters:
+    - track_index: Index within the chosen track_type
+    - device_index: Index of the device in the track's chain
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_device_routing", {"track_index": track_index,
+                                                 "device_index": device_index,
+                                                 "track_type": track_type}, "getting device routing")
+    except Exception as e:
+        logger.error(f"Error getting device routing: {str(e)}")
+        return f"Error getting device routing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_device_routing")
+@trajectory_tool("set_device_routing")
+def set_device_routing(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    routing_type: Optional[str] = None,
+    routing_channel: Optional[str] = None,
+    sidechain_on: Optional[bool] = None,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Set a device's sidechain source: which track feeds it ("Audio From" type, for
+    example the kick track), at which tap (channel: "Pre FX", "Post FX", "Post
+    Mixer"), and optionally switch its sidechain on or off ("S/C On"). This is the
+    ducking setup: a Compressor on the bass with the kick as its source.
+
+    A new type is applied first, Live is given a moment to list its channels, then
+    the channel is set (about a second). expected_name (the track) and
+    expected_device_name are required safety checks. The reply has the previous
+    and the new routing. Two tracks with the same name cannot be picked by name.
+
+    Parameters:
+    - track_index: Index of the track that holds the device
+    - device_index: Index of the device in its chain
+    - expected_name: The track's exact current name
+    - expected_device_name: The device's exact current name
+    - routing_type: Name of the source (a track name, "Resampling", "Ext. In", ...)
+    - routing_channel: The tap ("Pre FX", "Post FX", "Post Mixer", ...)
+    - sidechain_on: true/false to switch the device's "S/C On"
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return ("Error setting device routing: expected_name (the track) and "
+                    "expected_device_name are required.")
+        params = {"track_index": track_index, "device_index": device_index,
+                  "track_type": track_type, "expected_name": expected_name,
+                  "expected_device_name": expected_device_name}
+        for key, value in (("routing_type", routing_type), ("routing_channel", routing_channel),
+                           ("sidechain_on", sidechain_on)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_device_routing", params, "setting device routing")
+    except Exception as e:
+        logger.error(f"Error setting device routing: {str(e)}")
+        return f"Error setting device routing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_clip_envelope")
+def get_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    parameter: str,
+    clip_index: int = 0,
+    device_index: Optional[int] = None,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+    step: float = 0.25,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read the automation a clip holds for one parameter, as samples every `step`
+    beats (times are from the clip start; values in the parameter's own units, with
+    Live's display string). has_envelope is false when the clip has none for it.
+
+    The parameter is a mixer one ("volume", "pan", "send A") or, with
+    device_index, a device parameter by name (as get_device_parameters lists it) or
+    index. Only Session clips have automation the API can reach (an Arrangement
+    clip made from a Session clip keeps the automation it had). At most 512 samples.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - parameter: "volume", "pan", "send A"/"send B", or a device parameter name
+    - clip_index: Session clip slot
+    - device_index: Device holding the parameter; leave out for mixer parameters
+    - start, end: Window in beats from the clip start (default the whole clip)
+    - step: Beats between samples (default 0.25)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "clip_index": clip_index, "parameter": parameter,
+                  "step": step}
+        for key, value in (("device_index", device_index), ("start", start), ("end", end)):
+            if value is not None:
+                params[key] = value
+        return _json_call("get_clip_envelope", params, "reading clip envelope")
+    except Exception as e:
+        logger.error(f"Error reading clip envelope: {str(e)}")
+        return f"Error reading clip envelope: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("set_clip_envelope")
+@trajectory_tool("set_clip_envelope")
+def set_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    parameter: str,
+    points: List[Dict[str, float]],
+    clip_index: int = 0,
+    device_index: Optional[int] = None,
+    mode: str = "steps",
+    resolution: float = 0.125,
+    end: Optional[float] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Write a clip's automation of one parameter, in two steps. It OVERWRITES that
+    parameter's automation from the first point to the end of the written span.
+
+    points: [{"time": beats from the clip start, "value": the parameter's own
+    units}] in increasing time (a volume of 0.85 is 0 dB; read get_clip_envelope or
+    get_device_parameters for ranges). mode "steps": each value holds until the next
+    point (the last until `end`, default the clip end). mode "ramp": straight lines
+    between points, written as steps of `resolution` beats (Live only lets this
+    write constant stretches). Values outside the parameter's range are an error.
+
+    Step 1: confirm=false (default) previews (parameter range, steps, whether it
+    replaces automation). Step 2: the same call with confirm=true; the reply reads
+    the values back. Clip automation can only target parameters of the clip's own
+    track, and only Session clips can be written (copy the clip into the
+    Arrangement afterwards with duplicate_to_arrangement: the automation comes
+    along). Idea from upstream PR #23 (zzstoatzz).
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - expected_name: The track's exact current name (required safety check)
+    - parameter: "volume", "pan", "send A"/"send B", or a device parameter name
+    - points: The breakpoints, as above
+    - clip_index: Session clip slot
+    - device_index: Device holding the parameter; leave out for mixer parameters
+    - mode: "steps" (default) or "ramp"
+    - resolution: Beats per step in ramp mode (0.03125 to 4, default 0.125)
+    - end: Where the last point's stretch ends (default the clip end)
+    - confirm: false = preview only (default), true = write
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name,
+                  "parameter": parameter, "points": points, "mode": mode,
+                  "resolution": resolution, "confirm": confirm}
+        for key, value in (("device_index", device_index), ("end", end)):
+            if value is not None:
+                params[key] = value
+        out = _json_call("set_clip_envelope", params, "writing clip envelope")
+        return (out if confirm else
+                "NOT WRITTEN (preview only). This would happen: " + out +
+                "\nTo write it, call set_clip_envelope again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error writing clip envelope: {str(e)}")
+        return f"Error writing clip envelope: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("clear_clip_envelope")
+@trajectory_tool("clear_clip_envelope")
+def clear_clip_envelope(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    parameter: str,
+    clip_index: int = 0,
+    device_index: Optional[int] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Remove a clip's automation of one parameter, in two steps (Live's undo can bring
+    it back). Step 1: confirm=false (default) says whether the clip has any for that
+    parameter. Step 2: the same call with confirm=true removes it.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - expected_name: The track's exact current name (required safety check)
+    - parameter: "volume", "pan", "send A"/"send B", or a device parameter name
+    - clip_index: Session clip slot
+    - device_index: Device holding the parameter; leave out for mixer parameters
+    - confirm: false = preview only (default), true = remove
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name,
+                  "parameter": parameter, "confirm": confirm}
+        for key, value in (("device_index", device_index),):
+            if value is not None:
+                params[key] = value
+        out = _json_call("clear_clip_envelope", params, "clearing clip envelope")
+        return (out if confirm else
+                "NOT REMOVED (preview only). This would happen: " + out +
+                "\nTo remove it, call clear_clip_envelope again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error clearing clip envelope: {str(e)}")
+        return f"Error clearing clip envelope: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

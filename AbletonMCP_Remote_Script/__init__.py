@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.5"
+SCRIPT_VERSION = "1.10.6"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -160,6 +160,11 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "get_device_routing",
+    "set_device_routing",
+    "get_clip_envelope",
+    "set_clip_envelope",
+    "clear_clip_envelope",
     "back_to_arrangement",
     "get_track_routing",
     "set_track_routing",
@@ -201,6 +206,10 @@ QUANTIZE_GRIDS = {
 
 # Fields apply_note_modifications may change on an existing note.
 NOTE_EDIT_FIELDS = ("pitch", "start_time", "duration", "velocity", "mute")
+
+# Per-note fields that only Live 11+ notes carry. Editable with apply_note_modifications
+# and settable with add_notes_to_clip (through Clip.add_new_notes).
+NOTE_EXTENDED_FIELDS = ("probability", "velocity_deviation", "release_velocity")
 
 # How many notes a preview shows as a sample.
 NOTE_SAMPLE_SIZE = 10
@@ -484,6 +493,23 @@ class AbletonMCP(ControlSurface):
                     params.get("track_index", 0), params.get("track_type", "track"),
                     params.get("expected_name"), params.get("direction"),
                     params.get("routing_type"), params.get("routing_channel"))
+            elif command_type == "get_device_routing":
+                response["result"] = self._get_device_routing(
+                    params.get("track_index", 0), params.get("device_index", 0),
+                    params.get("track_type", "track"))
+            elif command_type == "set_device_routing":
+                # Socket thread: Live lists the channels of a new routing type a moment later.
+                response["result"] = self._set_device_routing(
+                    params.get("track_index", 0), params.get("device_index", 0),
+                    params.get("track_type", "track"), params.get("expected_name"),
+                    params.get("expected_device_name"), params.get("routing_type"),
+                    params.get("routing_channel"), params.get("sidechain_on"))
+            elif command_type == "get_clip_envelope":
+                response["result"] = self._get_clip_envelope(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("parameter"), params.get("device_index"),
+                    params.get("arrangement", False), params.get("clip_start_time"),
+                    params.get("start"), params.get("end"), params.get("step", 0.25))
             elif command_type == "delete_locator":
                 # Socket thread, like create_locator: it has to wait for Live.
                 response["result"] = self._delete_locator(
@@ -505,6 +531,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "set_clip_envelope", "clear_clip_envelope",
                                  "back_to_arrangement",
                                  "clear_arrangement_range",
                                  "trim_arrangement_clip",
@@ -671,6 +698,20 @@ class AbletonMCP(ControlSurface):
                                 params.get("confirm", False))
                         elif command_type == "back_to_arrangement":
                             result = self._back_to_arrangement()
+                        elif command_type == "set_clip_envelope":
+                            result = self._set_clip_envelope(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_name"), params.get("parameter"),
+                                params.get("device_index"), params.get("arrangement", False),
+                                params.get("clip_start_time"), params.get("points"),
+                                params.get("mode", "steps"), params.get("resolution", 0.125),
+                                params.get("end"), params.get("confirm", False))
+                        elif command_type == "clear_clip_envelope":
+                            result = self._clear_clip_envelope(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_name"), params.get("parameter"),
+                                params.get("device_index"), params.get("arrangement", False),
+                                params.get("clip_start_time"), params.get("confirm", False))
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -1557,45 +1598,110 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _add_notes_to_clip(self, track_index, clip_index, notes):
-        """Add MIDI notes to a clip"""
+        """Add MIDI notes to a Session clip and report what Live really kept.
+
+        Each note: pitch (0-127), start_time (beats, inside the clip), duration,
+        velocity (1-127), mute, and the Live 11+ fields probability (0-1),
+        velocity_deviation (-127..127), release_velocity (0-127). An unknown
+        field is an error and nothing is added. A note that starts before 0 or at
+        or after the clip's end can never play, so it is NOT added and is listed
+        in "rejected" with the reason (Live would keep it silently, hidden past
+        the end). The reply counts the notes read back from the clip.
+        """
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            
             track = self._song.tracks[track_index]
-            
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip index out of range")
-            
             clip_slot = track.clip_slots[clip_index]
-            
             if not clip_slot.has_clip:
                 raise Exception("No clip in slot")
-            
             clip = clip_slot.clip
-            
-            # Convert note data to Live's format
-            live_notes = []
-            for note in notes:
-                pitch = note.get("pitch", 60)
-                start_time = note.get("start_time", 0.0)
-                duration = note.get("duration", 0.25)
-                velocity = note.get("velocity", 100)
-                mute = note.get("mute", False)
-                
-                live_notes.append((pitch, start_time, duration, velocity, mute))
-            
-            # Add the notes
-            clip.set_notes(tuple(live_notes))
-            
-            result = {
-                "note_count": len(notes)
-            }
+            if not isinstance(notes, (list, tuple)):
+                raise ValueError("notes must be a list of note objects")
+            allowed = set(("pitch", "start_time", "duration", "velocity", "mute")
+                          + NOTE_EXTENDED_FIELDS)
+            length = float(clip.length)
+            accepted = []
+            rejected = []
+            uses_extended = False
+            for position, note in enumerate(notes):
+                label = "notes[%d]" % position
+                if not isinstance(note, dict):
+                    raise TypeError("%s must be an object, got %r" % (label, note))
+                unknown = sorted(set(note) - allowed)
+                if unknown:
+                    raise ValueError("%s has unknown field(s) %s; allowed: %s"
+                                     % (label, ", ".join(unknown), ", ".join(sorted(allowed))))
+                spec = {
+                    "pitch": _midi_int(note.get("pitch", 60), label + ".pitch", 0, 127),
+                    "start_time": _finite_number(note.get("start_time", 0.0), label + ".start_time"),
+                    "duration": _finite_number(note.get("duration", 0.25), label + ".duration"),
+                    "velocity": _finite_number(note.get("velocity", 100), label + ".velocity"),
+                    "mute": note.get("mute", False),
+                }
+                if not isinstance(spec["mute"], bool):
+                    raise TypeError("%s.mute must be true or false" % label)
+                if spec["duration"] <= 0:
+                    raise ValueError("%s.duration must be > 0" % label)
+                if spec["velocity"] < 1 or spec["velocity"] > 127:
+                    raise ValueError("%s.velocity must be between 1 and 127" % label)
+                for field, low, high in (("probability", 0.0, 1.0), ("velocity_deviation", -127.0, 127.0),
+                                         ("release_velocity", 0.0, 127.0)):
+                    if field in note:
+                        spec[field] = _finite_number(note[field], "%s.%s" % (label, field))
+                        if spec[field] < low or spec[field] > high:
+                            raise ValueError("%s.%s must be between %s and %s"
+                                             % (label, field, low, high))
+                        uses_extended = True
+                if spec["start_time"] < 0 or spec["start_time"] >= length:
+                    rejected.append({
+                        "index": position, "pitch": spec["pitch"], "start_time": spec["start_time"],
+                        "reason": "starts %s the clip (0 to %s beats), so it would never play"
+                                  % ("before" if spec["start_time"] < 0 else "at or after the end of",
+                                     length)})
+                    continue
+                accepted.append(spec)
+
+            getter = getattr(clip, "get_notes_extended", None)
+
+            def count():
+                if getter is None:
+                    return None
+                return len(list(getter(0, 128, 0.0, length)))
+
+            before = count()
+            if accepted:
+                maker = None
+                if hasattr(clip, "add_new_notes"):
+                    try:
+                        import Live
+                        maker = Live.Clip.MidiNoteSpecification
+                    except Exception:
+                        maker = None
+                if maker is not None:
+                    clip.add_new_notes(tuple(maker(**spec) for spec in accepted))
+                elif uses_extended:
+                    raise Exception(
+                        "This version of Live cannot set probability, velocity_deviation or "
+                        "release_velocity (needs Clip.add_new_notes, Live 11+). Nothing was added.")
+                else:
+                    clip.set_notes(tuple(
+                        (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
+                        for n in accepted))
+            after = count()
+            added = (after - before) if (before is not None and after is not None) else len(accepted)
+            result = {"note_count": added, "sent": len(notes), "rejected": rejected,
+                      "clip_note_count": after, "clip_length": length}
+            if added != len(accepted):
+                result["warning"] = ("Live kept %d of the %d notes that were sent for writing"
+                                     % (added, len(accepted)))
             return result
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
             raise
-    
+
     def _set_clip_name(self, track_index, clip_index, name):
         """Set the name of a clip"""
         try:
@@ -2682,7 +2788,7 @@ class AbletonMCP(ControlSurface):
         Each clip dict contains:
           name, start_time, end_time, length, color,
           is_midi_clip, is_audio_clip, is_playing,
-          extent, start_marker, end_marker, loop_start, loop_end, looping
+          extent, start_marker, end_marker, loop_start, loop_end, looping, has_envelopes
         """
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
@@ -2711,6 +2817,7 @@ class AbletonMCP(ControlSurface):
                     "loop_start": getattr(clip, "loop_start", None),
                     "loop_end": getattr(clip, "loop_end", None),
                     "looping": getattr(clip, "looping", None),
+                    "has_envelopes": getattr(clip, "has_envelopes", None),
                 })
 
             return {
@@ -2823,6 +2930,14 @@ class AbletonMCP(ControlSurface):
                 entry["note_id"] = int(note.note_id)
             except Exception:
                 pass
+        return entry
+
+    def _note_fields(self, note):
+        """_note_summary plus the Live 11+ fields (probability, ...) when the note has them."""
+        entry = self._note_summary(note)
+        for field in NOTE_EXTENDED_FIELDS:
+            if hasattr(note, field):
+                entry[field] = float(getattr(note, field))
         return entry
 
     def _notes_in_range(self, clip, from_time, time_span, from_pitch, pitch_span):
@@ -3050,11 +3165,13 @@ class AbletonMCP(ControlSurface):
             label = "notes[%d]" % position
             if not isinstance(entry, dict):
                 raise TypeError("%s must be an object, got %r" % (label, entry))
-            unknown = sorted(set(entry) - set(NOTE_EDIT_FIELDS) - set(["note_id"]))
+            unknown = sorted(set(entry) - set(NOTE_EDIT_FIELDS) - set(NOTE_EXTENDED_FIELDS)
+                             - set(["note_id"]))
             if unknown:
                 raise ValueError(
                     "%s has unknown field(s) %s; allowed: note_id, %s"
-                    % (label, ", ".join(unknown), ", ".join(NOTE_EDIT_FIELDS)))
+                    % (label, ", ".join(unknown),
+                       ", ".join(NOTE_EDIT_FIELDS + NOTE_EXTENDED_FIELDS)))
             if "note_id" not in entry:
                 raise ValueError("%s needs a note_id (from get_clip_notes)" % label)
             note_id = entry["note_id"]
@@ -3081,6 +3198,12 @@ class AbletonMCP(ControlSurface):
                 if not isinstance(entry["mute"], bool):
                     raise TypeError("%s.mute must be true or false" % label)
                 changes["mute"] = entry["mute"]
+            for field, low, high in (("probability", 0.0, 1.0), ("velocity_deviation", -127.0, 127.0),
+                                     ("release_velocity", 0.0, 127.0)):
+                if field in entry:
+                    changes[field] = _finite_number(entry[field], "%s.%s" % (label, field))
+                    if changes[field] < low or changes[field] > high:
+                        raise ValueError("%s.%s must be between %s and %s" % (label, field, low, high))
             if not changes:
                 raise ValueError(
                     "%s changes nothing; give at least one of %s"
@@ -3115,7 +3238,7 @@ class AbletonMCP(ControlSurface):
                 c["start_time"] + c.get("duration", 0.0) for c in edits.values()
                 if "start_time" in c])
             read_span = latest_end + 1.0
-            live_notes = list(getter(0, 128, 0.0, read_span))
+            live_notes = list(getter(0, 128, 0.0, read_span))   # plain list: for reading only
             by_id = {}
             for note in live_notes:
                 note_id = getattr(note, "note_id", None)
@@ -3133,11 +3256,14 @@ class AbletonMCP(ControlSurface):
             to_apply = []
             for note_id in sorted(edits):
                 note = by_id[note_id]
-                before = self._note_summary(note)
+                before = self._note_fields(note)
                 after = dict(before)
                 for field, value in edits[note_id].items():
+                    if field in NOTE_EXTENDED_FIELDS and field not in before:
+                        raise ValueError(
+                            "This version of Live does not give notes a '%s' field" % field)
                     after[field] = value
-                if all(before[f] == after[f] for f in NOTE_EDIT_FIELDS):
+                if all(before[f] == after[f] for f in before):
                     unchanged.append(note_id)
                     continue
                 changes.append({"note_id": note_id, "before": before, "after": after})
@@ -3160,10 +3286,6 @@ class AbletonMCP(ControlSurface):
                 result["applied"] = False
                 return result
 
-            for change, note in zip(changes, to_apply):
-                for field in NOTE_EDIT_FIELDS:
-                    if change["after"][field] != change["before"][field]:
-                        setattr(note, field, change["after"][field])
             method = self._apply_modified_notes(clip, applier, to_apply, live_notes, changes)
             result["method"] = method
 
@@ -3172,7 +3294,7 @@ class AbletonMCP(ControlSurface):
             for note in reread_notes:
                 note_id = getattr(note, "note_id", None)
                 if note_id is not None:
-                    reread[int(note_id)] = self._note_summary(note)
+                    reread[int(note_id)] = self._note_fields(note)
             if method.startswith("remove + set_notes"):
                 # Live gave the re-added notes new ids: find each edit by its values.
                 reread = {}
@@ -3192,7 +3314,9 @@ class AbletonMCP(ControlSurface):
                     mismatches.append("note %d is no longer in the clip" % change["note_id"])
                     change["after"] = None
                     continue
-                for field in NOTE_EDIT_FIELDS:
+                for field in change["after"]:
+                    if field == "note_id" or field not in actual:
+                        continue
                     wanted = change["after"][field]
                     got = actual[field]
                     same = (got == wanted if field in ("mute", "pitch")
@@ -3210,16 +3334,42 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error applying note modifications: " + str(e))
             raise
 
+    @staticmethod
+    def _set_note_fields(note, change):
+        for field, value in change["after"].items():
+            if field == "note_id" or field not in change["before"]:
+                continue
+            if change["after"][field] != change["before"][field]:
+                setattr(note, field, value)
+
     def _apply_modified_notes(self, clip, applier, to_apply, live_notes, changes):
         """Hand edited notes to Live and return the method that worked.
 
-        Real Live 12 Lite rejected both a list and a tuple of just the edited
-        notes ("did not match C++ signature", run of 2026-10-22), so try the
-        shapes in turn: the edited notes, then every note that was read (the
-        pattern AbletonOSC uses), then remove + set_notes as a last resort
-        (this one drops extra note fields such as probability and the note id).
+        Live's Clip.apply_note_modifications only accepts the MidiNoteVector that
+        get_notes_by_id / get_notes_extended return: a Python list or tuple of the
+        very same notes is refused with "did not match C++ signature" (found on
+        Live 12 Lite, 2026-10-24; before that this fell back to remove + set_notes,
+        which changes note ids). So: edit the notes of a fresh get_notes_by_id
+        vector in place and apply that vector. The older shapes stay as fallbacks,
+        ending in remove + set_notes (which drops probability and the note id).
         """
         errors = []
+        by_id_getter = getattr(clip, "get_notes_by_id", None)
+        if by_id_getter is not None:
+            try:
+                wanted = dict((c["note_id"], c) for c in changes)
+                vector = by_id_getter([c["note_id"] for c in changes])
+                for note in vector:
+                    change = wanted.get(int(note.note_id))
+                    if change is not None:
+                        self._set_note_fields(note, change)
+                applier(vector)
+                return "in place"
+            except Exception as e:
+                errors.append("in place: %s" % str(e).replace("\n", " ")[:160])
+                self.log_message("apply_note_modifications in place failed: %s" % e)
+        for change, note in zip(changes, to_apply):
+            self._set_note_fields(note, change)
         for label, argument in (("edited list", list(to_apply)),
                                 ("edited tuple", tuple(to_apply)),
                                 ("all notes tuple", tuple(live_notes))):
@@ -4137,7 +4287,20 @@ class AbletonMCP(ControlSurface):
                         routing_channel, "Routing channel")
                     setattr(track, direction + "_routing_channel", chosen)
 
-            self._call_on_main_thread(second)
+            try:
+                self._call_on_main_thread(second)
+            except Exception as e:
+                if routing_type is not None and before["type"] != routing_type:
+                    def restore():
+                        t = self._resolve_track(track_index, track_type)
+                        setattr(t, direction + "_routing_type", self._find_routing(
+                            getattr(t, "available_%s_routing_types" % direction),
+                            before["type"], "Routing type"))
+                    self._call_on_main_thread(restore)
+                    time.sleep(settle)
+                    raise ValueError("%s. The routing type was put back to '%s'; nothing else changed."
+                                     % (e, before["type"]))
+                raise
             time.sleep(settle)
             after = self._call_on_main_thread(
                 lambda: self._routing_state(self._resolve_track(track_index, track_type), direction))
@@ -4149,6 +4312,384 @@ class AbletonMCP(ControlSurface):
                     "after": after, "verified": wanted_ok}
         except Exception as e:
             self.log_message("Error setting track routing: " + str(e))
+            raise
+
+    # ── Device routing (sidechain) and clip automation envelopes ──────────────
+    # Measured on Live 12.4 Lite (2026-10-24): Compressor and similar devices have
+    # input_routing_type / input_routing_channel (the "Audio From" of the
+    # sidechain; the channels of a new type are listed a moment later), and a
+    # clip's automation_envelope(parameter) answers value_at_time in the
+    # parameter's own units while insert_step(time, length, value) writes a
+    # constant stretch. Only SESSION clips have an envelope API; a Session clip
+    # copied into the Arrangement keeps its automation. Envelope ideas are from
+    # upstream PR #23 (zzstoatzz).
+
+    def _device_of(self, track_index, device_index, track_type="track"):
+        track = self._resolve_track(track_index, track_type)
+        devices = list(track.devices)
+        if isinstance(device_index, bool) or not isinstance(device_index, int):
+            raise TypeError("device_index must be an integer, got %r" % (device_index,))
+        if device_index < 0 or device_index >= len(devices):
+            raise IndexError("device index %d out of range (the track has %d)"
+                             % (device_index, len(devices)))
+        return track, devices[device_index]
+
+    def _device_routing_view(self, track, device, device_index):
+        state = self._routing_state(device, "input")
+        if state is None:
+            raise ValueError(
+                "Device '%s' has no routing (only devices with a sidechain, such as "
+                "Compressor, Gate, Glue Compressor, expose one)" % device.name)
+        sc = None
+        for p in device.parameters:
+            if p.name == "S/C On":
+                sc = bool(p.value)
+        return {"track_name": track.name, "device_index": device_index,
+                "device_name": device.name, "device_class": device.class_name,
+                "sidechain_on": sc, "input": state}
+
+    def _get_device_routing(self, track_index, device_index, track_type="track"):
+        """The sidechain "Audio From" of a device: current type and channel and
+        what Live offers, plus whether the device's sidechain is switched on."""
+        try:
+            track, device = self._device_of(track_index, device_index, track_type)
+            return self._device_routing_view(track, device, device_index)
+        except Exception as e:
+            self.log_message("Error getting device routing: " + str(e))
+            raise
+
+    def _set_device_routing(self, track_index, device_index, track_type, expected_name,
+                            expected_device_name, routing_type=None, routing_channel=None,
+                            sidechain_on=None):
+        """Set a device's sidechain source (type and/or channel) and, optionally,
+        switch its sidechain on or off. Needs the track's and the device's exact
+        names. A new type is applied first, Live is given a moment to list its
+        channels, then the channel is set."""
+        if routing_type is None and routing_channel is None and sidechain_on is None:
+            raise ValueError("Give routing_type, routing_channel and/or sidechain_on")
+        if sidechain_on is not None and not isinstance(sidechain_on, bool):
+            raise TypeError("sidechain_on must be true or false")
+        self._require_expected_name(expected_name, "track")
+        self._require_expected_name(expected_device_name, "device")
+        settle = 0.3
+
+        def first():
+            track, device = self._device_of(track_index, device_index, track_type)
+            if track.name != expected_name:
+                raise ValueError("Track %s is '%s', not '%s'; nothing was changed."
+                                 % (track_index, track.name, expected_name))
+            if device.name != expected_device_name:
+                raise ValueError("Device %s is '%s', not '%s'; nothing was changed."
+                                 % (device_index, device.name, expected_device_name))
+            before = self._device_routing_view(track, device, device_index)
+            if routing_type is not None:
+                chosen = self._find_routing(device.available_input_routing_types,
+                                            routing_type, "Routing type")
+                if chosen.display_name != before["input"]["type"]:
+                    device.input_routing_type = chosen
+            elif routing_channel is not None:
+                self._find_routing(device.available_input_routing_channels,
+                                   routing_channel, "Routing channel")
+            return before
+
+        try:
+            before = self._call_on_main_thread(first)
+            if routing_type is not None:
+                time.sleep(settle)
+
+            def second():
+                track, device = self._device_of(track_index, device_index, track_type)
+                if routing_channel is not None:
+                    device.input_routing_channel = self._find_routing(
+                        device.available_input_routing_channels, routing_channel, "Routing channel")
+                if sidechain_on is not None:
+                    params = [p for p in device.parameters if p.name == "S/C On"]
+                    if not params:
+                        raise ValueError("Device '%s' has no 'S/C On' parameter" % device.name)
+                    params[0].value = 1.0 if sidechain_on else 0.0
+
+            try:
+                self._call_on_main_thread(second)
+            except Exception as e:
+                if routing_type is not None and before["input"]["type"] != routing_type:
+                    def restore():
+                        _t, dev = self._device_of(track_index, device_index, track_type)
+                        dev.input_routing_type = self._find_routing(
+                            dev.available_input_routing_types, before["input"]["type"], "Routing type")
+                    self._call_on_main_thread(restore)
+                    time.sleep(settle)
+                    raise ValueError("%s. The routing type was put back to '%s'; nothing else changed."
+                                     % (e, before["input"]["type"]))
+                raise
+            time.sleep(settle)
+            after = self._call_on_main_thread(lambda: self._device_routing_view(
+                *self._device_of(track_index, device_index, track_type)[:2], device_index))
+            ok = ((routing_type is None or after["input"]["type"].lower() == str(routing_type).lower())
+                  and (routing_channel is None
+                       or str(after["input"]["channel"]).lower() == str(routing_channel).lower())
+                  and (sidechain_on is None or after["sidechain_on"] == sidechain_on))
+            return {"before": {"type": before["input"]["type"], "channel": before["input"]["channel"],
+                               "sidechain_on": before["sidechain_on"]},
+                    "after": after, "verified": ok}
+        except Exception as e:
+            self.log_message("Error setting device routing: " + str(e))
+            raise
+
+    ENVELOPE_MAX_STEPS = 2048
+    ENVELOPE_SAMPLE_OFFSET = 1e-4
+    ENVELOPE_MAX_SAMPLES = 512
+
+    def _automation_target(self, track, parameter, device_index):
+        """The automatable parameter named by (parameter, device_index) on a track.
+
+        device_index None: a mixer parameter, "volume", "pan" or "send <letter or
+        index>" (for example "send A" or "send 0"). Otherwise a parameter of that
+        device, by exact name (case-insensitive) or by its index in the device's
+        parameter list.
+        """
+        if parameter is None or (isinstance(parameter, str) and parameter == ""):
+            raise ValueError("parameter is required (volume, pan, send A, or a device parameter)")
+        if device_index is None:
+            mixer = track.mixer_device
+            key = str(parameter).strip().lower()
+            if key in ("volume", "track volume"):
+                return mixer.volume
+            if key in ("pan", "panning", "track pan"):
+                return mixer.panning
+            if key.startswith("send"):
+                label = key.replace("send", "", 1).strip()
+                sends = list(mixer.sends)
+                index = None
+                if label.isdigit():
+                    index = int(label)
+                elif len(label) == 1 and label.isalpha():
+                    index = ord(label) - ord("a")
+                if index is None or index < 0 or index >= len(sends):
+                    raise ValueError("Unknown send '%s'; the track has %d send(s) (A, B, ...)"
+                                     % (parameter, len(sends)))
+                return sends[index]
+            raise ValueError("Unknown mixer parameter '%s' (use volume, pan or send A/B)" % parameter)
+        if isinstance(device_index, bool) or not isinstance(device_index, int):
+            raise TypeError("device_index must be an integer")
+        devices = list(track.devices)
+        if device_index < 0 or device_index >= len(devices):
+            raise IndexError("device index %d out of range (the track has %d)"
+                             % (device_index, len(devices)))
+        params = list(devices[device_index].parameters)
+        if isinstance(parameter, int) and not isinstance(parameter, bool):
+            if parameter < 0 or parameter >= len(params):
+                raise IndexError("parameter index %d out of range (the device has %d)"
+                                 % (parameter, len(params)))
+            return params[parameter]
+        matches = [p for p in params if p.name.lower() == str(parameter).lower()]
+        if len(matches) != 1:
+            names = ", ".join(sorted(set(p.name for p in params)))
+            raise ValueError("%s parameter '%s' on '%s'. Parameters: %s"
+                             % ("No" if not matches else "Several", parameter,
+                                devices[device_index].name, names))
+        return matches[0]
+
+    def _envelope_clip(self, track_index, clip_index, expected_name, arrangement, clip_start_time):
+        """(track, clip) for a Session slot or, when arrangement is true, the
+        Arrangement clip that starts at clip_start_time."""
+        if isinstance(track_index, bool) or not isinstance(track_index, int):
+            raise TypeError("track_index must be an integer")
+        tracks = list(self._song.tracks)
+        if track_index < 0 or track_index >= len(tracks):
+            raise IndexError("track index %d out of range (have %d)" % (track_index, len(tracks)))
+        track = tracks[track_index]
+        if expected_name is not None and track.name != expected_name:
+            raise ValueError("Track %d is '%s', not '%s'; nothing was changed."
+                             % (track_index, track.name, expected_name))
+        if arrangement:
+            raise ValueError(
+                "Live only gives the API the automation of SESSION clips ('Not a session clip' "
+                "for an Arrangement clip). Write the automation on a Session clip, then copy that "
+                "clip into the Arrangement with duplicate_to_arrangement: Live carries the clip's "
+                "automation along (get_arrangement_clips shows has_envelopes).")
+        if isinstance(clip_index, bool) or not isinstance(clip_index, int):
+            raise TypeError("clip_index must be an integer")
+        if clip_index < 0 or clip_index >= len(track.clip_slots):
+            raise IndexError("Clip index out of range")
+        slot = track.clip_slots[clip_index]
+        if not slot.has_clip:
+            raise ValueError("No clip in slot %d of track '%s'" % (clip_index, track.name))
+        clip = slot.clip
+        return track, clip
+
+    @staticmethod
+    def _param_facts(p):
+        facts = {"name": p.name, "min": float(p.min), "max": float(p.max), "value": float(p.value)}
+        try:
+            facts["display"] = p.str_for_value(p.value)
+        except Exception:
+            pass
+        return facts
+
+    def _clip_span(self, clip, arrangement):
+        if arrangement:
+            return float(clip.end_time) - float(clip.start_time)
+        return float(clip.length)
+
+    def _get_clip_envelope(self, track_index, clip_index, parameter, device_index=None,
+                           arrangement=False, clip_start_time=None, start=None, end=None,
+                           step=0.25):
+        """Read a clip's automation of one parameter as samples of value_at_time.
+
+        Times are beats from the clip start; values are in the parameter's own
+        units (a display string is added). has_envelope is false when the clip
+        has no automation for it. At most 512 samples; raise step for long clips.
+        """
+        try:
+            track, clip = self._envelope_clip(track_index, clip_index, None, arrangement,
+                                              clip_start_time)
+            target = self._automation_target(track, parameter, device_index)
+            span = self._clip_span(clip, arrangement)
+            a = 0.0 if start is None else self._require_finite_number(start, "start")
+            b = span if end is None else self._require_finite_number(end, "end")
+            st = self._require_finite_number(step, "step")
+            if st <= 0 or b <= a:
+                raise ValueError("step must be > 0 and end > start")
+            count = int(math.ceil((b - a) / st))
+            if count > self.ENVELOPE_MAX_SAMPLES:
+                raise ValueError("%d samples requested; at most %d. Raise step or narrow start/end."
+                                 % (count, self.ENVELOPE_MAX_SAMPLES))
+            env = clip.automation_envelope(target)
+            result = {"track_name": track.name, "clip_name": clip.name, "clip_span": span,
+                      "parameter": self._param_facts(target), "has_envelope": env is not None}
+            if env is not None:
+                samples = []
+                for i in range(count):
+                    t = a + i * st
+                    # At the exact start of a step Live answers with the value from
+                    # before the jump (two events share that time), so ask just after.
+                    v = float(env.value_at_time(t + self.ENVELOPE_SAMPLE_OFFSET))
+                    row = {"time": t, "value": v}
+                    try:
+                        row["display"] = target.str_for_value(v)
+                    except Exception:
+                        pass
+                    samples.append(row)
+                result["samples"] = samples
+            return result
+        except Exception as e:
+            self.log_message("Error reading clip envelope: " + str(e))
+            raise
+
+    def _set_clip_envelope(self, track_index, clip_index, expected_name, parameter,
+                           device_index=None, arrangement=False, clip_start_time=None,
+                           points=None, mode="steps", resolution=0.125, end=None,
+                           confirm=False):
+        """Preview or write a clip's automation of one parameter.
+
+        points: [{"time": beats from the clip start, "value": parameter units}, ...]
+        in increasing time. mode "steps": each value holds until the next point
+        (the last until end, default the clip's end). mode "ramp": values move in
+        straight lines between points, written as steps of `resolution` beats
+        (Live's step insert is the only write that works here). Existing
+        automation of this parameter between the first point and the end is
+        overwritten. Previews unless confirm is exactly True.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            self._require_expected_name(expected_name, "track")
+            track, clip = self._envelope_clip(track_index, clip_index, expected_name, arrangement,
+                                              clip_start_time)
+            target = self._automation_target(track, parameter, device_index)
+            if mode not in ("steps", "ramp"):
+                raise ValueError("mode must be 'steps' or 'ramp'")
+            res = self._require_finite_number(resolution, "resolution")
+            if res < 0.03125 or res > 4.0:
+                raise ValueError("resolution must be between 0.03125 and 4 beats")
+            if not isinstance(points, (list, tuple)) or not points:
+                raise ValueError("points must be a non-empty list of {time, value}")
+            span = self._clip_span(clip, arrangement)
+            stop = span if end is None else self._require_finite_number(end, "end")
+            lo, hi = float(target.min), float(target.max)
+            pts = []
+            last = None
+            for i, pt in enumerate(points):
+                if not isinstance(pt, dict):
+                    raise TypeError("points[%d] must be an object" % i)
+                t = self._require_finite_number(pt.get("time"), "points[%d].time" % i)
+                v = self._require_finite_number(pt.get("value"), "points[%d].value" % i)
+                if t < 0 or t >= span:
+                    raise ValueError("points[%d].time %s is outside the clip (0 to %s beats)" % (i, t, span))
+                if v < lo - 1e-9 or v > hi + 1e-9:
+                    raise ValueError("points[%d].value %s is outside '%s' range %s..%s"
+                                     % (i, v, target.name, lo, hi))
+                if last is not None and t <= last:
+                    raise ValueError("points must be in increasing time (point %d)" % i)
+                last = t
+                pts.append((t, v))
+            if stop <= pts[0][0] or stop > span + 1e-9:
+                raise ValueError("end must be after the first point and not past the clip's end (%s)" % span)
+            steps = []   # (time, length, value)
+            for i, (t, v) in enumerate(pts):
+                nxt = pts[i + 1][0] if i + 1 < len(pts) else stop
+                if mode == "steps":
+                    steps.append((t, nxt - t, v))
+                else:
+                    if i + 1 < len(pts):
+                        v2 = pts[i + 1][1]
+                        n = max(1, int(round((nxt - t) / res)))
+                        for k in range(n):
+                            a = t + (nxt - t) * k / n
+                            b = t + (nxt - t) * (k + 1) / n
+                            steps.append((a, b - a, v + (v2 - v) * k / n))
+                    else:
+                        steps.append((t, nxt - t, v))
+            if len(steps) > self.ENVELOPE_MAX_STEPS:
+                raise ValueError("%d steps; at most %d. Use mode 'steps', a larger resolution or fewer points."
+                                 % (len(steps), self.ENVELOPE_MAX_STEPS))
+            existing = clip.automation_envelope(target) is not None
+            info = {"track_name": track.name, "clip_name": clip.name, "parameter": self._param_facts(target),
+                    "mode": mode, "point_count": len(pts), "step_count": len(steps),
+                    "from": pts[0][0], "to": stop, "replaces_existing_automation": existing,
+                    "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            env = clip.automation_envelope(target)
+            if env is None:
+                env = clip.create_automation_envelope(target)
+            for t, length, v in steps:
+                env.insert_step(float(t), float(length), float(v))
+            checks = []
+            for t, v in pts:
+                got = float(env.value_at_time(t + self.ENVELOPE_SAMPLE_OFFSET))
+                checks.append({"time": t, "wanted": v, "read_back": got})
+            tol = (hi - lo) * 0.01 + 1e-6
+            info["verified"] = all(abs(c["wanted"] - c["read_back"]) <= tol for c in checks)
+            info["checks"] = checks
+            info["applied"] = True
+            return info
+        except Exception as e:
+            self.log_message("Error writing clip envelope: " + str(e))
+            raise
+
+    def _clear_clip_envelope(self, track_index, clip_index, expected_name, parameter,
+                             device_index=None, arrangement=False, clip_start_time=None,
+                             confirm=False):
+        """Preview or remove a clip's automation of one parameter (Live's undo can bring it back)."""
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            self._require_expected_name(expected_name, "track")
+            track, clip = self._envelope_clip(track_index, clip_index, expected_name, arrangement,
+                                              clip_start_time)
+            target = self._automation_target(track, parameter, device_index)
+            had = clip.automation_envelope(target) is not None
+            info = {"track_name": track.name, "clip_name": clip.name,
+                    "parameter": self._param_facts(target), "had_automation": had,
+                    "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            if had:
+                clip.clear_envelope(target)
+            info["applied"] = True
+            info["has_automation_now"] = clip.automation_envelope(target) is not None
+            return info
+        except Exception as e:
+            self.log_message("Error clearing clip envelope: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
