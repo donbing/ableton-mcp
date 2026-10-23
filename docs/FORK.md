@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.5**, **83 MCP tools** (upstream: 37), 936 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.6**, **88 MCP tools** (upstream: 37), 986 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -43,6 +43,12 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 |---|---|---|
 | Back to Arrangement | `back_to_arrangement`: hand playback back to the Arrangement after `fire_clip` / `fire_scene` took tracks off it | adapted from upstream #119 (mateogon) |
 | Track routing | `get_track_routing` (current and available type and channel, for tracks, returns and master), `set_track_routing` (type and/or channel, input or output; needs `expected_name`; waits for Live to list the channels of a new type) | adapted from upstream #99 (Zachary May), extended with channels, `track_type` and the name check. Two tracks with the same name cannot be chosen by name (the error says so). |
+
+| Added in 1.10.6 (run on a real Live 12 Lite, 2026-10-24) | Tools | Notes |
+|---|---|---|
+| Notes | `add_notes_to_clip` now validates, writes with `Clip.add_new_notes` (so `probability`, `velocity_deviation`, `release_velocity` work), reads the clip back and reports how many notes it really holds and which it refused (a note starting at or after the clip end would never play). `apply_note_modifications` now edits **in place** (note ids and extra fields kept) and can change those three fields | our upstream issue #138. Root cause of the old failure: Live only accepts the `MidiNoteVector` that `get_notes_by_id` / `get_notes_extended` return, never a Python list or tuple made from it. |
+| Sidechain | `get_device_routing`, `set_device_routing`: the "Audio From" (type and tap) of Compressor, Gate, Glue Compressor etc., and "S/C On" | the ducking setup (kick into the bass compressor). A bad channel after a good type puts the type back. Also done for `set_track_routing`. |
+| Automation | `get_clip_envelope` (samples), `set_clip_envelope` (steps or ramp, preview by default), `clear_clip_envelope` | idea from upstream #23 (zzstoatzz), written from scratch. Session clips only: Live gives the API no envelope for an Arrangement clip, but a Session clip copied into the Arrangement keeps its automation (`get_arrangement_clips` shows `has_envelopes`). Parameters: volume, pan, send A/B, or a device parameter by name. Values in the parameter's own units. |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

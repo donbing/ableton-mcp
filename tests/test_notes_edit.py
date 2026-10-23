@@ -68,17 +68,33 @@ class FakeNote(object):
     """Stand-in for a Live MidiNote returned by get_notes_extended."""
 
     def __init__(self, note_id, pitch, start_time, duration=0.25, velocity=100.0,
-                 mute=False):
+                 mute=False, probability=1.0, velocity_deviation=0.0, release_velocity=64.0):
         self.note_id = note_id
         self.pitch = pitch
         self.start_time = start_time
         self.duration = duration
         self.velocity = velocity
         self.mute = mute
+        self.probability = probability
+        self.velocity_deviation = velocity_deviation
+        self.release_velocity = release_velocity
 
     def copy(self):
         return FakeNote(self.note_id, self.pitch, self.start_time, self.duration,
-                        self.velocity, self.mute)
+                        self.velocity, self.mute, self.probability,
+                        self.velocity_deviation, self.release_velocity)
+
+
+class NoteVector(tuple):
+    """Live's Clip.MidiNoteVector: the only type apply_note_modifications accepts.
+
+    A plain list or tuple made from it is refused (measured on Live 12 Lite,
+    2026-10-24), which is what broke the first version of the edit tool.
+    """
+
+    def __getitem__(self, index):
+        item = tuple.__getitem__(self, index)
+        return NoteVector(item) if isinstance(index, slice) else item
 
 
 class FakeClip(object):
@@ -129,15 +145,18 @@ class FakeClip(object):
 
     # --- notes
     def get_notes_extended(self, from_pitch, pitch_span, from_time, time_span):
-        return tuple(n.copy() for n in self.notes
-                     if from_pitch <= n.pitch < from_pitch + pitch_span
-                     and from_time <= n.start_time < from_time + time_span)
+        return NoteVector(n.copy() for n in self.notes
+                          if from_pitch <= n.pitch < from_pitch + pitch_span
+                          and from_time <= n.start_time < from_time + time_span)
+
+    def get_notes_by_id(self, ids):
+        wanted = set(ids)
+        return NoteVector(n.copy() for n in self.notes if n.note_id in wanted)
 
     def apply_note_modifications(self, notes):
-        # Real Live (12 Lite, 2026-10-22) rejects a list with "did not match C++ signature".
-        if not isinstance(notes, tuple):
-            raise TypeError("Python argument types did not match C++ signature: got %s"
-                            % type(notes).__name__)
+        if not isinstance(notes, NoteVector):
+            raise TypeError("Python argument types in Clip.apply_note_modifications(Clip, %s) "
+                            "did not match C++ signature" % type(notes).__name__)
         ids = [n.note_id for n in notes]
         self.apply_calls.append(ids)
         by_id = dict((n.note_id, n) for n in self.notes)
@@ -601,16 +620,37 @@ def test_a_note_moved_beyond_the_clip_end_is_still_verified(inst, clip):
     assert note(clip, 1).start_time == 6.0
 
 
-def test_edit_falls_back_to_handing_over_every_note_when_live_rejects_the_edited_ones(
-        inst, clip, monkeypatch):
-    real = clip.apply_note_modifications
-    monkeypatch.setattr(clip, "apply_note_modifications",
-                        lambda notes: real(notes) if len(notes) == len(clip.notes)
-                        else (_ for _ in ()).throw(TypeError("did not match C++ signature")))
+def test_edit_applies_in_place_keeping_ids_and_the_fields_it_was_not_asked_to_change(inst, clip):
+    clip.notes[0].probability = 0.5
     result = ok(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
-    assert result["method"] == "all notes tuple"
+    assert result["method"] == "in place" and result["verified"] is True
+    assert "note_ids_changed" not in result
+    assert (note(clip, 1).pitch, note(clip, 1).probability) == (40, 0.5)
+    assert result["changes"][0]["after"]["note_id"] == 1
+
+
+def test_edit_can_change_probability_velocity_deviation_and_release_velocity(inst, clip):
+    result = ok(edit(inst, [{"note_id": 2, "probability": 0.25, "velocity_deviation": -10,
+                             "release_velocity": 30}], dry_run=False))
     assert result["verified"] is True
-    assert note(clip, 1).pitch == 40
+    assert (note(clip, 2).probability, note(clip, 2).velocity_deviation,
+            note(clip, 2).release_velocity) == (0.25, -10.0, 30.0)
+    assert note(clip, 2).pitch == 38 and note(clip, 2).mute is True
+
+
+@pytest.mark.parametrize("field,value", [("probability", 1.5), ("probability", -0.1),
+                                          ("velocity_deviation", 200), ("release_velocity", 128)])
+def test_edit_rejects_out_of_range_extended_fields(inst, clip, field, value):
+    assert "must be between" in err(edit(inst, [{"note_id": 1, field: value}], dry_run=False))
+    assert clip.apply_calls == []
+
+
+def test_edit_falls_back_to_the_older_shapes_when_get_notes_by_id_is_missing(inst, clip, monkeypatch):
+    monkeypatch.delattr(type(clip), "get_notes_by_id")
+    result = ok(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
+    # the fake, like Live, refuses a list or tuple, so it ends in remove + set_notes
+    assert result["method"].startswith("remove + set_notes")
+    assert result["verified"] is True
 
 
 def test_edit_last_resort_replaces_notes_and_verifies_by_value(inst, clip, monkeypatch):
@@ -632,7 +672,8 @@ def test_edit_names_every_attempt_when_live_rejects_all_of_them(inst, clip, monk
     monkeypatch.setattr(clip, "apply_note_modifications", refuse)
     monkeypatch.delattr(type(clip), "remove_notes_extended", raising=False)
     message = err(edit(inst, [{"note_id": 1, "pitch": 40}], dry_run=False))
-    assert "every way of applying" in message and "edited list" in message and "all notes tuple" in message
+    assert ("every way of applying" in message and "in place" in message
+            and "edited list" in message and "all notes tuple" in message)
 
 
 def test_a_value_live_did_not_keep_is_flagged(inst, clip, monkeypatch):

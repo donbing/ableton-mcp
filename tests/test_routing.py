@@ -169,6 +169,13 @@ def test_two_routings_with_the_same_name_cannot_be_chosen_by_name(inst, song):
     assert t._type["output"].display_name == "Master"
 
 
+def test_a_bad_channel_after_a_good_type_puts_the_type_back(inst, song):
+    message = err(run(inst, "set_track_routing", track_index=0, expected_name="Bass", direction="input",
+                      routing_type="Master", routing_channel="9/9"))
+    assert "Routing channel '9/9' not found" in message and "put back to 'Ext. In'" in message
+    assert song.tracks[0]._type["input"].display_name == "Ext. In"
+
+
 def test_bad_arguments(inst):
     assert "direction must be" in err(run(inst, "set_track_routing", track_index=0, expected_name="Bass",
                                           direction="sideways", routing_type="Master"))
