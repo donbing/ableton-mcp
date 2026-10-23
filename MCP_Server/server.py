@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "replace_clip_notes", "set_color",
             "set_device_routing", "set_clip_envelope", "clear_clip_envelope",
             "back_to_arrangement", "set_track_routing",
             "clear_arrangement_range",
@@ -3055,6 +3056,145 @@ def clear_clip_envelope(
     except Exception as e:
         logger.error(f"Error clearing clip envelope: {str(e)}")
         return f"Error clearing clip envelope: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_tracks_overview")
+def get_tracks_overview(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Every track, return and the master in ONE compact read: kind (audio, midi,
+    group), device names, volume and pan as Live shows them, mute/solo/arm,
+    Session and Arrangement clip counts, group, colour, plus tempo, time signature,
+    scene and cue-point counts. Use this before get_track_info on each track.
+    Adapted from upstream PR #110 (M4x28).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_tracks_overview", {}, "getting tracks overview")
+    except Exception as e:
+        logger.error(f"Error getting tracks overview: {str(e)}")
+        return f"Error getting tracks overview: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("check_arrangement_sync")
+def check_arrangement_sync(
+    ctx: Context,
+    grid_beats: float = 4.0,
+    tolerance: float = 0.001,
+    user_prompt: str = "",
+) -> str:
+    """
+    Check every track's Arrangement clips against a grid: starts and ends that are
+    off the grid, overlaps, and gaps between neighbouring clips. Read-only. The
+    counts are complete, each list is cut at 20 entries. A gap is silence between
+    two clips of one track, often intended. Handy after trimming, splitting or
+    moving clips. Adapted from upstream PR #110 (M4x28).
+
+    Parameters:
+    - grid_beats: Grid to check against in beats (4 = bars in 4/4, the default; 1 = beats)
+    - tolerance: How far off the grid still counts as on it, in beats
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("check_arrangement_sync",
+                          {"grid_beats": grid_beats, "tolerance": tolerance}, "checking arrangement")
+    except Exception as e:
+        logger.error(f"Error checking arrangement: {str(e)}")
+        return f"Error checking arrangement: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("replace_clip_notes")
+@trajectory_tool("replace_clip_notes")
+def replace_clip_notes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    expected_clip_name: str,
+    notes: List[Dict[str, Union[int, float, bool]]],
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Replace ALL the notes of a Session MIDI clip with new ones, in two steps.
+
+    Everything is validated before anything is removed, and a new note that would
+    never play (outside the clip) is an error, since the old notes would be gone.
+    If the write fails after the removal the old notes are put back. Notes take the
+    same fields as add_notes_to_clip (pitch, start_time, duration, velocity, mute,
+    and optionally probability, velocity_deviation, release_velocity). To change a
+    few notes in place use apply_note_modifications instead. Adapted from upstream
+    PR #119 (mateogon).
+
+    Step 1: confirm=false (default) says how many notes are there and how many would
+    replace them. Step 2: the same call with confirm=true.
+
+    Parameters:
+    - track_index: The index of the track containing the clip
+    - clip_index: The index of the clip slot
+    - expected_clip_name: The clip's exact current name ("" for an unnamed clip)
+    - notes: The new notes
+    - confirm: false = preview only (default), true = replace
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_clip_name is None:
+            return ("Error: expected_clip_name is required (the clip's exact current name; "
+                    "\"\" for an unnamed clip).")
+        out = _json_call("replace_clip_notes", {
+            "track_index": track_index, "clip_index": clip_index,
+            "expected_clip_name": expected_clip_name, "notes": notes, "confirm": confirm},
+            "replacing clip notes")
+        return out if confirm else (
+            "NOT REPLACED (preview only). This would happen: " + out +
+            "\nTo replace the notes, call replace_clip_notes again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error replacing clip notes: {str(e)}")
+        return f"Error replacing clip notes: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_color")
+@trajectory_tool("set_color")
+def set_color(
+    ctx: Context,
+    kind: str,
+    color_index: int,
+    track_index: Optional[int] = None,
+    clip_index: Optional[int] = None,
+    scene_index: Optional[int] = None,
+    track_type: str = "track",
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set the colour of a track, a Session clip or a scene, from Live's palette
+    (index 0-69). Returns the previous and the new index. Adapted from upstream
+    PR #99 (Zachary May), merged into one tool.
+
+    Parameters:
+    - kind: "track", "clip" or "scene"
+    - color_index: Palette index 0-69
+    - track_index: For kind "track" and "clip"
+    - clip_index: For kind "clip"
+    - scene_index: For kind "scene"
+    - track_type: "track" (default) or "return" (for kind "track")
+    - expected_name: Optional safety check: the target's exact current name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"kind": kind, "color_index": color_index, "track_type": track_type}
+        for key, value in (("track_index", track_index), ("clip_index", clip_index),
+                           ("scene_index", scene_index), ("expected_name", expected_name)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_color", params, "setting colour")
+    except Exception as e:
+        logger.error(f"Error setting colour: {str(e)}")
+        return f"Error setting colour: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

@@ -48,7 +48,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.7"
+SCRIPT_VERSION = "1.10.8"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -160,6 +160,10 @@ SCRIPT_CAPABILITIES = [
     "stop_all_clips",
     "delete_scene",
     "delete_locator",
+    "replace_clip_notes",
+    "set_color",
+    "get_tracks_overview",
+    "check_arrangement_sync",
     "get_device_routing",
     "set_device_routing",
     "get_clip_envelope",
@@ -493,6 +497,11 @@ class AbletonMCP(ControlSurface):
                     params.get("track_index", 0), params.get("track_type", "track"),
                     params.get("expected_name"), params.get("direction"),
                     params.get("routing_type"), params.get("routing_channel"))
+            elif command_type == "get_tracks_overview":
+                response["result"] = self._get_tracks_overview()
+            elif command_type == "check_arrangement_sync":
+                response["result"] = self._check_arrangement_sync(
+                    params.get("grid_beats", 4.0), params.get("tolerance", 1e-3))
             elif command_type == "get_device_routing":
                 response["result"] = self._get_device_routing(
                     params.get("track_index", 0), params.get("device_index", 0),
@@ -531,6 +540,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_clip",
                                  "delete_track",
                                  "delete_arrangement_clips", "delete_device",
+                                 "replace_clip_notes", "set_color",
                                  "set_clip_envelope", "clear_clip_envelope",
                                  "back_to_arrangement",
                                  "clear_arrangement_range",
@@ -713,6 +723,17 @@ class AbletonMCP(ControlSurface):
                                 params.get("expected_name"), params.get("parameter"),
                                 params.get("device_index"), params.get("arrangement", False),
                                 params.get("clip_start_time"), params.get("confirm", False))
+                        elif command_type == "replace_clip_notes":
+                            result = self._replace_clip_notes(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_clip_name"), params.get("notes"),
+                                params.get("confirm", False))
+                        elif command_type == "set_color":
+                            result = self._set_color(
+                                params.get("kind"), params.get("color_index"),
+                                params.get("track_index"), params.get("clip_index"),
+                                params.get("scene_index"), params.get("track_type", "track"),
+                                params.get("expected_name"))
                         elif command_type == "clear_arrangement_range":
                             result = self._clear_arrangement_range(
                                 params.get("track_index", 0), params.get("expected_name"),
@@ -1633,6 +1654,90 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error creating audio clip: " + str(e))
             raise
 
+    def _validate_new_notes(self, clip, notes):
+        """Check notes for add_notes_to_clip / replace_clip_notes.
+
+        Returns (accepted, rejected, uses_extended). A malformed note raises and
+        nothing is written; a note that starts before 0 or at or after the clip's
+        end (it would never play) goes to rejected with the reason.
+        """
+        if not isinstance(notes, (list, tuple)):
+            raise ValueError("notes must be a list of note objects")
+        allowed = set(("pitch", "start_time", "duration", "velocity", "mute")
+                      + NOTE_EXTENDED_FIELDS)
+        length = float(clip.length)
+        accepted = []
+        rejected = []
+        uses_extended = False
+        for position, note in enumerate(notes):
+            label = "notes[%d]" % position
+            if not isinstance(note, dict):
+                raise TypeError("%s must be an object, got %r" % (label, note))
+            unknown = sorted(set(note) - allowed)
+            if unknown:
+                raise ValueError("%s has unknown field(s) %s; allowed: %s"
+                                 % (label, ", ".join(unknown), ", ".join(sorted(allowed))))
+            spec = {
+                "pitch": _midi_int(note.get("pitch", 60), label + ".pitch", 0, 127),
+                "start_time": _finite_number(note.get("start_time", 0.0), label + ".start_time"),
+                "duration": _finite_number(note.get("duration", 0.25), label + ".duration"),
+                "velocity": _finite_number(note.get("velocity", 100), label + ".velocity"),
+                "mute": note.get("mute", False),
+            }
+            if not isinstance(spec["mute"], bool):
+                raise TypeError("%s.mute must be true or false" % label)
+            if spec["duration"] <= 0:
+                raise ValueError("%s.duration must be > 0" % label)
+            if spec["velocity"] < 1 or spec["velocity"] > 127:
+                raise ValueError("%s.velocity must be between 1 and 127" % label)
+            for field, low, high in (("probability", 0.0, 1.0), ("velocity_deviation", -127.0, 127.0),
+                                     ("release_velocity", 0.0, 127.0)):
+                if field in note:
+                    spec[field] = _finite_number(note[field], "%s.%s" % (label, field))
+                    if spec[field] < low or spec[field] > high:
+                        raise ValueError("%s.%s must be between %s and %s"
+                                         % (label, field, low, high))
+                    uses_extended = True
+            if spec["start_time"] < 0 or spec["start_time"] >= length:
+                rejected.append({
+                    "index": position, "pitch": spec["pitch"], "start_time": spec["start_time"],
+                    "reason": "starts %s the clip (0 to %s beats), so it would never play"
+                              % ("before" if spec["start_time"] < 0 else "at or after the end of",
+                                 length)})
+                continue
+            accepted.append(spec)
+        return accepted, rejected, uses_extended
+
+    def _write_new_notes(self, clip, accepted, uses_extended):
+        """Write validated notes: Clip.add_new_notes when there is one (it takes the
+        Live 11+ fields), else the legacy set_notes."""
+        if not accepted:
+            return
+        maker = None
+        if hasattr(clip, "add_new_notes"):
+            try:
+                import Live
+                maker = Live.Clip.MidiNoteSpecification
+            except Exception:
+                maker = None
+        if maker is not None:
+            clip.add_new_notes(tuple(maker(**spec) for spec in accepted))
+        elif uses_extended:
+            raise Exception(
+                "This version of Live cannot set probability, velocity_deviation or "
+                "release_velocity (needs Clip.add_new_notes, Live 11+). Nothing was added.")
+        else:
+            clip.set_notes(tuple(
+                (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
+                for n in accepted))
+
+    @staticmethod
+    def _count_clip_notes(clip):
+        getter = getattr(clip, "get_notes_extended", None)
+        if getter is None:
+            return None
+        return len(list(getter(0, 128, 0.0, float(clip.length))))
+
     def _add_notes_to_clip(self, track_index, clip_index, notes):
         """Add MIDI notes to a Session clip and report what Live really kept.
 
@@ -1654,88 +1759,134 @@ class AbletonMCP(ControlSurface):
             if not clip_slot.has_clip:
                 raise Exception("No clip in slot")
             clip = clip_slot.clip
-            if not isinstance(notes, (list, tuple)):
-                raise ValueError("notes must be a list of note objects")
-            allowed = set(("pitch", "start_time", "duration", "velocity", "mute")
-                          + NOTE_EXTENDED_FIELDS)
-            length = float(clip.length)
-            accepted = []
-            rejected = []
-            uses_extended = False
-            for position, note in enumerate(notes):
-                label = "notes[%d]" % position
-                if not isinstance(note, dict):
-                    raise TypeError("%s must be an object, got %r" % (label, note))
-                unknown = sorted(set(note) - allowed)
-                if unknown:
-                    raise ValueError("%s has unknown field(s) %s; allowed: %s"
-                                     % (label, ", ".join(unknown), ", ".join(sorted(allowed))))
-                spec = {
-                    "pitch": _midi_int(note.get("pitch", 60), label + ".pitch", 0, 127),
-                    "start_time": _finite_number(note.get("start_time", 0.0), label + ".start_time"),
-                    "duration": _finite_number(note.get("duration", 0.25), label + ".duration"),
-                    "velocity": _finite_number(note.get("velocity", 100), label + ".velocity"),
-                    "mute": note.get("mute", False),
-                }
-                if not isinstance(spec["mute"], bool):
-                    raise TypeError("%s.mute must be true or false" % label)
-                if spec["duration"] <= 0:
-                    raise ValueError("%s.duration must be > 0" % label)
-                if spec["velocity"] < 1 or spec["velocity"] > 127:
-                    raise ValueError("%s.velocity must be between 1 and 127" % label)
-                for field, low, high in (("probability", 0.0, 1.0), ("velocity_deviation", -127.0, 127.0),
-                                         ("release_velocity", 0.0, 127.0)):
-                    if field in note:
-                        spec[field] = _finite_number(note[field], "%s.%s" % (label, field))
-                        if spec[field] < low or spec[field] > high:
-                            raise ValueError("%s.%s must be between %s and %s"
-                                             % (label, field, low, high))
-                        uses_extended = True
-                if spec["start_time"] < 0 or spec["start_time"] >= length:
-                    rejected.append({
-                        "index": position, "pitch": spec["pitch"], "start_time": spec["start_time"],
-                        "reason": "starts %s the clip (0 to %s beats), so it would never play"
-                                  % ("before" if spec["start_time"] < 0 else "at or after the end of",
-                                     length)})
-                    continue
-                accepted.append(spec)
-
-            getter = getattr(clip, "get_notes_extended", None)
-
-            def count():
-                if getter is None:
-                    return None
-                return len(list(getter(0, 128, 0.0, length)))
-
-            before = count()
-            if accepted:
-                maker = None
-                if hasattr(clip, "add_new_notes"):
-                    try:
-                        import Live
-                        maker = Live.Clip.MidiNoteSpecification
-                    except Exception:
-                        maker = None
-                if maker is not None:
-                    clip.add_new_notes(tuple(maker(**spec) for spec in accepted))
-                elif uses_extended:
-                    raise Exception(
-                        "This version of Live cannot set probability, velocity_deviation or "
-                        "release_velocity (needs Clip.add_new_notes, Live 11+). Nothing was added.")
-                else:
-                    clip.set_notes(tuple(
-                        (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
-                        for n in accepted))
-            after = count()
+            accepted, rejected, uses_extended = self._validate_new_notes(clip, notes)
+            before = self._count_clip_notes(clip)
+            self._write_new_notes(clip, accepted, uses_extended)
+            after = self._count_clip_notes(clip)
             added = (after - before) if (before is not None and after is not None) else len(accepted)
             result = {"note_count": added, "sent": len(notes), "rejected": rejected,
-                      "clip_note_count": after, "clip_length": length}
+                      "clip_note_count": after, "clip_length": float(clip.length)}
             if added != len(accepted):
                 result["warning"] = ("Live kept %d of the %d notes that were sent for writing"
                                      % (added, len(accepted)))
             return result
         except Exception as e:
             self.log_message("Error adding notes to clip: " + str(e))
+            raise
+
+    def _replace_clip_notes(self, track_index, clip_index, expected_clip_name, notes, confirm=False):
+        """Preview or replace ALL the notes of a Session MIDI clip with new ones.
+
+        Everything is validated before anything is removed; a note that would
+        never play (outside the clip) is an error here, since the old notes would
+        be gone. If the write fails after the old notes were removed they are put
+        back. Adapted from upstream PR #119 (mateogon). Previews unless confirm is
+        exactly True; expected_clip_name (may be "") must equal the clip's name.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            if expected_clip_name is None or not isinstance(expected_clip_name, str):
+                raise ValueError("expected_clip_name is required (the clip's exact current name, "
+                                 "\"\" for an unnamed clip)")
+            track, clip = self._session_clip(track_index, clip_index, midi=True)
+            if clip.name != expected_clip_name:
+                raise ValueError("The clip is named '%s', not '%s'; nothing was changed."
+                                 % (clip.name, expected_clip_name))
+            accepted, rejected, uses_extended = self._validate_new_notes(clip, notes)
+            if rejected:
+                raise ValueError(
+                    "%d of the new notes would never play (outside the clip), and the old notes "
+                    "would be gone: %s. Nothing was changed."
+                    % (len(rejected), "; ".join("note %d starts at %s" % (r["index"], r["start_time"])
+                                                for r in rejected)))
+            existing = self._count_clip_notes(clip)
+            info = {"track_index": track_index, "clip_index": clip_index, "clip_name": clip.name,
+                    "existing_note_count": existing, "new_note_count": len(accepted),
+                    "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            getter = getattr(clip, "get_notes_extended", None)
+            old = []
+            if getter is not None:
+                for n in getter(0, 128, 0.0, float(clip.length)):
+                    spec = self._note_fields(n)
+                    spec.pop("note_id", None)
+                    old.append(spec)
+            remover = getattr(clip, "remove_notes_extended", None)
+            if remover is not None:
+                remover(0, 128, 0.0, float(clip.length))
+            else:
+                clip.remove_notes(0.0, 0, float(clip.length), 128)
+            try:
+                self._write_new_notes(clip, accepted, uses_extended)
+            except Exception as e:
+                restored = "the %d old notes were put back" % len(old)
+                try:
+                    self._write_new_notes(
+                        clip, old, any(k in n for n in old for k in NOTE_EXTENDED_FIELDS))
+                except Exception:
+                    # a Live without add_new_notes cannot restore probability and friends
+                    plain = [dict((k, v) for k, v in n.items() if k not in NOTE_EXTENDED_FIELDS)
+                             for n in old]
+                    try:
+                        self._write_new_notes(clip, plain, False)
+                        restored = ("the %d old notes were put back WITHOUT their probability, "
+                                    "velocity deviation and release velocity" % len(old))
+                    except Exception as e2:
+                        restored = "RESTORING THE OLD NOTES ALSO FAILED (%s); use Live's undo" % e2
+                raise Exception("Writing the new notes failed (%s); %s." % (e, restored))
+            after = self._count_clip_notes(clip)
+            info["applied"] = True
+            info["clip_note_count"] = after
+            info["verified"] = after is None or after == len(accepted)
+            return info
+        except Exception as e:
+            self.log_message("Error replacing clip notes: " + str(e))
+            raise
+
+    COLOR_INDEX_MAX = 69
+
+    def _set_color(self, kind, color_index, track_index=None, clip_index=None, scene_index=None,
+                   track_type="track", expected_name=None):
+        """Set the colour (Live's palette index 0-69) of a track, a Session clip or a scene.
+
+        Adapted from upstream PR #99 (Zachary May), merged into one tool. Reports
+        the previous and the new index.
+        """
+        try:
+            if kind not in ("track", "clip", "scene"):
+                raise ValueError("kind must be 'track', 'clip' or 'scene'")
+            if isinstance(color_index, bool) or not isinstance(color_index, int) \
+                    or color_index < 0 or color_index > self.COLOR_INDEX_MAX:
+                raise ValueError("color_index must be an integer 0-%d (Live's palette)"
+                                 % self.COLOR_INDEX_MAX)
+            if kind == "track":
+                target = self._resolve_track(track_index, track_type)
+                label = target.name
+            elif kind == "clip":
+                _t, target = self._session_clip(track_index, clip_index)
+                label = target.name
+            else:
+                scenes = list(self._song.scenes)
+                if isinstance(scene_index, bool) or not isinstance(scene_index, int) \
+                        or scene_index < 0 or scene_index >= len(scenes):
+                    raise IndexError("scene index out of range (have %d)" % len(scenes))
+                target = scenes[scene_index]
+                label = target.name
+            if expected_name is not None and label != expected_name:
+                raise ValueError("The %s is '%s', not '%s'; nothing was changed."
+                                 % (kind, label, expected_name))
+            if not hasattr(target, "color_index"):
+                raise ValueError("This %s has no colour in this version of Live" % kind)
+            # an uncoloured scene reads color_index as None
+            before = target.color_index
+            target.color_index = color_index
+            now = target.color_index
+            return {"kind": kind, "name": label,
+                    "previous_color_index": None if before is None else int(before),
+                    "color_index": None if now is None else int(now)}
+        except Exception as e:
+            self.log_message("Error setting colour: " + str(e))
             raise
 
     def _set_clip_name(self, track_index, clip_index, name):
@@ -4730,6 +4881,135 @@ class AbletonMCP(ControlSurface):
             return info
         except Exception as e:
             self.log_message("Error clearing clip envelope: " + str(e))
+            raise
+
+    # ── Overview and arrangement check ────────────────────────────────────────
+    # Both are adapted from upstream PR ahujasid/ableton-mcp#110 (M4x28): one
+    # compact read of every track, and a check of the Arrangement for clips off
+    # the grid, overlaps and gaps.
+
+    @staticmethod
+    def _display(param):
+        try:
+            return param.str_for_value(param.value)
+        except Exception:
+            return None
+
+    def _track_overview_row(self, index, track, kind):
+        row = {"index": index, "name": track.name, "kind": kind,
+               "devices": [d.name for d in track.devices]}
+        mixer = getattr(track, "mixer_device", None)
+        if mixer is not None:
+            row["volume"] = self._display(mixer.volume)
+            row["pan"] = self._display(mixer.panning)
+        if kind != "master":
+            for attr in ("mute", "solo"):
+                if hasattr(track, attr):
+                    row[attr] = bool(getattr(track, attr))
+        if kind in ("audio", "midi", "group"):
+            if getattr(track, "can_be_armed", False):
+                row["arm"] = bool(track.arm)
+            row["session_clips"] = sum(1 for slot in track.clip_slots if slot.has_clip)
+            if kind != "group":
+                row["arrangement_clips"] = len(list(track.arrangement_clips))
+            group = getattr(track, "group_track", None)
+            if group is not None:
+                row["group"] = group.name
+            try:
+                row["color_index"] = int(track.color_index)
+            except Exception:
+                pass
+        return row
+
+    def _get_tracks_overview(self):
+        """Every track, return and the master in one compact read: kind, devices,
+        mixer, mute/solo/arm, clip counts, group. Use it before reaching for
+        get_track_info on each track."""
+        try:
+            song = self._song
+            tracks = []
+            for i, t in enumerate(song.tracks):
+                if getattr(t, "is_foldable", False):
+                    kind = "group"
+                elif getattr(t, "has_midi_input", False):
+                    kind = "midi"
+                else:
+                    kind = "audio"
+                tracks.append(self._track_overview_row(i, t, kind))
+            returns = [self._track_overview_row(i, t, "return") for i, t in enumerate(song.return_tracks)]
+            return {"tempo": song.tempo,
+                    "time_signature": "%d/%d" % (song.signature_numerator, song.signature_denominator),
+                    "is_playing": bool(song.is_playing),
+                    "track_count": len(tracks), "tracks": tracks,
+                    "return_tracks": returns,
+                    "master": self._track_overview_row(0, song.master_track, "master"),
+                    "scene_count": len(song.scenes), "cue_point_count": len(song.cue_points)}
+        except Exception as e:
+            self.log_message("Error getting tracks overview: " + str(e))
+            raise
+
+    def _check_arrangement_sync(self, grid_beats=4.0, tolerance=1e-3):
+        """Check each track's Arrangement clips: starts and ends off the grid,
+        overlaps, and gaps between neighbouring clips. Read-only.
+
+        grid_beats: the grid to check against (4 = bars in 4/4; 1 = beats).
+        Each list is cut at 20 entries; the counts are complete. A gap is only
+        silence between two clips of the same track, which is often intended.
+        """
+        try:
+            grid = self._require_finite_number(grid_beats, "grid_beats")
+            tol = self._require_finite_number(tolerance, "tolerance")
+            if grid <= 0 or tol < 0:
+                raise ValueError("grid_beats must be > 0 and tolerance >= 0")
+            cap = 20
+
+            def off_grid(value):
+                remainder = value % grid
+                return remainder > tol and (grid - remainder) > tol
+
+            report = []
+            totals = {"clips": 0, "off_grid": 0, "overlaps": 0, "gaps": 0}
+            for index, track in enumerate(self._song.tracks):
+                if getattr(track, "is_foldable", False):
+                    continue
+                clips = self._arr_clips(track)
+                if not clips:
+                    continue
+                problems = {"off_grid": [], "overlaps": [], "gaps": []}
+                counts = {"off_grid": 0, "overlaps": 0, "gaps": 0}
+                previous = None
+                for clip in clips:
+                    start, end = float(clip.start_time), float(clip.end_time)
+                    for edge, value in (("start", start), ("end", end)):
+                        if off_grid(value):
+                            counts["off_grid"] += 1
+                            if len(problems["off_grid"]) < cap:
+                                problems["off_grid"].append(
+                                    {"clip": clip.name, "edge": edge, "beat": value})
+                    if previous is not None:
+                        pe = float(previous.end_time)
+                        if start < pe - tol:
+                            counts["overlaps"] += 1
+                            if len(problems["overlaps"]) < cap:
+                                problems["overlaps"].append(
+                                    {"clips": [previous.name, clip.name], "overlap_beats": pe - start})
+                        elif start - pe > tol:
+                            counts["gaps"] += 1
+                            if len(problems["gaps"]) < cap:
+                                problems["gaps"].append(
+                                    {"from": pe, "to": start, "length": start - pe})
+                    previous = clip
+                totals["clips"] += len(clips)
+                for key in counts:
+                    totals[key] += counts[key]
+                report.append({"index": index, "track": track.name, "clips": len(clips),
+                               "first_start": float(clips[0].start_time),
+                               "last_end": float(clips[-1].end_time),
+                               "counts": counts, "problems": problems})
+            totals["in_sync"] = totals["off_grid"] == 0 and totals["overlaps"] == 0
+            return {"grid_beats": grid, "totals": totals, "tracks": report}
+        except Exception as e:
+            self.log_message("Error checking arrangement: " + str(e))
             raise
 
     # ── Return tracks ─────────────────────────────────────────────────────────
