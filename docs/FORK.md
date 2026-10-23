@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.9**, **92 MCP tools** (upstream: 37), 1035 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.10**, **94 MCP tools** (upstream: 37), 1054 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -66,6 +66,12 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.9 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
 | Notes in Arrangement MIDI clips | `get_clip_notes`, `get_clip_info`, `add_notes_to_clip`, `clear_notes_from_clip`, `remove_notes_from_clip`, `apply_note_modifications`, `quantize_clip` and `replace_clip_notes` take an optional `clip_start_time` (the clip's start beat) to work on an Arrangement MIDI clip instead of a Session slot | measured: the note API works on Arrangement clips (the old claim that they are read-only for notes was wrong). Times are in the clip's content; a clip trimmed or split at its head keeps all its notes and starts at `start_marker`. |
+
+| Added in 1.10.10 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Devices on returns and the master | `get_track_info`, `get_device_parameters` and `set_device_parameter` take `track_type` ("track", "return", "master") | closes the old gap "return-track and master device parameters cannot be written": the reverb and delay on the returns can now be read and set |
+| Monitoring | `set_track_monitoring` ("in", "auto", "off"); `get_tracks_overview` shows it | useful before recording a guitar or a mic |
+| Duplicate a track | `duplicate_track`: devices, clips and mixer, copy placed after the original; refused cleanly at Live Lite's 8-track limit | from upstream #94 (Luke Gimza) |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

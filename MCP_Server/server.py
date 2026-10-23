@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "set_track_monitoring", "duplicate_track",
             "replace_clip_notes", "set_color",
             "set_device_routing", "set_clip_envelope", "clear_clip_envelope",
             "back_to_arrangement", "set_track_routing",
@@ -460,17 +461,23 @@ def get_remote_script_info(ctx: Context, user_prompt: str = "") -> str:
 @mcp.tool()
 @telemetry_tool("get_track_info")
 @trajectory_tool("get_track_info")
-def get_track_info(ctx: Context, track_index: int, user_prompt: str = "") -> str:
+def get_track_info(ctx: Context, track_index: int, track_type: str = "track",
+                   user_prompt: str = "") -> str:
     """
     Get detailed information about a specific track in Ableton.
 
     Parameters:
-    - track_index: The index of the track to get information about
+    - track_index: The index of the track to get information about (ignored for "master")
+    - track_type: "track" (default), "return" or "master". Returns and the master give
+      their name, mixer and device list (no clips)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command("get_track_info", {"track_index": track_index})
+        params = {"track_index": track_index}
+        if track_type != "track":
+            params["track_type"] = track_type
+        result = ableton.send_command("get_track_info", params)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
@@ -627,10 +634,11 @@ def get_device_parameters(
     name_contains: Optional[str] = None,
     limit: Optional[int] = None,
     include_racks: bool = False,
+    track_type: str = "track",
     user_prompt: str = "",
 ) -> str:
     """
-    Read the parameters of a device on a track: name, value, min, max, and
+    Read the parameters of a device on a track, a return track or the master: name, value, min, max, and
     `display`, the string Live shows for the current value ("-6.0 dB", "1/8",
     "Sine", "2.4 kHz"). Use `display` to understand what a raw value means
     before changing it with set_device_parameter.
@@ -650,6 +658,8 @@ def get_device_parameters(
       (for example "cutoff" or "attack")
     - limit: Optional maximum number of parameters returned per device
     - include_racks: false (default) summarises racks; true returns full chain contents
+    - track_type: "track" (default), "return" or "master"; track_index is then the index
+      among the returns (ignored for the master)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -671,6 +681,8 @@ def get_device_parameters(
             params["limit"] = limit
         if include_racks:
             params["include_racks"] = True
+        if track_type != "track":
+            params["track_type"] = track_type
         ableton = get_ableton_connection()
         result = ableton.send_command("get_device_parameters", params)
         return json.dumps(result, indent=2)
@@ -688,31 +700,33 @@ def set_device_parameter(
     device_index: int,
     parameter_index: int,
     value: float,
+    track_type: str = "track",
     user_prompt: str = "",
 ) -> str:
     """
-    Set a device parameter to a specific value.
+    Set a device parameter to a specific value (on a track, a return track or the master).
 
     Use get_device_parameters first to discover parameter indices and ranges.
 
     Parameters:
-    - track_index: Track that owns the device
+    - track_index: Track that owns the device (index among the returns when track_type is "return")
     - device_index: Index into the track's device chain
     - parameter_index: Index into device.parameters
     - value: New parameter value (Live parameter units)
+    - track_type: "track" (default), "return" or "master" (track_index is ignored for the master)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
-        result = ableton.send_command(
-            "set_device_parameter",
-            {
-                "track_index": track_index,
-                "device_index": device_index,
-                "parameter_index": parameter_index,
-                "value": value,
-            },
-        )
+        params = {
+            "track_index": track_index,
+            "device_index": device_index,
+            "parameter_index": parameter_index,
+            "value": value,
+        }
+        if track_type != "track":
+            params["track_type"] = track_type
+        result = ableton.send_command("set_device_parameter", params)
         return (
             f"Set {result.get('name', 'parameter')} "
             f"{result.get('old_value')} → {result.get('value')}"
@@ -3232,6 +3246,67 @@ def set_color(
     except Exception as e:
         logger.error(f"Error setting colour: {str(e)}")
         return f"Error setting colour: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_monitoring")
+@trajectory_tool("set_track_monitoring")
+def set_track_monitoring(
+    ctx: Context,
+    track_index: int,
+    state: str,
+    expected_name: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set a track's input monitoring: "in" (always hear the input), "auto" (hear it
+    while armed) or "off". Useful before recording a guitar or a mic. Audio and
+    MIDI tracks only. Returns the previous and the new state.
+
+    Parameters:
+    - track_index: Index of the track
+    - state: "in", "auto" or "off"
+    - expected_name: Optional safety check: the track's exact current name
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_index": track_index, "state": state}
+        if expected_name is not None:
+            params["expected_name"] = expected_name
+        return _json_call("set_track_monitoring", params, "setting track monitoring")
+    except Exception as e:
+        logger.error(f"Error setting track monitoring: {str(e)}")
+        return f"Error setting track monitoring: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("duplicate_track")
+@trajectory_tool("duplicate_track")
+def duplicate_track(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    user_prompt: str = "",
+) -> str:
+    """
+    Duplicate a track with its devices, clips and mixer settings; the copy goes right
+    after it and the tracks after that move down by one. Live Lite allows 8 tracks
+    in all: when the Set is full Live refuses and nothing changes. Undo with
+    delete_track on the copy. From upstream PR #94 (Luke Gimza).
+
+    Parameters:
+    - track_index: Index of the track to copy
+    - expected_name: The track's exact current name (required safety check)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        return _json_call("duplicate_track", {"track_index": track_index,
+                                              "expected_name": expected_name}, "duplicating track")
+    except Exception as e:
+        logger.error(f"Error duplicating track: {str(e)}")
+        return f"Error duplicating track: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
