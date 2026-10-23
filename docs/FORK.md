@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.16**, **110 MCP tools** (upstream: 37), 1167 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.17**, **111 MCP tools** (upstream: 37), 1179 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -106,6 +106,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Clip copies | `duplicate_clip_loop` (double a MIDI loop with its notes), `copy_note_region` (repeat a stretch, transposed), `copy_clip_to_slot` | |
 | Parameters | `get_device_parameters` now returns `items` (the choices) for quantized parameters and `default` for the others | |
 | `get_live_status` | features this edition lacks come by name: Live Lite lacks `note_velocity_ranges_and_probabilities` | so the `probability` of a note may be stored but not played on Lite |
+
+| Added in 1.10.17 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| A recording of your own as an instrument | `configure_simpler`: replace a Simpler's sample with any audio file on disk, set `playback_mode` (classic, one-shot, slicing), `retrigger`, `slicing_playback_mode` | measured: loading a sample from the browser onto a MIDI track already creates a Simpler (class `OriginalSimpler`); `Simpler.replace_sample(path)` swaps the file, and Live renames the device and the track after the file, so later calls need the new names (the name guard refuses the old ones) |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

@@ -33,6 +33,7 @@ MODIFYING_TOOLS = {
     "set_track_arm",
     "delete_track",
     "delete_locator",
+    "configure_simpler",
     "insert_device",
     "move_device",
     "duplicate_device",

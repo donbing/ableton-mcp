@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "configure_simpler",
             "insert_device",
             "move_device",
             "duplicate_device",
@@ -3907,6 +3908,61 @@ def copy_clip_to_slot(
     except Exception as e:
         logger.error(f"Error in copy_clip_to_slot: {str(e)}")
         return f"Error in copy_clip_to_slot: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("configure_simpler")
+@trajectory_tool("configure_simpler")
+def configure_simpler(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    sample_path: Optional[str] = None,
+    playback_mode: Optional[str] = None,
+    retrigger: Optional[bool] = None,
+    slicing_playback_mode: Optional[str] = None,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Turn a recording of your own into a playable instrument: put an audio file into a Simpler
+    and set how it plays. Loading a sample from the browser onto a MIDI track already creates a
+    Simpler (load_instrument_or_effect with the sample's uri); this replaces its sample with any
+    file on disk (an absolute path) and sets the mode.
+
+    playback_mode: "classic" (the held key plays it, envelopes shape it), "one-shot" (plays to the
+    end on note-on: a drum hit or a plucked note) or "slicing". retrigger: a repeated note restarts
+    the sample. slicing_playback_mode: "mono", "poly" or "thru". Parameters of the Simpler itself
+    (filter, envelopes, volume) are set with set_device_parameter. Returns the state before and
+    after, read back.
+
+    Parameters:
+    - track_index: Track that holds the Simpler
+    - device_index: Index of the Simpler in the chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - sample_path: Absolute path of an audio file
+    - playback_mode: "classic", "one-shot" or "slicing"
+    - retrigger: true/false
+    - slicing_playback_mode: "mono", "poly" or "thru"
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        params = {"track_index": track_index, "device_index": device_index, "expected_name": expected_name,
+                  "expected_device_name": expected_device_name, "track_type": track_type}
+        for key, value in (("sample_path", sample_path), ("playback_mode", playback_mode),
+                           ("retrigger", retrigger), ("slicing_playback_mode", slicing_playback_mode)):
+            if value is not None:
+                params[key] = value
+        return _json_call("configure_simpler", params, "configuring the Simpler")
+    except Exception as e:
+        logger.error(f"Error in configure_simpler: {str(e)}")
+        return f"Error in configure_simpler: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
