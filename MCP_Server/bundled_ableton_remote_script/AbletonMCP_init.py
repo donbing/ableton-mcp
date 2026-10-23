@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.13"
+SCRIPT_VERSION = "1.10.14"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -2375,16 +2375,26 @@ class AbletonMCP(ControlSurface):
                 info["dry_run"] = True
                 return info
 
-            # Members first, group last. After each delete the indices have
-            # moved, and Live may also drop a group once its last member is
-            # gone, so re-find every victim by identity right before deleting
-            # it and skip any that no longer exists. Never trust a stale index
-            # on a destructive call.
-            for victim in reversed(doomed):
-                current = list(self._song.tracks)
-                at = next((i for i, t in enumerate(current) if t == victim), None)
-                if at is not None:
-                    self._song.delete_track(at)
+            # The group first: on Live 12.4 Lite deleting the group takes its members
+            # with it, while deleting the members one by one fails on the last one
+            # ("Couldn't delete track.") and leaves the set half deleted. After each
+            # delete the indices have moved, so every victim is re-found by identity
+            # right before deleting it and skipped if it is already gone (a member that
+            # went with its group). Never trust a stale index on a destructive call.
+            try:
+                for victim in doomed:
+                    current = list(self._song.tracks)
+                    at = next((i for i, t in enumerate(current) if t == victim), None)
+                    if at is not None:
+                        self._song.delete_track(at)
+            except Exception as e:
+                left = len(list(self._song.tracks))
+                if left != len(tracks):
+                    raise RuntimeError(
+                        "Live stopped partway (%s): the set has %d of its %d tracks. Undo (Cmd+Z in "
+                        "Live, or the undo tool after reading its warning) brings them back."
+                        % (e, left, len(tracks)))
+                raise
             after = list(self._song.tracks)
             info["deleted"] = len(after) == len(survivors)
             info["remaining"] = [{"index": i, "name": t.name}
@@ -5168,8 +5178,11 @@ class AbletonMCP(ControlSurface):
         if kind in ("audio", "midi", "group"):
             if getattr(track, "can_be_armed", False):
                 row["arm"] = bool(track.arm)
-            if hasattr(track, "current_monitoring_state"):
+            try:
+                # hasattr is true for group tracks too, but reading it raises there
                 row["monitoring"] = self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")
+            except Exception:
+                pass
             row["session_clips"] = sum(1 for slot in track.clip_slots if slot.has_clip)
             if kind != "group":
                 row["arrangement_clips"] = len(list(track.arrangement_clips))
@@ -5292,9 +5305,11 @@ class AbletonMCP(ControlSurface):
             if expected_name is not None and track.name != expected_name:
                 raise ValueError("Track %s is '%s', not '%s'; nothing was changed."
                                  % (track_index, track.name, expected_name))
-            if not hasattr(track, "current_monitoring_state"):
-                raise ValueError("Track '%s' has no monitoring state" % track.name)
-            before = self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")
+            try:
+                before = self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")
+            except Exception:
+                raise ValueError("Track '%s' has no monitoring state (group tracks, returns and the "
+                                 "master do not)" % track.name)
             track.current_monitoring_state = names[key]
             return {"track_name": track.name, "previous": before,
                     "state": self.MONITORING_NAMES.get(int(track.current_monitoring_state), "?")}
