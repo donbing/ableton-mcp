@@ -117,6 +117,7 @@ class AbletonConnection:
             "delete_clip",
             "delete_track",
             "delete_locator",
+            "back_to_arrangement", "set_track_routing",
             "clear_arrangement_range",
             "trim_arrangement_clip",
             "split_arrangement_clip",
@@ -2656,6 +2657,119 @@ def create_arrangement_clip(
     except Exception as e:
         logger.error(f"Error creating arrangement clip: {str(e)}")
         return f"Error creating arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("back_to_arrangement")
+@trajectory_tool("back_to_arrangement")
+def back_to_arrangement(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Hand playback back to the Arrangement (Live's "Back to Arrangement" button).
+
+    Launching a Session clip or scene (fire_clip, fire_scene) takes those tracks
+    off the Arrangement until this is called. The reply says whether any track
+    was off it and what Live read back. Adapted from upstream PR #119 (mateogon).
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("back_to_arrangement")
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command("back_to_arrangement", {})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error going back to the arrangement: {str(e)}")
+        return f"Error going back to the arrangement: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_track_routing")
+def get_track_routing(
+    ctx: Context,
+    track_index: int = 0,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Read a track's input and output routing: the current type and channel, and the
+    types and channels Live offers (the channels depend on the current type).
+    Names are exactly what Live shows, and what set_track_routing takes.
+
+    Parameters:
+    - track_index: Index within the chosen track_type (ignored for "master")
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("get_track_routing")
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command(
+            "get_track_routing", {"track_index": track_index, "track_type": track_type})
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting track routing: {str(e)}")
+        return f"Error getting track routing: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_routing")
+@trajectory_tool("set_track_routing")
+def set_track_routing(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    direction: str,
+    routing_type: Optional[str] = None,
+    routing_channel: Optional[str] = None,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Set a track's input or output routing (type and/or channel).
+
+    Read the names with get_track_routing first. A type change is applied, Live
+    is given a moment to list the channels for it, then the channel is set (about
+    a second in all). A wrong OUTPUT can silence a track, so expected_name (the
+    track's exact current name) is required; the reply has the previous and the
+    new routing, so the change can be undone with another call. Based on upstream
+    PR #99 (Zachary May), extended with channels, track_type and the name check.
+
+    Parameters:
+    - track_index: Index within the chosen track_type
+    - expected_name: The track's exact current name (required safety check)
+    - direction: "input" or "output"
+    - routing_type: Routing type name, e.g. "Ext. In", "Master", "Sends Only"
+    - routing_channel: Routing channel name, e.g. "1/2", "Pre FX"
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        from .script_handshake import require_capability
+
+        missing = require_capability("set_track_routing")
+        if missing:
+            return missing
+        if expected_name is None:
+            return ("Error setting track routing: expected_name is required. Read the "
+                    "track's exact current name and pass it unchanged.")
+        params = {"track_index": track_index, "track_type": track_type,
+                  "expected_name": expected_name, "direction": direction}
+        if routing_type is not None:
+            params["routing_type"] = routing_type
+        if routing_channel is not None:
+            params["routing_channel"] = routing_channel
+        result = get_ableton_connection().send_command("set_track_routing", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        logger.error(f"Error setting track routing: {str(e)}")
+        return f"Error setting track routing: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

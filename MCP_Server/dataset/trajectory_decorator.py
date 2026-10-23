@@ -33,6 +33,8 @@ MODIFYING_TOOLS = {
     "set_track_arm",
     "delete_track",
     "delete_locator",
+    "back_to_arrangement",
+    "set_track_routing",
     "clear_arrangement_range",
     "trim_arrangement_clip",
     "split_arrangement_clip",
