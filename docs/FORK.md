@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.6**, **88 MCP tools** (upstream: 37), 986 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.7**, **88 MCP tools** (upstream: 37), 999 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -49,6 +49,11 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Notes | `add_notes_to_clip` now validates, writes with `Clip.add_new_notes` (so `probability`, `velocity_deviation`, `release_velocity` work), reads the clip back and reports how many notes it really holds and which it refused (a note starting at or after the clip end would never play). `apply_note_modifications` now edits **in place** (note ids and extra fields kept) and can change those three fields | our upstream issue #138. Root cause of the old failure: Live only accepts the `MidiNoteVector` that `get_notes_by_id` / `get_notes_extended` return, never a Python list or tuple made from it. |
 | Sidechain | `get_device_routing`, `set_device_routing`: the "Audio From" (type and tap) of Compressor, Gate, Glue Compressor etc., and "S/C On" | the ducking setup (kick into the bass compressor). A bad channel after a good type puts the type back. Also done for `set_track_routing`. |
 | Automation | `get_clip_envelope` (samples), `set_clip_envelope` (steps or ramp, preview by default), `clear_clip_envelope` | idea from upstream #23 (zzstoatzz), written from scratch. Session clips only: Live gives the API no envelope for an Arrangement clip, but a Session clip copied into the Arrangement keeps its automation (`get_arrangement_clips` shows `has_envelopes`). Parameters: volume, pan, send A/B, or a device parameter by name. Values in the parameter's own units. |
+
+| Fixed in 1.10.7 (our upstream issues #134 and #137; run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Replies that read Live too early | `load_instrument_or_effect` now settles, then lists the devices Live really added (`devices_before`, `devices_after`, `new_devices`); `set_arrangement_time` reports where the playhead really is and warns if it did not move | upstream issue #134: Live applies the change a moment later, so the same-tick read showed an empty chain and the old position |
+| Auto-warp on import | `create_audio_clip` reports `warping`, the file's own length and what that is in beats at the set's tempo, and warns when Live's auto-warp changed the length; `warping=false` keeps the file's own timing | upstream issue #137 |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
