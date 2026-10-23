@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.8**, **92 MCP tools** (upstream: 37), 1022 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.9**, **92 MCP tools** (upstream: 37), 1035 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -62,6 +62,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Colours | `set_color` for a track, a Session clip or a scene (palette index 0-69) | adapted from upstream #99 (Zachary May), merged into one tool |
 
 `create_volume_fade` from #110 is not ported: `set_clip_envelope` in ramp mode already writes a fade (on a Session clip, which keeps it when copied to the Arrangement).
+
+| Added in 1.10.9 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Notes in Arrangement MIDI clips | `get_clip_notes`, `get_clip_info`, `add_notes_to_clip`, `clear_notes_from_clip`, `remove_notes_from_clip`, `apply_note_modifications`, `quantize_clip` and `replace_clip_notes` take an optional `clip_start_time` (the clip's start beat) to work on an Arrangement MIDI clip instead of a Session slot | measured: the note API works on Arrangement clips (the old claim that they are read-only for notes was wrong). Times are in the clip's content; a clip trimmed or split at its head keeps all its notes and starts at `start_marker`. |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
