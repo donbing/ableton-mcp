@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.17"
+SCRIPT_VERSION = "1.10.18"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -168,6 +168,17 @@ SCRIPT_CAPABILITIES = [
     "delete_scene",
     "delete_locator",
     "configure_simpler",
+    "compare_device_ab",
+    "list_clip_envelopes",
+    "clear_all_clip_envelopes",
+    "crop_clip",
+    "get_take_lanes",
+    "create_take_lane",
+    "set_track_fold",
+    "get_ui_state",
+    "show_in_ui",
+    "re_enable_automation",
+    "capture_midi",
     "get_song_scale",
     "get_grooves",
     "insert_device",
@@ -512,9 +523,17 @@ class AbletonMCP(ControlSurface):
                 # up to METER_MAX_SECONDS and must not block Live. See
                 # _get_meters.
                 response["result"] = self._get_meters(
-                    params.get("seconds", 2.0), params.get("hz", 20))
+                    params.get("seconds", 2.0), params.get("hz", 20),
+                    params.get("source", "output"))
             elif command_type == "get_song_scale":
                 response["result"] = self._get_song_scale()
+            elif command_type == "get_ui_state":
+                response["result"] = self._get_ui_state()
+            elif command_type == "get_take_lanes":
+                response["result"] = self._get_take_lanes(params.get("track_index", 0))
+            elif command_type == "list_clip_envelopes":
+                response["result"] = self._list_clip_envelopes(
+                    params.get("track_index", 0), params.get("clip_index", 0))
             elif command_type == "get_grooves":
                 response["result"] = self._get_grooves()
             elif command_type == "get_live_status":
@@ -575,6 +594,9 @@ class AbletonMCP(ControlSurface):
                                  "delete_arrangement_clips", "delete_device",
                                  "press_dialog_button",
                                  "configure_simpler",
+                                 "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
+                                 "create_take_lane", "set_track_fold", "show_in_ui",
+                                 "re_enable_automation", "capture_midi",
                                  "insert_device",
                                  "move_device",
                                  "duplicate_device",
@@ -770,7 +792,7 @@ class AbletonMCP(ControlSurface):
                                 params.get("clip_start_time"), params.get("points"),
                                 params.get("mode", "linear"), params.get("resolution", 0.125),
                                 params.get("end"), params.get("confirm", False),
-                                params.get("shape"))
+                                params.get("shape"), params.get("value_unit", "raw"))
                         elif command_type == "clear_clip_envelope":
                             result = self._clear_clip_envelope(
                                 params.get("track_index", 0), params.get("clip_index", 0),
@@ -852,6 +874,35 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0), params.get("clip_index", 0),
                                 params.get("to_track_index"), params.get("to_clip_index"),
                                 params.get("overwrite", False))
+                        elif command_type == "compare_device_ab":
+                            result = self._compare_device_ab(
+                                params.get("track_index", 0), params.get("device_index"),
+                                params.get("expected_name"), params.get("expected_device_name"),
+                                params.get("action", "status"), params.get("track_type", "track"))
+                        elif command_type == "clear_all_clip_envelopes":
+                            result = self._clear_all_clip_envelopes(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_name"), params.get("confirm", False))
+                        elif command_type == "crop_clip":
+                            result = self._crop_clip(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_name"), params.get("confirm", False),
+                                params.get("clip_start_time"))
+                        elif command_type == "create_take_lane":
+                            result = self._create_take_lane(params.get("track_index", 0), params.get("expected_name"))
+                        elif command_type == "set_track_fold":
+                            result = self._set_track_fold(params.get("track_index", 0),
+                                                          params.get("expected_name"), params.get("folded"))
+                        elif command_type == "show_in_ui":
+                            result = self._show_in_ui(
+                                params.get("track_index"), params.get("track_type", "track"),
+                                params.get("scene_index"), params.get("clip_index"),
+                                params.get("device_index"), params.get("view_name"),
+                                params.get("envelope_parameter"), params.get("envelope_device_index"))
+                        elif command_type == "re_enable_automation":
+                            result = self._re_enable_automation()
+                        elif command_type == "capture_midi":
+                            result = self._capture_midi(params.get("destination", "auto"))
                         elif command_type == "configure_simpler":
                             result = self._configure_simpler(
                                 params.get("track_index", 0), params.get("device_index"),
@@ -1096,8 +1147,9 @@ class AbletonMCP(ControlSurface):
                             params.get("track_index", 0),
                             params.get("device_index", 0),
                             params.get("parameter_index", 0),
-                            params.get("value", 0.0),
+                            params.get("value"),
                             params.get("track_type", "track"),
+                            params.get("display_value"),
                         )
                         response_queue.put({"status": "success", "result": result})
                     except Exception as e:
@@ -1181,8 +1233,12 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting session info: " + str(e))
             raise
     
-    def _get_meters(self, seconds=2.0, hz=20):
+    def _get_meters(self, seconds=2.0, hz=20, source="output"):
         """Sample output_meter_left/right of every track over a time window.
+
+        source "input": the level arriving at each track's input instead (audio tracks
+        input_meter_left/right, MIDI tracks the one input_meter_level; returns and the
+        master have none). That is the level to check before recording.
 
         Threading, deliberately: this runs on the client handler thread and
         never touches Live's main thread for longer than one attribute read.
@@ -1209,6 +1265,8 @@ class AbletonMCP(ControlSurface):
                 if (isinstance(val, bool) or not isinstance(val, (int, float))
                         or not math.isfinite(val) or val <= 0):
                     raise ValueError("%s must be a positive number, got %r" % (label, val))
+            if source not in ("output", "input"):
+                raise ValueError("source must be 'output' or 'input', got %r" % (source,))
             capped = seconds > METER_MAX_SECONDS
             seconds = min(float(seconds), METER_MAX_SECONDS)
             hz = min(max(float(hz), METER_MIN_HZ), METER_MAX_HZ)
@@ -1223,12 +1281,21 @@ class AbletonMCP(ControlSurface):
             stats = []
             for group, tracks in groups:
                 for index, track in enumerate(tracks):
+                    if source == "output":
+                        left_attr, right_attr = "output_meter_left", "output_meter_right"
+                    elif group != "tracks":
+                        left_attr = right_attr = None           # returns and master have no input
+                    elif self._safe_attr(track, "has_audio_input", bool, False):
+                        left_attr, right_attr = "input_meter_left", "input_meter_right"
+                    else:
+                        left_attr = right_attr = "input_meter_level"
                     stats.append({
                         "group": group, "index": index, "track": track,
                         "name": self._safe_attr(track, "name", str, ""),
                         "peak_left": 0.0, "peak_right": 0.0,
                         "sum_left": 0.0, "sum_right": 0.0, "n": 0,
-                        "available": True,
+                        "left_attr": left_attr, "right_attr": right_attr,
+                        "available": left_attr is not None,
                     })
 
             started = time.monotonic()
@@ -1240,8 +1307,8 @@ class AbletonMCP(ControlSurface):
                     if not st["available"]:
                         continue
                     try:
-                        left = float(st["track"].output_meter_left)
-                        right = float(st["track"].output_meter_right)
+                        left = float(getattr(st["track"], st["left_attr"]))
+                        right = float(getattr(st["track"], st["right_attr"]))
                         if not (math.isfinite(left) and math.isfinite(right)):
                             raise ValueError("non-finite meter value")
                     except Exception:
@@ -1292,6 +1359,7 @@ class AbletonMCP(ControlSurface):
                 "hz": hz,
                 "samples": taken,
                 "capped_to_max_seconds": capped,
+                "source": source,
                 "is_playing": self._safe_song_property("is_playing", bool, False),
                 "tracks": [report(st) for st in stats if st["group"] == "tracks"],
                 "return_tracks": [report(st) for st in stats if st["group"] == "return_tracks"],
@@ -1306,6 +1374,12 @@ class AbletonMCP(ControlSurface):
                     "(see scale); null means silence (raw <= 0.03). Meters read "
                     "0 while nothing is playing."),
             }
+            if source == "input":
+                result["note"] = (
+                    "source=input: the level at each track's input (audio tracks left/right, MIDI "
+                    "tracks one value for both). Same 0..1 reading, but the dB conversion was "
+                    "calibrated on output meters only, so treat *_db_approx of an input as a rough "
+                    "guide. Tracks monitoring 'off' and not armed may read 0 even with a signal.")
             return result
         except Exception as e:
             self.log_message("Error getting meters: " + str(e))
@@ -5121,10 +5195,27 @@ class AbletonMCP(ControlSurface):
                    "max": vmax, "phase": phase, "invert": invert}
         return clean, mode, summary
 
+    def _display_to_raw(self, param, number):
+        """The raw value at which `param` displays `number` (Hz, ms, dB, %): Live does the
+        conversion, so the parameter is set to it and put back at once."""
+        if getattr(param, "is_quantized", False):
+            raise ValueError("'%s' is a choice, not a number: give its position with value_unit raw" % param.name)
+        if not hasattr(param, "display_value"):
+            raise RuntimeError("This version of Live has no DeviceParameter.display_value")
+        old = param.value
+        try:
+            param.display_value = float(number)
+            return float(param.value)
+        except Exception as e:
+            raise ValueError("Live would not take %s as a display value for '%s': %s"
+                             % (number, param.name, str(e).strip()[:100]))
+        finally:
+            param.value = old
+
     def _set_clip_envelope(self, track_index, clip_index, expected_name, parameter,
                            device_index=None, arrangement=False, clip_start_time=None,
                            points=None, mode="linear", resolution=0.125, end=None,
-                           confirm=False, shape=None):
+                           confirm=False, shape=None, value_unit="raw"):
         """Preview or write a clip's automation of one parameter.
 
         Give points or shape.
@@ -5136,6 +5227,9 @@ class AbletonMCP(ControlSurface):
         saw_down, square, random_steps, random_smooth, curve), see
         _envelope_shape_points. Existing automation of this parameter between the first
         point and the end is replaced. Previews unless confirm is exactly True.
+        value_unit "display": the values (points' value, shape min and max) are in the
+        unit Live displays (Hz, ms, dB, %), converted by Live itself; a shape still runs
+        between the converted ends in the parameter's own curve.
         """
         try:
             do_apply = self._require_confirm_flag(confirm)
@@ -5147,12 +5241,29 @@ class AbletonMCP(ControlSurface):
                 mode = "linear"
             if mode not in ("steps", "linear"):
                 raise ValueError("mode must be 'linear' or 'steps' ('ramp' means linear)")
+            if value_unit not in ("raw", "display"):
+                raise ValueError("value_unit must be 'raw' or 'display'")
+            converted = []
+
+            def to_raw(number, label):
+                number = self._require_finite_number(number, label)
+                if value_unit == "raw":
+                    return number
+                raw = self._display_to_raw(target, number)
+                converted.append({"display": number, "raw": raw})
+                return raw
+
             span = self._clip_span(clip, arrangement)
             lo, hi = float(target.min), float(target.max)
             summary = None
             if shape is not None:
                 if points:
                     raise ValueError("give points or shape, not both")
+                if value_unit == "display":
+                    shape = dict(shape)
+                    for key in ("min", "max"):
+                        if shape.get(key) is not None:
+                            shape[key] = to_raw(shape[key], "shape." + key)
                 pts, mode, summary = self._envelope_shape_points(shape, lo, hi, span)
                 stop = summary["end"]
             else:
@@ -5165,7 +5276,7 @@ class AbletonMCP(ControlSurface):
                     if not isinstance(pt, dict):
                         raise TypeError("points[%d] must be an object" % i)
                     t = self._require_finite_number(pt.get("time"), "points[%d].time" % i)
-                    v = self._require_finite_number(pt.get("value"), "points[%d].value" % i)
+                    v = to_raw(pt.get("value"), "points[%d].value" % i)
                     too_late = t > span + 1e-9 if mode == "linear" else t >= span
                     if t < 0 or too_late:
                         raise ValueError("points[%d].time %s is outside the clip (0 to %s beats)" % (i, t, span))
@@ -5204,6 +5315,9 @@ class AbletonMCP(ControlSurface):
                     "applied": False, "dry_run": not do_apply}
             if summary is not None:
                 info["shape"] = summary
+            if converted:
+                info["value_unit"] = "display"
+                info["converted"] = converted[:8]
             if not do_apply:
                 return info
             env = clip.automation_envelope(target)
@@ -5589,6 +5703,14 @@ class AbletonMCP(ControlSurface):
         put("tempo", lambda: float(song.tempo))
         put("exclusive_arm", lambda: bool(song.exclusive_arm))
         put("exclusive_solo", lambda: bool(song.exclusive_solo))
+        put("last_event_time", lambda: float(song.last_event_time))
+        put("can_capture_midi", lambda: bool(song.can_capture_midi))
+        put("automation_overridden", lambda: bool(song.re_enable_automation_enabled))
+        put("punch_in", lambda: bool(song.punch_in))
+        put("punch_out", lambda: bool(song.punch_out))
+        put("arrangement_overdub", lambda: bool(song.arrangement_overdub))
+        put("record_mode", lambda: bool(song.record_mode))
+        put("count_in_duration", lambda: int(song.count_in_duration))
         impact = []
         for kind, tracks in (("track", song.tracks), ("return", song.return_tracks)):
             for i, t in enumerate(tracks):
@@ -6100,6 +6222,326 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error configuring the Simpler: " + str(e))
             raise
+
+    # ── A/B compare, clip automation overview, crop, take lanes, UI state, song state ──
+    # Measured on Live 12.4 Lite (2026-10-24): Device.save_preset_to_compare_ab_slot copies the
+    # current settings into the OTHER slot, is_using_compare_preset_b then swaps between the two;
+    # Clip.automation_envelopes lists the automated parameters (each envelope has .parameter);
+    # Song.View and Application.View accept the selections written below; TakeLane has a name and
+    # arrangement_clips; Application.show_on_the_fly_message opens a MODAL dialog that blocks Live's
+    # main thread, so it is not offered.
+
+    AB_ACTIONS = ("status", "save", "switch", "use_a", "use_b")
+
+    def _compare_device_ab(self, track_index, device_index, expected_name, expected_device_name,
+                           action="status", track_type="track"):
+        """A/B compare of a device's settings (the small A/B button in its title bar).
+
+        status: say which slot is in use. save: copy the CURRENT settings into the other slot (then
+        change the current ones and `switch` to compare). switch / use_a / use_b: change slot.
+        """
+        try:
+            track = self._named_track(track_index, expected_name, track_type)
+            device = self._named_device(track, device_index, expected_device_name)
+            key = str(action).strip().lower()
+            if key not in self.AB_ACTIONS:
+                raise ValueError("action must be one of %s" % ", ".join(self.AB_ACTIONS))
+            if not getattr(device, "can_compare_ab", False):
+                raise ValueError("Device '%s' has no A/B compare" % device.name)
+            was_b = bool(device.is_using_compare_preset_b)
+            if key == "save":
+                device.save_preset_to_compare_ab_slot()
+            elif key == "switch":
+                device.is_using_compare_preset_b = not was_b
+            elif key in ("use_a", "use_b"):
+                device.is_using_compare_preset_b = key == "use_b"
+            now_b = bool(device.is_using_compare_preset_b)
+            return {"track_name": track.name, "device": device.name, "action": key,
+                    "was_on": "B" if was_b else "A", "now_on": "B" if now_b else "A"}
+        except Exception as e:
+            self.log_message("Error comparing a device A/B: " + str(e))
+            raise
+
+    def _clip_envelope_owner(self, track, parameter):
+        """Where an automated parameter lives: the mixer or one of the track's devices."""
+        mixer = track.mixer_device
+        mixer_params = [("volume", mixer.volume), ("pan", mixer.panning)]
+        mixer_params += [("send " + chr(ord("A") + i), s) for i, s in enumerate(mixer.sends)]
+        for label, p in mixer_params:
+            if p == parameter:
+                return {"parameter": label, "owner": "mixer"}
+        for device_index, device in enumerate(track.devices):
+            for p in device.parameters:
+                if p == parameter:
+                    return {"parameter": p.name, "owner": "device", "device_index": device_index,
+                            "device_name": device.name}
+        return {"parameter": self._safe_attr(parameter, "name", str, "?"), "owner": "unknown"}
+
+    def _list_clip_envelopes(self, track_index, clip_index):
+        """Which parameters of a Session clip are automated (name and owner), nothing else."""
+        try:
+            track, clip = self._envelope_clip(track_index, clip_index, None, False, None)
+            envelopes = list(getattr(clip, "automation_envelopes", None) or [])
+            rows = []
+            for env in envelopes:
+                row = self._clip_envelope_owner(track, env.parameter)
+                row["min"], row["max"] = float(env.parameter.min), float(env.parameter.max)
+                rows.append(row)
+            return {"track_name": track.name, "clip_name": clip.name, "count": len(rows),
+                    "envelopes": rows}
+        except Exception as e:
+            self.log_message("Error listing clip envelopes: " + str(e))
+            raise
+
+    def _clear_all_clip_envelopes(self, track_index, clip_index, expected_name, confirm=False):
+        """Preview or remove ALL of a Session clip's automation (Live's undo can bring it back)."""
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            self._require_expected_name(expected_name, "track")
+            track, clip = self._envelope_clip(track_index, clip_index, expected_name, False, None)
+            before = self._list_clip_envelopes(track_index, clip_index)
+            info = {"track_name": track.name, "clip_name": clip.name, "would_remove": before["envelopes"],
+                    "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            clip.clear_all_envelopes()
+            info["applied"] = True
+            info["remaining"] = len(list(getattr(clip, "automation_envelopes", None) or []))
+            return info
+        except Exception as e:
+            self.log_message("Error clearing all clip envelopes: " + str(e))
+            raise
+
+    def _crop_clip(self, track_index, clip_index, expected_name, confirm=False, clip_start_time=None):
+        """Preview or crop a clip to its loop (looping) or to its start and end markers (not looping).
+
+        Everything outside is thrown away: notes, and for an audio clip the audio itself becomes a
+        new, shorter file. Live's undo can bring it back.
+        """
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            track, clip = self._session_clip(track_index, clip_index, clip_start_time=clip_start_time)
+            self._require_expected_name(expected_name, "track")
+            if track.name != expected_name:
+                raise ValueError("Track %s is '%s', not '%s'; nothing was changed."
+                                 % (track_index, track.name, expected_name))
+            looping = bool(getattr(clip, "looping", False))
+            keep = ((float(clip.loop_start), float(clip.loop_end)) if looping
+                    else (float(clip.start_marker), float(clip.end_marker)))
+            info = {"track_name": track.name, "clip_name": clip.name, "is_audio_clip": bool(clip.is_audio_clip),
+                    "looping": looping, "keeps_from": keep[0], "keeps_to": keep[1],
+                    "length_before": float(clip.length), "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            clip.crop()
+            info["applied"] = True
+            info["length_after"] = float(clip.length)
+            return info
+        except Exception as e:
+            self.log_message("Error cropping a clip: " + str(e))
+            raise
+
+    def _get_take_lanes(self, track_index):
+        """The take lanes of a track and the clips each holds (the takes of a comp)."""
+        try:
+            track = self._resolve_track(track_index, "track")
+            if getattr(track, "is_foldable", False):
+                raise ValueError("Track '%s' is a group track and has no take lanes" % track.name)
+            lanes = []
+            for lane_index, lane in enumerate(list(getattr(track, "take_lanes", None) or [])):
+                clips = []
+                for clip in list(getattr(lane, "arrangement_clips", None) or []):
+                    clips.append({"name": clip.name, "start_time": float(clip.start_time),
+                                  "end_time": float(clip.end_time), "is_audio_clip": bool(clip.is_audio_clip)})
+                lanes.append({"index": lane_index, "name": self._safe_attr(lane, "name", str, ""),
+                              "clip_count": len(clips), "clips": clips})
+            return {"track_index": track_index, "track_name": track.name, "lane_count": len(lanes),
+                    "lanes": lanes}
+        except Exception as e:
+            self.log_message("Error reading take lanes: " + str(e))
+            raise
+
+    def _create_take_lane(self, track_index, expected_name):
+        """Add an empty take lane to a track (Live's undo removes it)."""
+        try:
+            track = self._named_track(track_index, expected_name)
+            if getattr(track, "is_foldable", False) or not hasattr(track, "create_take_lane"):
+                raise ValueError("Track '%s' cannot have take lanes" % track.name)
+            before = len(list(track.take_lanes))
+            track.create_take_lane()
+            return {"track_name": track.name, "lanes_before": before, "lanes_after": len(list(track.take_lanes))}
+        except Exception as e:
+            self.log_message("Error creating a take lane: " + str(e))
+            raise
+
+    def _set_track_fold(self, track_index, expected_name, folded):
+        """Fold (collapse) or unfold a group track in the Arrangement and Session."""
+        try:
+            track = self._named_track(track_index, expected_name)
+            if not getattr(track, "is_foldable", False):
+                raise ValueError("Track '%s' is not a group track; only groups fold" % track.name)
+            if not isinstance(folded, bool):
+                raise TypeError("folded must be true or false")
+            before = bool(track.fold_state)
+            track.fold_state = folded
+            return {"track_name": track.name, "was_folded": before, "folded": bool(track.fold_state)}
+        except Exception as e:
+            self.log_message("Error folding a group: " + str(e))
+            raise
+
+    UI_VIEWS = ("Browser", "Arranger", "Session", "Detail", "Detail/Clip", "Detail/DeviceChain")
+
+    def _track_reference(self, track):
+        """{kind, index} of a track, return track or the master, or None."""
+        song = self._song
+        for kind, tracks in (("track", song.tracks), ("return", song.return_tracks)):
+            for i, t in enumerate(tracks):
+                if t == track:
+                    return {"track_type": kind, "index": i, "name": t.name}
+        if track == song.master_track:
+            return {"track_type": "master", "index": None, "name": song.master_track.name}
+        return None
+
+    def _get_ui_state(self):
+        """What the user is looking at: the focused view, which panels are open, the selected track,
+        scene, clip, device and parameter. Each field is read on its own."""
+        app = self.application()
+        view, sv, song = app.view, self._song.view, self._song
+        info = {}
+
+        def put(key, fn):
+            try:
+                info[key] = fn()
+            except Exception:
+                info[key] = None
+
+        put("focused_view", lambda: str(view.focused_document_view))
+        put("open_views", lambda: [name for name in self.UI_VIEWS if view.is_view_visible(name)])
+        put("selected_track", lambda: self._track_reference(sv.selected_track))
+        put("selected_scene", lambda: next((i for i, sc in enumerate(song.scenes) if sc == sv.selected_scene), None))
+
+        def detail_clip():
+            clip = sv.detail_clip
+            if clip is None:
+                return None
+            row = {"name": clip.name, "is_arrangement_clip": bool(clip.is_arrangement_clip),
+                   "start_time": float(clip.start_time) if clip.is_arrangement_clip else None}
+            for i, t in enumerate(song.tracks):
+                found = [k for k, slot in enumerate(t.clip_slots) if slot.has_clip and slot.clip == clip]
+                if found:
+                    row.update({"track_index": i, "track_name": t.name, "clip_index": found[0]})
+                    break
+                if clip.is_arrangement_clip and any(c == clip for c in t.arrangement_clips):
+                    row.update({"track_index": i, "track_name": t.name})
+                    break
+            return row
+
+        put("detail_clip", detail_clip)
+        put("selected_parameter", lambda: (sv.selected_parameter.name if sv.selected_parameter is not None else None))
+        put("selected_device", lambda: (sv.selected_track.view.selected_device.name
+                                        if sv.selected_track.view.selected_device is not None else None))
+        put("follow_song", lambda: bool(sv.follow_song))
+        put("draw_mode", lambda: bool(sv.draw_mode))
+        return info
+
+    def _show_in_ui(self, track_index=None, track_type="track", scene_index=None, clip_index=None,
+                    device_index=None, view_name=None, envelope_parameter=None, envelope_device_index=None):
+        """Move Live's own selection and views, so the user sees what is being talked about.
+
+        track_index (+track_type): select that track. scene_index: select that scene. clip_index: select
+        that Session clip and show it in the Detail view (needs track_index). device_index: select that
+        device of the track and show the device chain. view_name: focus Arranger, Session, Browser, or
+        a Detail panel ("Detail/Clip", "Detail/DeviceChain"). envelope_parameter (with clip_index): show
+        that parameter's automation in the clip's envelope view. Nothing in the Set changes.
+        """
+        try:
+            app = self.application()
+            sv = self._song.view
+            did = []
+            track = None
+            if track_index is not None:
+                track = self._resolve_track(track_index, track_type)
+                sv.selected_track = track
+                did.append("track '%s'" % track.name)
+            if scene_index is not None:
+                scenes = list(self._song.scenes)
+                if isinstance(scene_index, bool) or not isinstance(scene_index, int) or not 0 <= scene_index < len(scenes):
+                    raise IndexError("scene_index out of range (the Set has %d scenes)" % len(scenes))
+                sv.selected_scene = scenes[scene_index]
+                did.append("scene %d" % scene_index)
+            if clip_index is not None:
+                if track is None or (track_type or "track") != "track":
+                    raise ValueError("clip_index needs a regular track_index")
+                if isinstance(clip_index, bool) or not isinstance(clip_index, int) or not 0 <= clip_index < len(track.clip_slots):
+                    raise IndexError("clip_index out of range")
+                slot = track.clip_slots[clip_index]
+                sv.highlighted_clip_slot = slot
+                if slot.has_clip:
+                    sv.detail_clip = slot.clip
+                    did.append("clip %d" % clip_index)
+                    if envelope_parameter is not None:
+                        target = self._automation_target(track, envelope_parameter, envelope_device_index)
+                        slot.clip.view.show_envelope()
+                        slot.clip.view.select_envelope_parameter(target)
+                        did.append("envelope '%s'" % target.name)
+                else:
+                    did.append("empty slot %d" % clip_index)
+            if device_index is not None:
+                if track is None:
+                    raise ValueError("device_index needs track_index")
+                devices = list(track.devices)
+                if isinstance(device_index, bool) or not isinstance(device_index, int) or not 0 <= device_index < len(devices):
+                    raise IndexError("device_index out of range (the track has %d devices)" % len(devices))
+                sv.select_device(devices[device_index])
+                did.append("device '%s'" % devices[device_index].name)
+            if view_name is not None:
+                wanted = [n for n in self.UI_VIEWS if n.lower() == str(view_name).strip().lower()]
+                if not wanted:
+                    raise ValueError("view_name must be one of %s" % ", ".join(self.UI_VIEWS))
+                app.view.focus_view(wanted[0])
+                did.append("view %s" % wanted[0])
+            if not did:
+                raise ValueError("Give something to show: track_index, scene_index, clip_index, device_index or view_name")
+            state = self._get_ui_state()
+            state["did"] = did
+            return state
+        except Exception as e:
+            self.log_message("Error showing something in Live: " + str(e))
+            raise
+
+    def _re_enable_automation(self):
+        """Give automation back to the lanes: Live's 'Re-Enable Automation' button (an automated
+        parameter that was moved by hand stops following its lane until this)."""
+        try:
+            song = self._song
+            before = bool(song.re_enable_automation_enabled)
+            if before:
+                song.re_enable_automation()
+            return {"was_needed": before, "needed_now": bool(song.re_enable_automation_enabled)}
+        except Exception as e:
+            self.log_message("Error re-enabling automation: " + str(e))
+            raise
+
+    def _capture_midi(self, destination="auto"):
+        """Capture the MIDI just played (on an armed or monitored MIDI track) into a clip, like Live's
+        Capture MIDI button. Needs material: can_capture_midi must be true."""
+        try:
+            song = self._song
+            key = str(destination).strip().lower()
+            if key not in ("auto", "session", "arrangement"):
+                raise ValueError("destination must be auto, session or arrangement")
+            if not hasattr(song, "capture_midi"):
+                raise RuntimeError("This version of Live has no Song.capture_midi")
+            if not bool(song.can_capture_midi):
+                raise ValueError("Nothing to capture: Live has heard no MIDI played on a monitored MIDI "
+                                 "track (arm a MIDI track, play, then call this)")
+            import Live
+            song.capture_midi(getattr(Live.Song.CaptureDestination, key))
+            return {"captured": True, "destination": key, "can_capture_midi_now": bool(song.can_capture_midi)}
+        except Exception as e:
+            self.log_message("Error capturing MIDI: " + str(e))
+            raise
+
 
     # ── Return tracks ─────────────────────────────────────────────────────────
     # create_return_track and load_device_on_return adapted from the open
@@ -7239,6 +7681,13 @@ class AbletonMCP(ControlSurface):
         else:
             info["automation_enabled"] = False
 
+        if with_display:
+            # Only the detailed read: the session snapshot stays as small as it was.
+            for key, attr, kind in (("is_active", "is_active", bool), ("latency_ms", "latency_in_ms", float)):
+                value = self._safe_attr(device, attr, kind, None)
+                if value is not None and (key == "is_active" or value):
+                    info[key] = value
+
         if include_params:
             params = []
             matched = 0
@@ -7276,6 +7725,9 @@ class AbletonMCP(ControlSurface):
                             display = self._param_display(param)
                             if display is not None:
                                 entry["display"] = display
+                            display_value = self._param_display_value(param)
+                            if display_value is not None:
+                                entry["display_value"] = display_value
                         if hasattr(param, "value_string"):
                             entry["value_string"] = str(param.value_string)
                         if hasattr(param, "automation_state"):
@@ -7555,6 +8007,23 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error getting device parameters: " + str(e))
             raise
 
+    def _param_display_value(self, param):
+        """The value in the unit Live shows it in (Hz, ms, dB, %, semitones), or None.
+
+        Live's display_value is the number behind the display string: 1000.0 for "1.00 kHz",
+        1456.0 for "1.46 s" (times are in ms). None for a quantized parameter, a parameter
+        without one, or an infinite display such as a compressor ratio of "inf : 1".
+        """
+        try:
+            if getattr(param, "is_quantized", False):
+                return None
+            number = float(param.display_value)
+        except Exception:
+            return None
+        if number != number or abs(number) > 1e30:
+            return None
+        return number
+
     def _param_display(self, param):
         """Live's own display string for a parameter's current value ("-6.0 dB",
         "1/8", "Sine"), or None when it cannot be read."""
@@ -7679,7 +8148,12 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _set_device_parameter(self, track_index, device_index, parameter_index, value,
-                              track_type="track"):
+                              track_type="track", display_value=None):
+        """Set one parameter, by raw value or by display_value (the unit Live shows: Hz, ms, dB, %).
+
+        display_value is the way to say "80 Hz" or "-6 dB" without knowing the parameter's curve; Live
+        clamps a number outside the parameter's range without an error, so the reply says "clamped".
+        """
         try:
             track = self._resolve_track(track_index, track_type)
             if device_index < 0 or device_index >= len(track.devices):
@@ -7688,14 +8162,33 @@ class AbletonMCP(ControlSurface):
             if parameter_index < 0 or parameter_index >= len(device.parameters):
                 raise IndexError("Parameter index out of range")
             param = device.parameters[parameter_index]
-            value = float(value)
-            if not float(param.min) <= value <= float(param.max):
-                raise ValueError(
-                    "Value {0} is outside the range of parameter '{1}' ({2} to {3})".format(
-                        value, param.name, float(param.min), float(param.max)))
+            if (value is None) == (display_value is None):
+                raise ValueError("Give exactly one of value (Live's raw units) or display_value (the unit shown: Hz, ms, dB, %)")
             old = float(param.value)
-            param.value = value
-            return {
+            old_display = self._param_display(param)
+            clamped = False
+            if display_value is not None:
+                if isinstance(display_value, bool) or not isinstance(display_value, (int, float)):
+                    raise TypeError("display_value must be a number")
+                if getattr(param, "is_quantized", False):
+                    raise ValueError("Parameter '%s' is a choice (quantized); set its position with value (see items in get_device_parameters)" % param.name)
+                if not hasattr(param, "display_value"):
+                    raise RuntimeError("This version of Live has no DeviceParameter.display_value")
+                try:
+                    param.display_value = float(display_value)
+                except Exception as e:
+                    raise ValueError("Live would not take display_value %s for '%s': %s" % (display_value, param.name, str(e).strip()[:100]))
+                landed = self._param_display_value(param)
+                if landed is not None:
+                    clamped = abs(landed - float(display_value)) > 1e-3 * max(1.0, abs(float(display_value)))
+            else:
+                value = float(value)
+                if not float(param.min) <= value <= float(param.max):
+                    raise ValueError(
+                        "Value {0} is outside the range of parameter '{1}' ({2} to {3})".format(
+                            value, param.name, float(param.min), float(param.max)))
+                param.value = value
+            result = {
                 "track_index": track_index,
                 "track_type": (track_type or "track").lower(),
                 "device_index": device_index,
@@ -7706,6 +8199,16 @@ class AbletonMCP(ControlSurface):
                 "min": float(param.min),
                 "max": float(param.max),
             }
+            display = self._param_display(param)
+            if display is not None:
+                result["display"] = display
+                result["old_display"] = old_display
+            landed = self._param_display_value(param)
+            if landed is not None:
+                result["display_value"] = landed
+            if display_value is not None:
+                result["clamped"] = clamped
+            return result
         except Exception as e:
             self.log_message("Error setting device parameter: " + str(e))
             raise

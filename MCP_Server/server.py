@@ -118,6 +118,8 @@ class AbletonConnection:
             "delete_track",
             "delete_locator",
             "configure_simpler",
+            "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
+            "create_take_lane", "set_track_fold", "re_enable_automation", "capture_midi",
             "insert_device",
             "move_device",
             "duplicate_device",
@@ -504,11 +506,16 @@ def get_meters(
     ctx: Context,
     seconds: float = 2.0,
     hz: int = 20,
+    source: str = "output",
     user_prompt: str = "",
 ) -> str:
     """
     Measure output levels of every track, every return track and the master over
     a short time window, and report per-track peak and mean level.
+
+    source "input" reads the level arriving at each track's INPUT instead: the number to check
+    before recording a guitar, a voice or a bass (play a loud passage while it measures; arm the
+    track or set its monitoring to "in" so Live listens). Returns and the master have no input.
 
     Samples Live's output meters (left and right) `hz` times a second for
     `seconds` seconds. Start playback first: meters read 0 when nothing plays.
@@ -527,6 +534,7 @@ def get_meters(
     Parameters:
     - seconds: Window length, default 2.0, capped at 10
     - hz: Samples per second, default 20, clamped to 1..50
+    - source: "output" (default) or "input"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -537,9 +545,13 @@ def get_meters(
             return missing
         if seconds <= 0 or hz <= 0:
             return "Error getting meters: seconds and hz must be positive"
+        if source not in ("output", "input"):
+            return "Error getting meters: source must be 'output' or 'input'"
         ableton = get_ableton_connection()
-        result = ableton.send_command(
-            "get_meters", {"seconds": min(float(seconds), 10.0), "hz": hz})
+        params = {"seconds": min(float(seconds), 10.0), "hz": hz}
+        if source != "output":
+            params["source"] = source
+        result = ableton.send_command("get_meters", params)
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting meters: {str(e)}")
@@ -712,38 +724,56 @@ def set_device_parameter(
     track_index: int,
     device_index: int,
     parameter_index: int,
-    value: float,
+    value: Optional[float] = None,
     track_type: str = "track",
+    display_value: Optional[float] = None,
     user_prompt: str = "",
 ) -> str:
     """
-    Set a device parameter to a specific value (on a track, a return track or the master).
+    Set a device parameter (on a track, a return track or the master), either by Live's raw value
+    or by the number Live displays: display_value is the way to say "80 Hz", "-6 dB" or "250 ms"
+    without knowing the parameter's curve.
 
-    Use get_device_parameters first to discover parameter indices and ranges.
+    Use get_device_parameters first to discover parameter indices, ranges and each parameter's
+    display and display_value. display_value is in the base unit of the display string: Hz for
+    frequencies (1000 shows as "1.00 kHz"), ms for times (1456 shows as "1.46 s"), dB, %, semitones.
+    Live silently limits a display_value outside the parameter's range; the reply then says clamped.
+    A choice parameter (quantized: a filter type, a mode) takes its position in value, not a display_value.
 
     Parameters:
     - track_index: Track that owns the device (index among the returns when track_type is "return")
     - device_index: Index into the track's device chain
     - parameter_index: Index into device.parameters
-    - value: New parameter value (Live parameter units)
+    - value: New parameter value in Live's raw units (give this or display_value)
     - track_type: "track" (default), "return" or "master" (track_index is ignored for the master)
+    - display_value: New value in the displayed unit, for example 80 (Hz), -6 (dB), 250 (ms)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        if (value is None) == (display_value is None):
+            return "Error setting device parameter: give exactly one of value or display_value."
         ableton = get_ableton_connection()
         params = {
             "track_index": track_index,
             "device_index": device_index,
             "parameter_index": parameter_index,
-            "value": value,
         }
+        if value is not None:
+            params["value"] = value
+        if display_value is not None:
+            params["display_value"] = display_value
         if track_type != "track":
             params["track_type"] = track_type
         result = ableton.send_command("set_device_parameter", params)
-        return (
+        text = (
             f"Set {result.get('name', 'parameter')} "
             f"{result.get('old_value')} → {result.get('value')}"
         )
+        if result.get("display") is not None:
+            text += f" ({result.get('old_display')} → {result.get('display')})"
+        if result.get("clamped"):
+            text += " [clamped: the number was outside the parameter's range]"
+        return text
     except Exception as e:
         logger.error(f"Error setting device parameter: {str(e)}")
         return f"Error setting device parameter: {str(e)}"
@@ -3045,6 +3075,7 @@ def set_clip_envelope(
     mode: str = "linear",
     end: Optional[float] = None,
     confirm: bool = False,
+    value_unit: str = "raw",
     user_prompt: str = "",
 ) -> str:
     """
@@ -3072,6 +3103,12 @@ def set_clip_envelope(
     lines (curve coefficients are ignored), so a sine is made of points_per_cycle
     breakpoints per cycle: 16 is within 2% of the amplitude, 32 within 0.5%.
 
+    value_unit: "raw" (default) or "display". With "display" the values (the points' value, a
+    shape's min and max) are in the unit Live shows, converted by Live itself: Hz for a
+    frequency, ms for a time, dB for a level, % for an amount. A filter sweep from 80 Hz to
+    10 kHz is min 80, max 10000, no need to know the curve. A shape runs between the converted
+    ends in the parameter's own curve (a logarithmic frequency sweeps evenly by ear).
+
     Step 1: confirm=false (default) previews (parameter, point and event counts,
     whether it replaces automation). Step 2: the same call with confirm=true; the reply
     reads the values back. Clip automation can only target parameters of the clip's
@@ -3090,6 +3127,7 @@ def set_clip_envelope(
     - mode: "linear" (default) or "steps"; ignored for shapes (a square holds, the others are linear)
     - end: Where the last point's stretch ends (default the clip end)
     - confirm: false = preview only (default), true = write
+    - value_unit: "raw" (default) or "display"
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -3099,6 +3137,8 @@ def set_clip_envelope(
             return "Error: give points or shape (exactly one)."
         params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name,
                   "parameter": parameter, "mode": mode, "confirm": confirm}
+        if value_unit != "raw":
+            params["value_unit"] = value_unit
         for key, value in (("points", points), ("shape", shape), ("device_index", device_index),
                            ("end", end)):
             if value is not None:
@@ -3963,6 +4003,348 @@ def configure_simpler(
     except Exception as e:
         logger.error(f"Error in configure_simpler: {str(e)}")
         return f"Error in configure_simpler: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("compare_device_ab")
+@trajectory_tool("compare_device_ab")
+def compare_device_ab(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    action: str = "status",
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    A/B compare of a device's settings, Live's small A/B button in the device title bar: hear two
+    versions of an EQ, a compressor or a reverb against each other. Works on Live's own devices
+    (a VST or AU plug-in has none).
+
+    Recipe: action "save" copies the CURRENT settings into the other slot; change the settings with
+    set_device_parameter; then "switch" (or "use_a" / "use_b") jumps between the two so the user can
+    listen. Measured on Live 12 Lite: each slot keeps its own settings. "status" says which slot is
+    in use without changing anything.
+
+    Parameters:
+    - track_index: Track that holds the device
+    - device_index: Index of the device in the chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - action: "status" (default), "save", "switch", "use_a" or "use_b"
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        return _json_call("compare_device_ab", {
+            "track_index": track_index, "device_index": device_index, "expected_name": expected_name,
+            "expected_device_name": expected_device_name, "action": action, "track_type": track_type},
+            "comparing a device A/B")
+    except Exception as e:
+        logger.error(f"Error in compare_device_ab: {str(e)}")
+        return f"Error in compare_device_ab: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("list_clip_envelopes")
+def list_clip_envelopes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int = 0,
+    user_prompt: str = "",
+) -> str:
+    """
+    Which parameters of a Session clip are automated: the parameter name and where it lives (the
+    mixer, or a device with its index), with its range. Use it before get_clip_envelope or
+    clear_clip_envelope when you do not know what the clip carries.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("list_clip_envelopes", {"track_index": track_index, "clip_index": clip_index},
+                          "listing clip envelopes")
+    except Exception as e:
+        logger.error(f"Error in list_clip_envelopes: {str(e)}")
+        return f"Error in list_clip_envelopes: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("clear_all_clip_envelopes")
+@trajectory_tool("clear_all_clip_envelopes")
+def clear_all_clip_envelopes(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_index: int = 0,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Remove ALL automation of a Session clip, in two steps (Live's undo can bring it back).
+    Step 1: confirm=false (default) lists what would go. Step 2: the same call with confirm=true.
+    To remove one parameter only, use clear_clip_envelope.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - expected_name: The track's exact current name (required safety check)
+    - clip_index: Session clip slot
+    - confirm: false = preview only (default), true = remove
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        out = _json_call("clear_all_clip_envelopes", {"track_index": track_index, "clip_index": clip_index,
+                                                      "expected_name": expected_name, "confirm": confirm},
+                         "clearing all clip envelopes")
+        return (out if confirm else
+                "NOT REMOVED (preview only). This would happen: " + out +
+                "\nTo remove them, call clear_all_clip_envelopes again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error in clear_all_clip_envelopes: {str(e)}")
+        return f"Error in clear_all_clip_envelopes: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("crop_clip")
+@trajectory_tool("crop_clip")
+def crop_clip(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_index: int = 0,
+    clip_start_time: Optional[float] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Crop a clip to its loop (when it loops) or to its start and end markers (when it does not),
+    throwing away everything outside: notes of a MIDI clip, and for an audio clip the audio itself
+    becomes a new, shorter file. Live's undo can bring it back. Two steps: confirm=false (default)
+    says what would be kept; the same call with confirm=true crops.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - expected_name: The track's exact current name (required safety check)
+    - clip_index: Session clip slot
+    - clip_start_time: Start beat of an Arrangement clip; when given, that clip is cropped instead
+    - confirm: false = preview only (default), true = crop
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name,
+                  "confirm": confirm}
+        if clip_start_time is not None:
+            params["clip_start_time"] = clip_start_time
+        out = _json_call("crop_clip", params, "cropping a clip")
+        return (out if confirm else
+                "NOT CROPPED (preview only). This would happen: " + out +
+                "\nTo crop it, call crop_clip again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error in crop_clip: {str(e)}")
+        return f"Error in crop_clip: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_take_lanes")
+def get_take_lanes(
+    ctx: Context,
+    track_index: int,
+    user_prompt: str = "",
+) -> str:
+    """
+    The take lanes of a track and the clips each holds: the takes of a recording that is being
+    comped (the guitar solo played three times). Read-only: Live's API cannot pick the active take,
+    so the comp itself is chosen in Live (or with the Arrangement clip tools on the clips listed).
+
+    Parameters:
+    - track_index: Track to read
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_take_lanes", {"track_index": track_index}, "reading take lanes")
+    except Exception as e:
+        logger.error(f"Error in get_take_lanes: {str(e)}")
+        return f"Error in get_take_lanes: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("create_take_lane")
+@trajectory_tool("create_take_lane")
+def create_take_lane(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    user_prompt: str = "",
+) -> str:
+    """
+    Add an empty take lane to an audio or MIDI track (Live's undo removes it).
+
+    Parameters:
+    - track_index: Track to add the lane to
+    - expected_name: The track's exact current name (required safety check)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        return _json_call("create_take_lane", {"track_index": track_index, "expected_name": expected_name},
+                          "creating a take lane")
+    except Exception as e:
+        logger.error(f"Error in create_take_lane: {str(e)}")
+        return f"Error in create_take_lane: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_track_fold")
+@trajectory_tool("set_track_fold")
+def set_track_fold(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    folded: bool,
+    user_prompt: str = "",
+) -> str:
+    """
+    Fold (collapse) or unfold a group track, so a set with many tracks stays readable.
+    Only group tracks fold.
+
+    Parameters:
+    - track_index: The group track
+    - expected_name: The group's exact current name (required safety check)
+    - folded: true to collapse, false to expand
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the group's exact current name)."
+        return _json_call("set_track_fold", {"track_index": track_index, "expected_name": expected_name,
+                                             "folded": folded}, "folding a group")
+    except Exception as e:
+        logger.error(f"Error in set_track_fold: {str(e)}")
+        return f"Error in set_track_fold: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_ui_state")
+def get_ui_state(
+    ctx: Context,
+    user_prompt: str = "",
+) -> str:
+    """
+    What the user is looking at in Live: the focused view (Arranger or Session), which panels are
+    open, the selected track, scene, clip (with its track and slot), device and parameter.
+    Use it when the user says "this track", "this clip" or "the one I have selected".
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_ui_state", {}, "reading the UI state")
+    except Exception as e:
+        logger.error(f"Error in get_ui_state: {str(e)}")
+        return f"Error in get_ui_state: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("show_in_ui")
+def show_in_ui(
+    ctx: Context,
+    track_index: Optional[int] = None,
+    track_type: str = "track",
+    scene_index: Optional[int] = None,
+    clip_index: Optional[int] = None,
+    device_index: Optional[int] = None,
+    view_name: Optional[str] = None,
+    envelope_parameter: Optional[str] = None,
+    envelope_device_index: Optional[int] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Move Live's own selection and views so the user sees what is being talked about: select a
+    track, scene, Session clip (shown in the Detail view) or device (shown in the device chain),
+    focus a view, or show one parameter's automation of a clip. Nothing in the Set changes. Give at
+    least one argument; they can be combined.
+
+    Parameters:
+    - track_index: Select this track (an index among the returns when track_type is "return")
+    - track_type: "track" (default), "return" or "master"
+    - scene_index: Select this scene
+    - clip_index: Select this Session clip slot of track_index and show the clip
+    - device_index: Select this device of track_index
+    - view_name: Focus "Arranger", "Session", "Browser", "Detail", "Detail/Clip" or "Detail/DeviceChain"
+    - envelope_parameter: With clip_index: show this parameter's automation ("volume", "pan",
+      "send A", or a device parameter name with envelope_device_index)
+    - envelope_device_index: Device that holds envelope_parameter; leave out for mixer parameters
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"track_type": track_type}
+        for key, value in (("track_index", track_index), ("scene_index", scene_index), ("clip_index", clip_index),
+                           ("device_index", device_index), ("view_name", view_name),
+                           ("envelope_parameter", envelope_parameter),
+                           ("envelope_device_index", envelope_device_index)):
+            if value is not None:
+                params[key] = value
+        return _json_call("show_in_ui", params, "showing something in Live")
+    except Exception as e:
+        logger.error(f"Error in show_in_ui: {str(e)}")
+        return f"Error in show_in_ui: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("re_enable_automation")
+@trajectory_tool("re_enable_automation")
+def re_enable_automation(
+    ctx: Context,
+    user_prompt: str = "",
+) -> str:
+    """
+    Live's "Re-Enable Automation" button: a parameter with automation that was moved by hand stops
+    following its lane (its automation shows as overridden) until this is pressed. Does nothing when
+    no parameter is overridden; get_live_status shows automation_overridden.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("re_enable_automation", {}, "re-enabling automation")
+    except Exception as e:
+        logger.error(f"Error in re_enable_automation: {str(e)}")
+        return f"Error in re_enable_automation: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("capture_midi")
+@trajectory_tool("capture_midi")
+def capture_midi(
+    ctx: Context,
+    destination: str = "auto",
+    user_prompt: str = "",
+) -> str:
+    """
+    Live's Capture MIDI: keep what the user just played on an armed (or monitored) MIDI track as a
+    clip, even though Record was never pressed. Refuses when Live has heard nothing to capture
+    (get_live_status shows can_capture_midi). Not run on a real Live yet: it needs MIDI played.
+
+    Parameters:
+    - destination: "auto" (default; Live picks Session or Arrangement), "session" or "arrangement"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("capture_midi", {"destination": destination}, "capturing MIDI")
+    except Exception as e:
+        logger.error(f"Error in capture_midi: {str(e)}")
+        return f"Error in capture_midi: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
