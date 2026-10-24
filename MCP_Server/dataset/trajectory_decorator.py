@@ -41,6 +41,7 @@ MODIFYING_TOOLS = {
     "set_track_fold",
     "re_enable_automation",
     "capture_midi",
+    "set_clip_launch",
     "set_transport_options",
     "delete_return_track",
     "set_drum_pad",

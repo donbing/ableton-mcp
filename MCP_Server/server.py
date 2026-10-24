@@ -120,6 +120,7 @@ class AbletonConnection:
             "configure_simpler",
             "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
             "create_take_lane", "set_track_fold", "re_enable_automation", "capture_midi",
+            "set_clip_launch",
             "set_transport_options", "delete_return_track", "set_drum_pad", "rack_variations",
             "set_plugin_window",
             "insert_device",
@@ -4628,6 +4629,49 @@ def set_plugin_window(
     except Exception as e:
         logger.error(f"Error in set_plugin_window: {str(e)}")
         return f"Error in set_plugin_window: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_launch")
+@trajectory_tool("set_clip_launch")
+def set_clip_launch(
+    ctx: Context,
+    track_index: int,
+    expected_name: str,
+    clip_index: int = 0,
+    launch_quantization: Optional[str] = None,
+    launch_mode: Optional[str] = None,
+    legato: Optional[bool] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    How a Session clip launches: its own launch quantization ("global" follows the Set's), its launch
+    mode and legato. Matters when the set is played live from the Session view (a loop that must start
+    on the next bar, a one-shot that plays only while a pad is held). get_clip_info shows the current
+    values. Session clips only.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - expected_name: The track's exact current name (required safety check)
+    - clip_index: Session clip slot
+    - launch_quantization: "global", "none", "8 bars", "4 bars", "2 bars", "bar", "half", "half triplet",
+      "quarter", "quarter triplet", "eighth", "eighth triplet", "sixteenth", "sixteenth triplet", "thirtysecond"
+    - launch_mode: "trigger" (starts on launch), "gate" (plays only while held), "toggle" or "repeat"
+    - legato: true to start in the position of the clip that was playing
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        params = {"track_index": track_index, "clip_index": clip_index, "expected_name": expected_name}
+        for key, value in (("launch_quantization", launch_quantization), ("launch_mode", launch_mode),
+                           ("legato", legato)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_clip_launch", params, "setting the clip launch settings")
+    except Exception as e:
+        logger.error(f"Error in set_clip_launch: {str(e)}")
+        return f"Error in set_clip_launch: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
