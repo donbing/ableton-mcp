@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.19"
+SCRIPT_VERSION = "1.10.20"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -168,6 +168,7 @@ SCRIPT_CAPABILITIES = [
     "delete_scene",
     "delete_locator",
     "configure_simpler",
+    "set_clip_launch",
     "set_transport_options",
     "delete_return_track",
     "get_drum_pads",
@@ -611,6 +612,7 @@ class AbletonMCP(ControlSurface):
                                  "delete_arrangement_clips", "delete_device",
                                  "press_dialog_button",
                                  "configure_simpler",
+                                 "set_clip_launch",
                                  "delete_return_track", "set_drum_pad", "rack_variations",
                                  "preview_browser_item", "stop_browser_preview", "set_plugin_window",
                                  "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
@@ -893,6 +895,11 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0), params.get("clip_index", 0),
                                 params.get("to_track_index"), params.get("to_clip_index"),
                                 params.get("overwrite", False))
+                        elif command_type == "set_clip_launch":
+                            result = self._set_clip_launch(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("expected_name"), params.get("launch_quantization"),
+                                params.get("launch_mode"), params.get("legato"))
                         elif command_type == "delete_return_track":
                             result = self._delete_return_track(
                                 params.get("index"), params.get("expected_name"), params.get("confirm", False))
@@ -3447,6 +3454,8 @@ class AbletonMCP(ControlSurface):
                 "color_index": self._safe_attr(clip, "color_index", int, None),
                 "note_count": None,
             }
+            if clip_start_time is None:
+                info.update(self._clip_launch_state(clip))
             if is_midi and info["length"] is not None:
                 try:
                     info["note_count"] = len(self._notes_in_range(
@@ -5443,6 +5452,11 @@ class AbletonMCP(ControlSurface):
             for attr in ("mute", "solo"):
                 if hasattr(track, attr):
                     row[attr] = bool(getattr(track, attr))
+            # only when true: why a track is silent (another one is soloed) and that it is frozen
+            if self._safe_attr(track, "muted_via_solo", bool, False):
+                row["muted_via_solo"] = True
+            if self._safe_attr(track, "is_frozen", bool, False):
+                row["frozen"] = True
         if kind in ("audio", "midi", "group"):
             if getattr(track, "can_be_armed", False):
                 row["arm"] = bool(track.arm)
@@ -6872,6 +6886,80 @@ class AbletonMCP(ControlSurface):
                     "open": bool(device.is_editor_open)}
         except Exception as e:
             self.log_message("Error with a plug-in window: " + str(e))
+            raise
+
+
+    # ── Clip launch settings (1.10.20) ────────────────────────────────────────
+    # Measured on Live 12.4 Lite (2026-10-24): Clip.launch_quantization takes Live.Clip.ClipLaunchQuantization
+    # (0 = follow the Set's global setting), launch_mode Live.Clip.LaunchMode (trigger, gate, toggle, repeat)
+    # and legato; all three apply at once. Song.view / Track.muted_via_solo / is_frozen read as plain properties.
+
+    CLIP_LAUNCH_QUANTIZATION = [
+        ("global", "q_global"), ("none", "q_none"), ("8 bars", "q_8_bars"), ("4 bars", "q_4_bars"),
+        ("2 bars", "q_2_bars"), ("bar", "q_bar"), ("half", "q_half"), ("half triplet", "q_half_triplet"),
+        ("quarter", "q_quarter"), ("quarter triplet", "q_quarter_triplet"), ("eighth", "q_eighth"),
+        ("eighth triplet", "q_eighth_triplet"), ("sixteenth", "q_sixteenth"),
+        ("sixteenth triplet", "q_sixteenth_triplet"), ("thirtysecond", "q_thirtysecond")]
+    CLIP_LAUNCH_MODES = ("trigger", "gate", "toggle", "repeat")
+
+    def _clip_launch_state(self, clip):
+        """launch_quantization (name), launch_mode (name) and legato of a Session clip; {} when this Live
+        or this kind of clip does not expose them."""
+        try:
+            import Live
+            state = {}
+            quantization = int(clip.launch_quantization)
+            owner = Live.Clip.ClipLaunchQuantization
+            state["launch_quantization"] = next(
+                (name for name, attr in self.CLIP_LAUNCH_QUANTIZATION
+                 if getattr(owner, attr, None) is not None and int(getattr(owner, attr)) == quantization), quantization)
+            mode = int(clip.launch_mode)
+            state["launch_mode"] = next((name for name in self.CLIP_LAUNCH_MODES
+                                         if int(getattr(Live.Clip.LaunchMode, name)) == mode), mode)
+            state["legato"] = bool(clip.legato)
+            return state
+        except Exception:
+            return {}
+
+    def _set_clip_launch(self, track_index, clip_index, expected_name, launch_quantization=None,
+                         launch_mode=None, legato=None):
+        """How a Session clip launches: its own launch quantization (or "global" to follow the Set's),
+        its launch mode (trigger, gate, toggle, repeat) and legato. Session clips only."""
+        try:
+            import Live
+            self._require_expected_name(expected_name, "track")
+            track, clip = self._envelope_clip(track_index, clip_index, expected_name, False, None)
+            if launch_quantization is None and launch_mode is None and legato is None:
+                raise ValueError("Give launch_quantization, launch_mode and/or legato")
+            before = self._clip_launch_state(clip)
+            if not before:
+                raise RuntimeError("This Live does not expose the launch settings of this clip")
+            quantization = None
+            if launch_quantization is not None:
+                key = str(launch_quantization).strip().lower().replace("_", " ")
+                match = [attr for name, attr in self.CLIP_LAUNCH_QUANTIZATION if name == key]
+                if not match:
+                    raise ValueError("launch_quantization must be one of: %s"
+                                     % ", ".join(n for n, _ in self.CLIP_LAUNCH_QUANTIZATION))
+                quantization = getattr(Live.Clip.ClipLaunchQuantization, match[0])
+            mode = None
+            if launch_mode is not None:
+                key = str(launch_mode).strip().lower()
+                if key not in self.CLIP_LAUNCH_MODES:
+                    raise ValueError("launch_mode must be one of: %s" % ", ".join(self.CLIP_LAUNCH_MODES))
+                mode = getattr(Live.Clip.LaunchMode, key)
+            if legato is not None and not isinstance(legato, bool):
+                raise TypeError("legato must be true or false")
+            if quantization is not None:
+                clip.launch_quantization = quantization
+            if mode is not None:
+                clip.launch_mode = mode
+            if legato is not None:
+                clip.legato = legato
+            return {"track_name": track.name, "clip_name": clip.name, "before": before,
+                    "after": self._clip_launch_state(clip)}
+        except Exception as e:
+            self.log_message("Error setting clip launch settings: " + str(e))
             raise
 
 
