@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.17**, **111 MCP tools** (upstream: 37), 1179 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.18**, **122 MCP tools** (upstream: 37), 1212 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -110,6 +110,18 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.17 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
 | A recording of your own as an instrument | `configure_simpler`: replace a Simpler's sample with any audio file on disk, set `playback_mode` (classic, one-shot, slicing), `retrigger`, `slicing_playback_mode` | measured: loading a sample from the browser onto a MIDI track already creates a Simpler (class `OriginalSimpler`); `Simpler.replace_sample(path)` swaps the file, and Live renames the device and the track after the file, so later calls need the new names (the name guard refuses the old ones) |
+
+| Added in 1.10.18 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Parameters in the unit Live shows | `set_device_parameter(display_value=...)`: say 80 (Hz), -6 (dB), 250 (ms) instead of a raw 0..1 value. `get_device_parameters` returns `display_value` for every non-choice parameter, plus the device's `is_active` and `latency_ms` | measured: Live limits a number outside the range WITHOUT an error (a -100 dB threshold becomes -inf), so the reply says `clamped`; times are in ms (1456 = "1.46 s"), frequencies in Hz (1000 = "1.00 kHz"); a choice parameter takes its position in `value` |
+| Automation in display units | `set_clip_envelope(value_unit="display")`: points and shape min/max in Hz, ms, dB or %, converted by Live itself (the parameter is set and put back) | a filter sweep is `min: 80, max: 10000`; the shape still runs between the two raw ends |
+| Input level | `get_meters(source="input")`: the level arriving at each track's input (audio tracks left/right, MIDI one value) | the level to check before recording; the dB conversion was calibrated on outputs only |
+| A/B compare | `compare_device_ab` (status, save, switch, use_a, use_b) | `save` copies the CURRENT settings into the other slot; Live's own devices only (a VST/AU plug-in has none) |
+| Clip automation | `list_clip_envelopes` (which parameters, owner), `clear_all_clip_envelopes`, `crop_clip` (both preview first) | `crop_clip` on an audio clip writes a new, shorter file |
+| Take lanes | `get_take_lanes`, `create_take_lane` | the API cannot pick the active take: the comp is chosen in Live |
+| Groups | `set_track_fold` | `fold_state` is true when folded |
+| What the user is looking at | `get_ui_state` (focused view, open panels, selected track, scene, clip, device, parameter), `show_in_ui` (select a track, scene, clip or device, focus a view, show a clip's envelope parameter) | nothing in the Set changes. `Application.show_on_the_fly_message` is NOT offered: it opens a modal dialog that blocks Live's main thread until someone clicks it |
+| Song state | `get_live_status` adds `last_event_time`, `can_capture_midi`, `automation_overridden`, punch in/out, overdub, record mode, count-in; `re_enable_automation`; `capture_midi` | `capture_midi` refusal run on Live; the capture itself NOT run (it needs MIDI played) |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
