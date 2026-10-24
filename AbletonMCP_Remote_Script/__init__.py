@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.18"
+SCRIPT_VERSION = "1.10.19"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -168,6 +168,14 @@ SCRIPT_CAPABILITIES = [
     "delete_scene",
     "delete_locator",
     "configure_simpler",
+    "set_transport_options",
+    "delete_return_track",
+    "get_drum_pads",
+    "set_drum_pad",
+    "rack_variations",
+    "preview_browser_item",
+    "stop_browser_preview",
+    "set_plugin_window",
     "compare_device_ab",
     "list_clip_envelopes",
     "clear_all_clip_envelopes",
@@ -529,6 +537,15 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_song_scale()
             elif command_type == "get_ui_state":
                 response["result"] = self._get_ui_state()
+            elif command_type == "set_transport_options":
+                # Socket thread: Live applies these flags on the next tick, so it waits and reads back.
+                response["result"] = self._set_transport_options(
+                    params.get("punch_in"), params.get("punch_out"), params.get("arrangement_overdub"),
+                    params.get("clip_trigger_quantization"), params.get("midi_recording_quantization"))
+            elif command_type == "get_drum_pads":
+                response["result"] = self._get_drum_pads(
+                    params.get("track_index", 0), params.get("device_index", 0),
+                    params.get("track_type", "track"), params.get("include_empty", False))
             elif command_type == "get_take_lanes":
                 response["result"] = self._get_take_lanes(params.get("track_index", 0))
             elif command_type == "list_clip_envelopes":
@@ -594,6 +611,8 @@ class AbletonMCP(ControlSurface):
                                  "delete_arrangement_clips", "delete_device",
                                  "press_dialog_button",
                                  "configure_simpler",
+                                 "delete_return_track", "set_drum_pad", "rack_variations",
+                                 "preview_browser_item", "stop_browser_preview", "set_plugin_window",
                                  "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
                                  "create_take_lane", "set_track_fold", "show_in_ui",
                                  "re_enable_automation", "capture_midi",
@@ -874,6 +893,30 @@ class AbletonMCP(ControlSurface):
                                 params.get("track_index", 0), params.get("clip_index", 0),
                                 params.get("to_track_index"), params.get("to_clip_index"),
                                 params.get("overwrite", False))
+                        elif command_type == "delete_return_track":
+                            result = self._delete_return_track(
+                                params.get("index"), params.get("expected_name"), params.get("confirm", False))
+                        elif command_type == "set_drum_pad":
+                            result = self._set_drum_pad(
+                                params.get("track_index", 0), params.get("device_index"),
+                                params.get("expected_name"), params.get("expected_device_name"),
+                                params.get("note"), params.get("mute"), params.get("solo"),
+                                params.get("track_type", "track"))
+                        elif command_type == "rack_variations":
+                            result = self._rack_variations(
+                                params.get("track_index", 0), params.get("device_index"),
+                                params.get("expected_name"), params.get("expected_device_name"),
+                                params.get("action", "status"), params.get("index"),
+                                params.get("confirm", False), params.get("track_type", "track"))
+                        elif command_type == "preview_browser_item":
+                            result = self._preview_browser_item(params.get("uri"))
+                        elif command_type == "stop_browser_preview":
+                            result = self._stop_browser_preview()
+                        elif command_type == "set_plugin_window":
+                            result = self._set_plugin_window(
+                                params.get("track_index", 0), params.get("device_index"),
+                                params.get("expected_name"), params.get("expected_device_name"),
+                                params.get("open"), params.get("track_type", "track"))
                         elif command_type == "compare_device_ab":
                             result = self._compare_device_ab(
                                 params.get("track_index", 0), params.get("device_index"),
@@ -6540,6 +6583,295 @@ class AbletonMCP(ControlSurface):
             return {"captured": True, "destination": key, "can_capture_midi_now": bool(song.can_capture_midi)}
         except Exception as e:
             self.log_message("Error capturing MIDI: " + str(e))
+            raise
+
+
+    # ── Transport options, return delete, drum pads, macro variations, previews, plug-in windows ──
+    # Measured on Live 12.4 Lite (2026-10-24): Song flags such as punch_in, punch_out and
+    # arrangement_overdub are applied on the NEXT tick (a read in the same call still shows the old
+    # value), so the writer waits and reads back; Song.delete_return_track(index); DrumPad has note,
+    # name, mute, solo, chains; Rack.store_variation adds a variation (selected_variation_index must
+    # be set before recall_selected_variation); PluginDevice.is_editor_open opens and closes the
+    # plug-in's own window; Browser.preview_item / stop_preview play an item.
+
+    CLIP_TRIGGER_QUANTIZATION = [
+        ("none", "q_no_q"), ("8 bars", "q_8_bars"), ("4 bars", "q_4_bars"), ("2 bars", "q_2_bars"),
+        ("bar", "q_bar"), ("half", "q_half"), ("half triplet", "q_half_triplet"),
+        ("quarter", "q_quarter"), ("quarter triplet", "q_quarter_triplet"), ("eighth", "q_eight"),
+        ("eighth triplet", "q_eight_triplet"), ("sixteenth", "q_sixtenth"),
+        ("sixteenth triplet", "q_sixtenth_triplet"), ("thirtysecond", "q_thirtytwoth")]
+    MIDI_RECORDING_QUANTIZATION = [
+        ("none", "rec_q_no_q"), ("quarter", "rec_q_quarter"), ("eighth", "rec_q_eight"),
+        ("eighth triplet", "rec_q_eight_triplet"), ("eighth and eighth triplet", "rec_q_eight_eight_triplet"),
+        ("sixteenth", "rec_q_sixtenth"), ("sixteenth triplet", "rec_q_sixtenth_triplet"),
+        ("sixteenth and sixteenth triplet", "rec_q_sixtenth_sixtenth_triplet"),
+        ("thirtysecond", "rec_q_thirtysecond")]
+
+    def _quantization_name(self, table, value):
+        import Live
+        owner = Live.Song.Quantization if table is self.CLIP_TRIGGER_QUANTIZATION else Live.Song.RecordingQuantization
+        for name, attr in table:
+            if getattr(owner, attr, None) is not None and int(getattr(owner, attr)) == int(value):
+                return name
+        return int(value)
+
+    def _quantization_value(self, table, name, label):
+        import Live
+        owner = Live.Song.Quantization if table is self.CLIP_TRIGGER_QUANTIZATION else Live.Song.RecordingQuantization
+        key = str(name).strip().lower().replace("_", " ")
+        for label_name, attr in table:
+            if label_name == key:
+                return getattr(owner, attr)
+        raise ValueError("%s must be one of: %s" % (label, ", ".join(n for n, _ in table)))
+
+    def _transport_options_state(self):
+        song = self._song
+        return {"punch_in": bool(song.punch_in), "punch_out": bool(song.punch_out),
+                "arrangement_overdub": bool(song.arrangement_overdub),
+                "clip_trigger_quantization": self._quantization_name(
+                    self.CLIP_TRIGGER_QUANTIZATION, song.clip_trigger_quantization),
+                "midi_recording_quantization": self._quantization_name(
+                    self.MIDI_RECORDING_QUANTIZATION, song.midi_recording_quantization),
+                "loop": bool(song.loop), "count_in_duration": int(song.count_in_duration)}
+
+    def _set_transport_options(self, punch_in=None, punch_out=None, arrangement_overdub=None,
+                               clip_trigger_quantization=None, midi_recording_quantization=None):
+        """Read (no arguments) or set the recording and launch options: punch in/out, Arrangement
+        overdub, the clip launch quantization and the quantization of recorded MIDI. Does NOT start
+        recording. Live applies these on the next tick, so the change is read back after a short wait."""
+        try:
+            wanted = {}
+            for key, value in (("punch_in", punch_in), ("punch_out", punch_out),
+                               ("arrangement_overdub", arrangement_overdub)):
+                if value is not None:
+                    if not isinstance(value, bool):
+                        raise TypeError("%s must be true or false" % key)
+                    wanted[key] = value
+            if clip_trigger_quantization is not None:
+                wanted["clip_trigger_quantization"] = clip_trigger_quantization
+            if midi_recording_quantization is not None:
+                wanted["midi_recording_quantization"] = midi_recording_quantization
+
+            def first():
+                state = self._transport_options_state()
+                song = self._song
+                # both names are checked before anything is set, so a bad one changes nothing
+                trigger = (self._quantization_value(
+                    self.CLIP_TRIGGER_QUANTIZATION, wanted["clip_trigger_quantization"], "clip_trigger_quantization")
+                    if "clip_trigger_quantization" in wanted else None)
+                recording = (self._quantization_value(
+                    self.MIDI_RECORDING_QUANTIZATION, wanted["midi_recording_quantization"],
+                    "midi_recording_quantization") if "midi_recording_quantization" in wanted else None)
+                for key in ("punch_in", "punch_out", "arrangement_overdub"):
+                    if key in wanted:
+                        setattr(song, key, wanted[key])
+                if trigger is not None:
+                    song.clip_trigger_quantization = trigger
+                if recording is not None:
+                    song.midi_recording_quantization = recording
+                return state
+
+            before = self._call_on_main_thread(first)
+            if wanted:
+                time.sleep(0.3)
+            after = self._call_on_main_thread(self._transport_options_state)
+            result = {"before": before, "after": after}
+            if wanted:
+                def norm(v):
+                    return str(v).strip().lower().replace("_", " ") if isinstance(v, str) else v
+                result["not_applied"] = [k for k, v in wanted.items() if norm(after.get(k)) != norm(v)]
+            return result
+        except Exception as e:
+            self.log_message("Error with the transport options: " + str(e))
+            raise
+
+    def _delete_return_track(self, index, expected_name, confirm=False):
+        """Preview or delete one return track (its sends vanish from every track; undo brings it back)."""
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            self._require_expected_name(expected_name, "return track")
+            returns = list(self._song.return_tracks)
+            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(returns):
+                raise IndexError("return index %r out of range (the Set has %d return tracks)" % (index, len(returns)))
+            track = returns[index]
+            if track.name != expected_name:
+                raise ValueError("Return %d is '%s', not '%s'; nothing was deleted."
+                                 % (index, track.name, expected_name))
+            info = {"index": index, "name": track.name, "devices": [d.name for d in track.devices],
+                    "tracks_sending_to_it": sum(1 for t in self._song.tracks
+                                                if index < len(list(t.mixer_device.sends))
+                                                and float(list(t.mixer_device.sends)[index].value) > 0.0),
+                    "applied": False, "dry_run": not do_apply}
+            if not do_apply:
+                return info
+            self._song.delete_return_track(index)
+            info["applied"] = True
+            info["return_tracks_after"] = self._return_tracks_summary()
+            return info
+        except Exception as e:
+            self.log_message("Error deleting a return track: " + str(e))
+            raise
+
+    def _rack_device(self, track_index, device_index, expected_name, expected_device_name, track_type="track"):
+        track = self._named_track(track_index, expected_name, track_type)
+        return track, self._named_device(track, device_index, expected_device_name)
+
+    def _get_drum_pads(self, track_index, device_index, track_type="track", include_empty=False):
+        """The pads of a Drum Rack: the MIDI note, name, mute, solo and how many chains each holds.
+        Empty pads are left out unless include_empty."""
+        try:
+            track = self._resolve_track(track_index, track_type)
+            devices = list(track.devices)
+            if isinstance(device_index, bool) or not isinstance(device_index, int) or not 0 <= device_index < len(devices):
+                raise IndexError("device index out of range (the track has %d)" % len(devices))
+            device = devices[device_index]
+            if not getattr(device, "can_have_drum_pads", False):
+                raise ValueError("Device '%s' is not a Drum Rack" % device.name)
+            pads = []
+            for pad in list(device.drum_pads):
+                chains = list(pad.chains)
+                if chains or include_empty:
+                    pads.append({"note": int(pad.note), "name": pad.name, "mute": bool(pad.mute), "solo": bool(pad.solo),
+                                 "chain_count": len(chains),
+                                 "devices": [d.name for c in chains for d in c.devices][:6]})
+            visible = [int(p.note) for p in list(device.visible_drum_pads)]
+            return {"track_name": track.name, "device": device.name, "pad_count_with_sound": sum(
+                1 for pad in device.drum_pads if list(pad.chains)), "visible_notes": visible, "pads": pads}
+        except Exception as e:
+            self.log_message("Error reading drum pads: " + str(e))
+            raise
+
+    def _set_drum_pad(self, track_index, device_index, expected_name, expected_device_name, note,
+                      mute=None, solo=None, track_type="track"):
+        """Mute and/or solo one pad of a Drum Rack, by its MIDI note (36 is the first pad)."""
+        try:
+            track, device = self._rack_device(track_index, device_index, expected_name, expected_device_name, track_type)
+            if not getattr(device, "can_have_drum_pads", False):
+                raise ValueError("Device '%s' is not a Drum Rack" % device.name)
+            if mute is None and solo is None:
+                raise ValueError("Give mute and/or solo")
+            for key, value in (("mute", mute), ("solo", solo)):
+                if value is not None and not isinstance(value, bool):
+                    raise TypeError("%s must be true or false" % key)
+            if isinstance(note, bool) or not isinstance(note, int):
+                raise TypeError("note must be a MIDI note number")
+            pads = [p for p in device.drum_pads if int(p.note) == note]
+            if not pads:
+                raise ValueError("The Drum Rack has no pad for MIDI note %d" % note)
+            pad = pads[0]
+            if not list(pad.chains):
+                raise ValueError("The pad for note %d has no sound; Live does not mute or solo an empty pad" % note)
+            before = {"mute": bool(pad.mute), "solo": bool(pad.solo)}
+            if mute is not None:
+                pad.mute = mute
+            if solo is not None:
+                pad.solo = solo
+            return {"track_name": track.name, "device": device.name, "note": note, "pad": pad.name,
+                    "before": before, "after": {"mute": bool(pad.mute), "solo": bool(pad.solo)}}
+        except Exception as e:
+            self.log_message("Error setting a drum pad: " + str(e))
+            raise
+
+    RACK_ACTIONS = ("status", "store", "recall", "delete", "randomize")
+
+    def _rack_variations(self, track_index, device_index, expected_name, expected_device_name,
+                         action="status", index=None, confirm=False, track_type="track"):
+        """The macro variations of an Instrument/Audio Effect/Drum Rack: store the current macro
+        settings as a variation, recall one, delete one, or randomize the macros.
+
+        delete and randomize preview unless confirm is exactly True. recall and delete need index.
+        """
+        try:
+            track, device = self._rack_device(track_index, device_index, expected_name, expected_device_name, track_type)
+            key = str(action).strip().lower()
+            if key not in self.RACK_ACTIONS:
+                raise ValueError("action must be one of %s" % ", ".join(self.RACK_ACTIONS))
+            if not hasattr(device, "store_variation"):
+                raise ValueError("Device '%s' is not a rack with macro variations" % device.name)
+
+            def macros():
+                return [{"name": p.name, "value": float(p.value)} for p in device.parameters
+                        if str(p.name).startswith("Macro")]
+
+            def state():
+                return {"variation_count": int(device.variation_count),
+                        "selected_variation_index": int(device.selected_variation_index),
+                        "has_macro_mappings": bool(device.has_macro_mappings), "macros": macros()}
+
+            before = state()
+            info = {"track_name": track.name, "device": device.name, "action": key, "before": before}
+            if key in ("recall", "delete"):
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < before["variation_count"]:
+                    raise IndexError("index must be a variation 0..%d (the rack has %d)"
+                                     % (before["variation_count"] - 1, before["variation_count"]))
+            do_apply = True
+            if key in ("delete", "randomize"):
+                do_apply = self._require_confirm_flag(confirm)
+                info["dry_run"] = not do_apply
+            if not do_apply:
+                info["applied"] = False
+                return info
+            if key == "store":
+                device.store_variation()
+                if not before["has_macro_mappings"]:
+                    info["warning"] = "No macro is mapped to a parameter, so the variation holds nothing audible"
+            elif key == "recall":
+                device.selected_variation_index = index
+                device.recall_selected_variation()
+            elif key == "delete":
+                device.selected_variation_index = index
+                device.delete_selected_variation()
+            elif key == "randomize":
+                device.randomize_macros()
+            if key != "status":
+                info["applied"] = True
+                info["after"] = state()
+            return info
+        except Exception as e:
+            self.log_message("Error with the rack variations: " + str(e))
+            raise
+
+    def _preview_browser_item(self, uri):
+        """Play a browser item (a sample, a preset) through Live's preview, like the headphone button.
+        It plays until it ends or stop_browser_preview; nothing is loaded into the Set."""
+        try:
+            if not isinstance(uri, str) or not uri.strip():
+                raise ValueError("uri is required (from search_browser_items or get_browser_items_at_path)")
+            app = self.application()
+            item = self._find_browser_item_by_uri(app.browser, uri)
+            if item is None:
+                raise ValueError("No browser item has the uri %r" % uri)
+            if not hasattr(app.browser, "preview_item"):
+                raise RuntimeError("This version of Live has no Browser.preview_item")
+            app.browser.preview_item(item)
+            return {"previewing": getattr(item, "name", ""), "uri": uri}
+        except Exception as e:
+            self.log_message("Error previewing a browser item: " + str(e))
+            raise
+
+    def _stop_browser_preview(self):
+        try:
+            self.application().browser.stop_preview()
+            return {"stopped": True}
+        except Exception as e:
+            self.log_message("Error stopping the preview: " + str(e))
+            raise
+
+    def _set_plugin_window(self, track_index, device_index, expected_name, expected_device_name,
+                           open_window, track_type="track"):
+        """Open or close a VST/AU plug-in's own window (AmpliTube, Analog Lab)."""
+        try:
+            track, device = self._rack_device(track_index, device_index, expected_name, expected_device_name, track_type)
+            if not hasattr(device, "is_editor_open"):
+                raise ValueError("Device '%s' is not a VST/AU plug-in; it has no window of its own" % device.name)
+            if not isinstance(open_window, bool):
+                raise TypeError("open must be true or false")
+            before = bool(device.is_editor_open)
+            device.is_editor_open = open_window
+            return {"track_name": track.name, "device": device.name, "was_open": before,
+                    "open": bool(device.is_editor_open)}
+        except Exception as e:
+            self.log_message("Error with a plug-in window: " + str(e))
             raise
 
 

@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.18**, **122 MCP tools** (upstream: 37), 1212 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.19**, **130 MCP tools** (upstream: 37), 1230 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -122,6 +122,15 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Groups | `set_track_fold` | `fold_state` is true when folded |
 | What the user is looking at | `get_ui_state` (focused view, open panels, selected track, scene, clip, device, parameter), `show_in_ui` (select a track, scene, clip or device, focus a view, show a clip's envelope parameter) | nothing in the Set changes. `Application.show_on_the_fly_message` is NOT offered: it opens a modal dialog that blocks Live's main thread until someone clicks it |
 | Song state | `get_live_status` adds `last_event_time`, `can_capture_midi`, `automation_overridden`, punch in/out, overdub, record mode, count-in; `re_enable_automation`; `capture_midi` | `capture_midi` refusal run on Live; the capture itself NOT run (it needs MIDI played) |
+
+| Added in 1.10.19 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
+|---|---|---|
+| Recording and launch options | `set_transport_options`: punch in/out, Arrangement overdub, clip launch quantization, MIDI recording quantization (no arguments = read). It never starts recording | measured: Live applies these flags on the NEXT tick, so the tool waits and reads back (`not_applied` lists any that did not land); a bad name changes nothing |
+| Return tracks | `delete_return_track` (preview, then `confirm=true`) | Live Lite holds 2 returns: this is how to swap one |
+| Drum Racks | `get_drum_pads` (note, name, mute, solo, chains, devices), `set_drum_pad` (mute/solo by MIDI note) | an empty pad cannot be muted or soloed: the tool says so |
+| Rack macro variations | `rack_variations`: status, store, recall, delete, randomize (delete and randomize preview first) | `store` on a rack with no mapped macro works but holds nothing audible: the reply warns |
+| Previews | `preview_browser_item`, `stop_browser_preview` (the headphone button of the browser) | the user hears it; nothing enters the Set |
+| Plug-in windows | `set_plugin_window` (open or close AmpliTube, Analog Lab and other VST/AU windows) | Live's own devices have no window |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

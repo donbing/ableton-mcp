@@ -120,6 +120,8 @@ class AbletonConnection:
             "configure_simpler",
             "compare_device_ab", "clear_all_clip_envelopes", "crop_clip",
             "create_take_lane", "set_track_fold", "re_enable_automation", "capture_midi",
+            "set_transport_options", "delete_return_track", "set_drum_pad", "rack_variations",
+            "set_plugin_window",
             "insert_device",
             "move_device",
             "duplicate_device",
@@ -4345,6 +4347,287 @@ def capture_midi(
     except Exception as e:
         logger.error(f"Error in capture_midi: {str(e)}")
         return f"Error in capture_midi: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_transport_options")
+@trajectory_tool("set_transport_options")
+def set_transport_options(
+    ctx: Context,
+    punch_in: Optional[bool] = None,
+    punch_out: Optional[bool] = None,
+    arrangement_overdub: Optional[bool] = None,
+    clip_trigger_quantization: Optional[str] = None,
+    midi_recording_quantization: Optional[str] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Read or set how Live records and launches, without starting to record: punch in and punch out
+    (re-record only the stretch inside the Arrangement loop: set_arrangement_loop around the bars,
+    then punch in/out), Arrangement overdub, how clips launch (clip_trigger_quantization) and how
+    played MIDI is quantized (midi_recording_quantization). With no arguments it just reads them.
+    Measured on Live 12 Lite: Live applies these on the next tick, so the reply reads them back
+    after a short wait and lists any that did not land (not_applied).
+
+    Parameters:
+    - punch_in, punch_out, arrangement_overdub: true or false
+    - clip_trigger_quantization: "none", "8 bars", "4 bars", "2 bars", "bar", "half", "half triplet",
+      "quarter", "quarter triplet", "eighth", "eighth triplet", "sixteenth", "sixteenth triplet",
+      "thirtysecond"
+    - midi_recording_quantization: "none", "quarter", "eighth", "eighth triplet",
+      "eighth and eighth triplet", "sixteenth", "sixteenth triplet", "sixteenth and sixteenth triplet",
+      "thirtysecond"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {}
+        for key, value in (("punch_in", punch_in), ("punch_out", punch_out),
+                           ("arrangement_overdub", arrangement_overdub),
+                           ("clip_trigger_quantization", clip_trigger_quantization),
+                           ("midi_recording_quantization", midi_recording_quantization)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_transport_options", params, "setting the transport options")
+    except Exception as e:
+        logger.error(f"Error in set_transport_options: {str(e)}")
+        return f"Error in set_transport_options: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("delete_return_track")
+@trajectory_tool("delete_return_track")
+def delete_return_track(
+    ctx: Context,
+    index: int,
+    expected_name: str,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Delete one return track (A-Reverb, B-Delay...), in two steps. Its effects go with it and every
+    track loses that send (Live's undo brings it back). Live Lite holds 2 returns, so this is how to
+    swap one. Step 1: confirm=false (default) shows its devices and how many tracks send to it.
+    Step 2: the same call with confirm=true.
+
+    Parameters:
+    - index: Index among the return tracks (0 is the first, A)
+    - expected_name: The return's exact current name (required safety check)
+    - confirm: false = preview only (default), true = delete
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the return track's exact current name)."
+        out = _json_call("delete_return_track", {"index": index, "expected_name": expected_name, "confirm": confirm},
+                         "deleting a return track")
+        return (out if confirm else
+                "NOT DELETED (preview only). This would happen: " + out +
+                "\nTo delete it, call delete_return_track again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error in delete_return_track: {str(e)}")
+        return f"Error in delete_return_track: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("get_drum_pads")
+def get_drum_pads(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    track_type: str = "track",
+    include_empty: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    The pads of a Drum Rack: MIDI note, name, mute, solo, how many chains each holds and the devices
+    inside. Empty pads are left out unless include_empty. The first visible pad is note 36.
+
+    Parameters:
+    - track_index: Track that holds the Drum Rack
+    - device_index: Index of the Drum Rack in the chain
+    - track_type: "track" (default), "return" or "master"
+    - include_empty: also list pads without a sound
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("get_drum_pads", {"track_index": track_index, "device_index": device_index,
+                                            "track_type": track_type, "include_empty": include_empty},
+                          "reading drum pads")
+    except Exception as e:
+        logger.error(f"Error in get_drum_pads: {str(e)}")
+        return f"Error in get_drum_pads: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_drum_pad")
+@trajectory_tool("set_drum_pad")
+def set_drum_pad(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    note: int,
+    mute: Optional[bool] = None,
+    solo: Optional[bool] = None,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Mute and/or solo one pad of a Drum Rack, by its MIDI note (hear the beat without the hi-hat).
+
+    Parameters:
+    - track_index: Track that holds the Drum Rack
+    - device_index: Index of the Drum Rack in the chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The device's exact current name (required safety check)
+    - note: The pad's MIDI note (36 is the first pad)
+    - mute: true/false
+    - solo: true/false
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        params = {"track_index": track_index, "device_index": device_index, "expected_name": expected_name,
+                  "expected_device_name": expected_device_name, "note": note, "track_type": track_type}
+        for key, value in (("mute", mute), ("solo", solo)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_drum_pad", params, "setting a drum pad")
+    except Exception as e:
+        logger.error(f"Error in set_drum_pad: {str(e)}")
+        return f"Error in set_drum_pad: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("rack_variations")
+@trajectory_tool("rack_variations")
+def rack_variations(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    action: str = "status",
+    index: Optional[int] = None,
+    confirm: bool = False,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Macro variations of an Instrument, Audio Effect or Drum Rack (the small "Variations" list of a
+    rack): save the current macro knobs as a variation, jump to one, delete one, or randomize the
+    macros. A rack with macros mapped to the parameters that matter turns one rack into several
+    sounds (clean / crunch / lead of a guitar amp stack, verse / chorus of a pad).
+
+    action: "status" (default; counts and the macro values), "store" (save the current macros as a new
+    variation), "recall" (with index), "delete" (with index; preview first) or "randomize" (preview
+    first). delete and randomize are two steps: confirm=false (default) previews, confirm=true acts.
+
+    Parameters:
+    - track_index: Track that holds the rack
+    - device_index: Index of the rack in the chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The rack's exact current name (required safety check)
+    - action: "status", "store", "recall", "delete" or "randomize"
+    - index: Which variation, for recall and delete
+    - confirm: true to do a delete or randomize
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        params = {"track_index": track_index, "device_index": device_index, "expected_name": expected_name,
+                  "expected_device_name": expected_device_name, "action": action, "confirm": confirm,
+                  "track_type": track_type}
+        if index is not None:
+            params["index"] = index
+        return _json_call("rack_variations", params, "changing rack variations")
+    except Exception as e:
+        logger.error(f"Error in rack_variations: {str(e)}")
+        return f"Error in rack_variations: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("preview_browser_item")
+def preview_browser_item(
+    ctx: Context,
+    uri: str,
+    user_prompt: str = "",
+) -> str:
+    """
+    Play a browser item (a sample, a drum hit, a preset) through Live's preview, like the headphone
+    button in the browser, so the user can hear it before it is loaded. Nothing enters the Set. It
+    plays until it ends or stop_browser_preview is called. Find the uri with search_browser_items.
+
+    Parameters:
+    - uri: The browser item's uri
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("preview_browser_item", {"uri": uri}, "previewing a browser item")
+    except Exception as e:
+        logger.error(f"Error in preview_browser_item: {str(e)}")
+        return f"Error in preview_browser_item: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("stop_browser_preview")
+def stop_browser_preview(
+    ctx: Context,
+    user_prompt: str = "",
+) -> str:
+    """
+    Stop the browser preview started by preview_browser_item.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("stop_browser_preview", {}, "stopping the preview")
+    except Exception as e:
+        logger.error(f"Error in stop_browser_preview: {str(e)}")
+        return f"Error in stop_browser_preview: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_plugin_window")
+def set_plugin_window(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    expected_name: str,
+    expected_device_name: str,
+    open: bool,
+    track_type: str = "track",
+    user_prompt: str = "",
+) -> str:
+    """
+    Open or close a VST/AU plug-in's own window (AmpliTube, Analog Lab) so the user can see and
+    play with it. Only plug-ins have one: Live's own devices answer with an error.
+
+    Parameters:
+    - track_index: Track that holds the plug-in
+    - device_index: Index of the plug-in in the chain
+    - expected_name: The track's exact current name (required safety check)
+    - expected_device_name: The plug-in's exact current name (required safety check)
+    - open: true to open the window, false to close it
+    - track_type: "track" (default), "return" or "master"
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None or expected_device_name is None:
+            return "Error: expected_name and expected_device_name are required."
+        return _json_call("set_plugin_window", {
+            "track_index": track_index, "device_index": device_index, "expected_name": expected_name,
+            "expected_device_name": expected_device_name, "open": open, "track_type": track_type},
+            "opening a plug-in window")
+    except Exception as e:
+        logger.error(f"Error in set_plugin_window: {str(e)}")
+        return f"Error in set_plugin_window: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
