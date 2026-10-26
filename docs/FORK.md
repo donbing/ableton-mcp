@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.20**, **131 MCP tools** (upstream: 37), 1237 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.21**, **134 MCP tools** (upstream: 37), 1254 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -136,6 +136,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 |---|---|---|
 | Clip launch settings | `set_clip_launch` (launch quantization, launch mode trigger/gate/toggle/repeat, legato); `get_clip_info` now returns them | Session clips only; they apply at once |
 | Why a track is silent | `get_tracks_overview` rows carry `muted_via_solo` and `frozen`, only when true | measured: soloing one track marks every other track `muted_via_solo` |
+
+| Added in 1.10.21 (NOT yet run on Live) | What | Notes |
+|---|---|---|
+| Start and end a take | `record_into_slot` (an armed track into one EMPTY Session slot, optional `length_bars`), `start_arrangement_record` (every armed track, optional `start_time` / `end_time`), `stop_recording` (Arrangement, Session and slot takes; optional `stop_transport`) | until now the tools could arm, route and monitor a track but never press record. Both starts preview by default (inputs, monitoring, launch quantization, the Arrangement clips a take records over, warnings for No Input, monitoring "in", Session playback and a loop that ends before `end_time`) and need `confirm=true`. Written from the LOM docs: `ClipSlot.fire(record_length=beats)` (falls back to a plain fire and says so), `Song.record_mode` plus `start_playing()`, an auto-stop polled once a tick (can run ~0.1 s past `end_time`) |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

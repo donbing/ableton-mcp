@@ -4394,6 +4394,110 @@ def set_transport_options(
         return f"Error in set_transport_options: {str(e)}"
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("record_into_slot")
+@trajectory_tool("record_into_slot")
+def record_into_slot(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    expected_name: str,
+    length_bars: Optional[float] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Record an armed track into one EMPTY Session slot, in two steps (it never records over a clip).
+    Prepare first: set_track_arm, set_track_routing (the input, e.g. the mic channel) and
+    set_track_monitoring. Step 1: confirm=false (default) shows the input, monitoring and launch
+    quantization and any warnings (No Input, monitoring 'in' = use headphones). Step 2: the same call
+    with confirm=true fires the slot; recording starts at the next launch quantization (the transport
+    starts if it is stopped). With length_bars the take stops by itself and the new clip plays;
+    without it, end the take with stop_recording. You cannot hear the take: ask the user how it went.
+
+    Parameters:
+    - track_index: The track to record (must be armed)
+    - clip_index: An empty Session slot on that track
+    - expected_name: The track's exact current name (required safety check)
+    - length_bars: Bars to record, then stop (optional; at most 256)
+    - confirm: false = preview only (default), true = start recording
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if expected_name is None:
+            return "Error: expected_name is required (the track's exact current name)."
+        params = {"track_index": track_index, "clip_index": clip_index,
+                  "expected_name": expected_name, "confirm": confirm}
+        if length_bars is not None:
+            params["length_bars"] = length_bars
+        out = _json_call("record_into_slot", params, "recording into a slot")
+        return (out if confirm else
+                "NOT RECORDING (preview only). This would happen: " + out +
+                "\nTo record, call record_into_slot again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error in record_into_slot: {str(e)}")
+        return f"Error in record_into_slot: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("start_arrangement_record")
+@trajectory_tool("start_arrangement_record")
+def start_arrangement_record(
+    ctx: Context,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Record every armed track into the Arrangement, in two steps. Audio recorded over existing
+    Arrangement clips replaces them on those tracks (MIDI merges only with arrangement_overdub on, see
+    set_transport_options). Step 1: confirm=false (default) lists the armed tracks, their inputs, the
+    clips the take would record over, and warnings. Step 2: the same call with confirm=true moves the
+    playhead to start_time (if given), presses record and starts the transport. With end_time
+    recording turns off by itself at that beat (the transport keeps playing; it can run about 0.1 s
+    past); without it, end the take with stop_recording. You cannot hear the take: ask the user.
+
+    Parameters:
+    - start_time: Beat to start from (optional; default: where the playhead is)
+    - end_time: Beat to stop recording at (optional)
+    - confirm: false = preview only (default), true = start recording
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = {"confirm": confirm}
+        if start_time is not None:
+            params["start_time"] = start_time
+        if end_time is not None:
+            params["end_time"] = end_time
+        out = _json_call("start_arrangement_record", params, "starting Arrangement recording")
+        return (out if confirm else
+                "NOT RECORDING (preview only). This would happen: " + out +
+                "\nTo record, call start_arrangement_record again with the same arguments and confirm=true.")
+    except Exception as e:
+        logger.error(f"Error in start_arrangement_record: {str(e)}")
+        return f"Error in start_arrangement_record: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=True))
+@telemetry_tool("stop_recording")
+@trajectory_tool("stop_recording")
+def stop_recording(ctx: Context, stop_transport: bool = False, user_prompt: str = "") -> str:
+    """
+    End every take: Arrangement recording, Session recording, and each Session slot that is recording
+    (its new clip then plays) or waiting to start (cancelled). Safe to call when nothing records.
+
+    Parameters:
+    - stop_transport: Also stop playback (default false)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return _json_call("stop_recording", {"stop_transport": stop_transport}, "stopping the recording")
+    except Exception as e:
+        logger.error(f"Error in stop_recording: {str(e)}")
+        return f"Error in stop_recording: {str(e)}"
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
 @telemetry_tool("delete_return_track")
 @trajectory_tool("delete_return_track")

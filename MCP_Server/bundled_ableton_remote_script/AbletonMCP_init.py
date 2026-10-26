@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.20"
+SCRIPT_VERSION = "1.10.21"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -170,6 +170,9 @@ SCRIPT_CAPABILITIES = [
     "configure_simpler",
     "set_clip_launch",
     "set_transport_options",
+    "record_into_slot",
+    "start_arrangement_record",
+    "stop_recording",
     "delete_return_track",
     "get_drum_pads",
     "set_drum_pad",
@@ -543,6 +546,17 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._set_transport_options(
                     params.get("punch_in"), params.get("punch_out"), params.get("arrangement_overdub"),
                     params.get("clip_trigger_quantization"), params.get("midi_recording_quantization"))
+            elif command_type == "record_into_slot":
+                # Socket thread, like set_transport_options: it fires the slot, waits and reads back.
+                response["result"] = self._record_into_slot(
+                    params.get("track_index", 0), params.get("clip_index", 0),
+                    params.get("expected_name"), params.get("length_bars"), params.get("confirm"))
+            elif command_type == "start_arrangement_record":
+                # Socket thread: the playhead move lands on the next tick, before recording starts.
+                response["result"] = self._start_arrangement_record(
+                    params.get("start_time"), params.get("end_time"), params.get("confirm"))
+            elif command_type == "stop_recording":
+                response["result"] = self._stop_recording(params.get("stop_transport", False))
             elif command_type == "get_drum_pads":
                 response["result"] = self._get_drum_pads(
                     params.get("track_index", 0), params.get("device_index", 0),
@@ -6697,6 +6711,267 @@ class AbletonMCP(ControlSurface):
             return result
         except Exception as e:
             self.log_message("Error with the transport options: " + str(e))
+            raise
+
+    # ── Recording ─────────────────────────────────────────────────────────────
+    # set_track_arm, set_track_routing, set_track_monitoring and set_transport_options prepare a
+    # take; these start and end it. From the Live Object Model documentation, NOT yet run on a real
+    # Live: ClipSlot.fire(record_length=beats) (Live 11+) records an armed track into an empty slot
+    # for that many beats and then plays the new clip; firing a slot that is recording ends the take
+    # the same way. Song.record_mode is the Arrangement record button; with the transport stopped
+    # it only lights the button, so start_playing() follows. The Arrangement auto-stop polls with
+    # schedule_message (about one ~100 ms tick), so a take can run up to a tick past end_time.
+
+    # A cap on length_bars so a typo cannot start a take that runs for hours.
+    RECORD_MAX_BARS = 256
+
+    # Arrangement auto-stop: the beat to stop at, and a token so an older poll stops itself.
+    _record_stop_at = None
+    _record_stop_token = 0
+
+    def _bar_beats(self):
+        song = self._song
+        return float(song.signature_numerator) * 4.0 / float(song.signature_denominator)
+
+    def _record_input_state(self, track):
+        """What a take on this track would capture and whether it is heard while recording."""
+        state = {"monitoring": self.MONITORING_NAMES.get(
+            int(getattr(track, "current_monitoring_state", -1)), "?")}
+        if hasattr(track, "input_routing_type"):
+            state["input_type"] = track.input_routing_type.display_name
+            channel = getattr(track, "input_routing_channel", None)
+            state["input_channel"] = channel.display_name if channel is not None else None
+        return state
+
+    def _record_warnings(self, input_state):
+        warnings = []
+        if input_state.get("input_type") == "No Input":
+            warnings.append("The input is 'No Input', so the take will be silent: set_track_routing first.")
+        if input_state.get("monitoring") == "in":
+            warnings.append("Monitoring is 'in': the input plays through the speakers while recording; "
+                            "use headphones to avoid feedback.")
+        return warnings
+
+    def _armed_tracks(self):
+        return [(i, t) for i, t in enumerate(self._song.tracks)
+                if getattr(t, "can_be_armed", False) and self._safe_arm(t)]
+
+    def _record_into_slot(self, track_index, clip_index, expected_name, length_bars=None, confirm=None):
+        """Preview, or record an armed track into one EMPTY Session slot (never over a clip). With
+        length_bars the take stops by itself after that many bars and the new clip plays; without it
+        the take runs until stop_recording. Recording starts at the next launch quantization."""
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            if length_bars is not None:
+                length_bars = _finite_number(length_bars, "length_bars")
+                if not 0 < length_bars <= self.RECORD_MAX_BARS:
+                    raise ValueError("length_bars must be above 0 and at most %d" % self.RECORD_MAX_BARS)
+            if isinstance(clip_index, bool) or not isinstance(clip_index, int):
+                raise TypeError("clip_index must be an integer, got %r" % (clip_index,))
+
+            def resolve():
+                track = self._named_track(track_index, expected_name)
+                slots = list(track.clip_slots)
+                if not 0 <= clip_index < len(slots):
+                    raise IndexError("clip index %d out of range (the track has %d slots)"
+                                     % (clip_index, len(slots)))
+                return track, slots[clip_index]
+
+            def check_and_fire():
+                track, slot = resolve()
+                if not getattr(track, "can_be_armed", False):
+                    raise ValueError("Track '%s' cannot record (group tracks have no arm state)" % track.name)
+                if slot.has_clip:
+                    raise ValueError("Slot %d on '%s' already holds '%s'; nothing was recorded. "
+                                     "Pick an empty slot." % (clip_index, track.name, slot.clip.name))
+                if not self._safe_arm(track):
+                    raise ValueError("Track '%s' is not armed; arm it with set_track_arm first. "
+                                     "Nothing was recorded." % track.name)
+                song = self._song
+                inputs = self._record_input_state(track)
+                info = {"track_index": track_index, "track_name": track.name, "clip_index": clip_index,
+                        "input": inputs, "warnings": self._record_warnings(inputs),
+                        "length_bars": length_bars,
+                        "length_beats": length_bars * self._bar_beats() if length_bars is not None else None,
+                        "launch_quantization": self._quantization_name(
+                            self.CLIP_TRIGGER_QUANTIZATION, song.clip_trigger_quantization),
+                        "transport_was_playing": bool(song.is_playing),
+                        "applied": False, "dry_run": not do_apply}
+                if do_apply:
+                    if info["length_beats"] is None:
+                        slot.fire()
+                    else:
+                        try:
+                            slot.fire(record_length=info["length_beats"])
+                            info["record_length_applied"] = True
+                        except TypeError:
+                            # a Live without the keyword: the take runs until stop_recording
+                            slot.fire()
+                            info["record_length_applied"] = False
+                            info["warnings"].append("This Live does not take a record length: "
+                                                    "end the take with stop_recording.")
+                return info
+
+            info = self._call_on_main_thread(check_and_fire)
+            if not do_apply:
+                return info
+            time.sleep(0.3)
+
+            def state():
+                _, slot = resolve()
+                return {"triggered": bool(slot.is_triggered), "recording": bool(getattr(slot, "is_recording", False)),
+                        "has_clip": bool(slot.has_clip), "transport_playing": bool(self._song.is_playing)}
+
+            info["after"] = self._call_on_main_thread(state)
+            info["applied"] = True
+            return info
+        except Exception as e:
+            self.log_message("Error recording into a slot: " + str(e))
+            raise
+
+    def _start_arrangement_record(self, start_time=None, end_time=None, confirm=None):
+        """Preview, or start Arrangement recording on every armed track: from start_time (default:
+        where the playhead is) until end_time (default: until stop_recording). The preview lists
+        the armed tracks, their inputs and the Arrangement clips the take would record over."""
+        try:
+            do_apply = self._require_confirm_flag(confirm)
+            if start_time is not None:
+                start_time = self._require_finite_number(start_time, "start_time")
+                if start_time < 0:
+                    raise ValueError("start_time must be 0 or later")
+            if end_time is not None:
+                end_time = self._require_finite_number(end_time, "end_time")
+
+            def check():
+                song = self._song
+                if song.record_mode:
+                    raise ValueError("Arrangement recording is already on; end it with stop_recording first.")
+                armed = self._armed_tracks()
+                if not armed:
+                    raise ValueError("No track is armed; arm one with set_track_arm first. Nothing was recorded.")
+                start = start_time if start_time is not None else float(song.current_song_time)
+                if end_time is not None and end_time <= start:
+                    raise ValueError("end_time (%s) must be after the start (%s)" % (end_time, start))
+                if end_time is not None and end_time - start > self.RECORD_MAX_BARS * self._bar_beats():
+                    raise ValueError("The take would be longer than %d bars" % self.RECORD_MAX_BARS)
+                tracks, warnings = [], []
+                for index, track in armed:
+                    inputs = self._record_input_state(track)
+                    warnings.extend("'%s': %s" % (track.name, w) for w in self._record_warnings(inputs))
+                    over = [{"name": c.name, "start_time": float(c.start_time), "end_time": float(c.end_time)}
+                            for c in getattr(track, "arrangement_clips", [])
+                            if float(c.end_time) > start and (end_time is None or float(c.start_time) < end_time)]
+                    tracks.append({"index": index, "name": track.name, "input": inputs, "records_over": over})
+                if getattr(song, "back_to_arranger", False):
+                    warnings.append("Some tracks play Session clips instead of the Arrangement; the take also "
+                                    "writes them into the Arrangement. Call back_to_arrangement first.")
+                if end_time is not None and getattr(song, "loop", False):
+                    loop_end = float(song.loop_start) + float(song.loop_length)
+                    if start < loop_end < end_time:
+                        warnings.append("The Arrangement loop ends at %s, before end_time, so the playhead "
+                                        "jumps back and the take never reaches end_time." % loop_end)
+                return {"start_time": start, "end_time": end_time, "armed_tracks": tracks,
+                        "arrangement_overdub": bool(song.arrangement_overdub),
+                        "warnings": warnings, "applied": False, "dry_run": not do_apply}
+
+            info = self._call_on_main_thread(check)
+            if not do_apply:
+                return info
+            if start_time is not None:
+                def move():
+                    self._song.current_song_time = start_time
+                self._call_on_main_thread(move)
+                time.sleep(0.3)
+
+            def start():
+                song = self._song
+                song.record_mode = True
+                if not song.is_playing:
+                    song.start_playing()
+                self._record_stop_token += 1
+                self._record_stop_at = end_time
+                if end_time is not None:
+                    token = self._record_stop_token
+                    self.schedule_message(1, lambda: self._poll_record_stop(token))
+
+            self._call_on_main_thread(start)
+            time.sleep(0.3)
+
+            def state():
+                song = self._song
+                return {"recording": bool(song.record_mode), "transport_playing": bool(song.is_playing),
+                        "playhead": float(song.current_song_time)}
+
+            info["after"] = self._call_on_main_thread(state)
+            info["applied"] = True
+            return info
+        except Exception as e:
+            self.log_message("Error starting Arrangement recording: " + str(e))
+            raise
+
+    def _poll_record_stop(self, token):
+        """Main thread, once a tick: turn Arrangement recording off at _record_stop_at."""
+        if token != self._record_stop_token or self._record_stop_at is None:
+            return
+        song = self._song
+        if not song.record_mode:
+            # ended by hand
+            self._record_stop_at = None
+            return
+        if float(song.current_song_time) >= self._record_stop_at:
+            song.record_mode = False
+            self._record_stop_at = None
+            self.show_message("AbletonMCP: recording stopped")
+            return
+        self.schedule_message(1, lambda: self._poll_record_stop(token))
+
+    def _stop_recording(self, stop_transport=False):
+        """End every take: the Arrangement record button, the Session record button, and each slot
+        that is recording (its new clip then plays) or waiting to (cancelled). stop_transport also
+        stops playback."""
+        try:
+            if not isinstance(stop_transport, bool):
+                raise TypeError("stop_transport must be true or false")
+
+            def stop():
+                song = self._song
+                before = {"arrangement_record": bool(song.record_mode),
+                          "session_record": bool(getattr(song, "session_record", False))}
+                self._record_stop_token += 1
+                self._record_stop_at = None
+                ended, cancelled = [], []
+                for index, track in self._armed_tracks():
+                    for slot_index, slot in enumerate(track.clip_slots):
+                        where = {"track_index": index, "track_name": track.name, "clip_index": slot_index}
+                        if getattr(slot, "is_recording", False):
+                            slot.fire()
+                            ended.append(where)
+                        elif slot.is_triggered and not slot.has_clip:
+                            slot.stop()
+                            cancelled.append(where)
+                if before["arrangement_record"]:
+                    song.record_mode = False
+                if before["session_record"]:
+                    song.session_record = False
+                if stop_transport:
+                    song.stop_playing()
+                return {"before": before, "slots_ended": ended, "slots_cancelled": cancelled}
+
+            result = self._call_on_main_thread(stop)
+            time.sleep(0.3)
+
+            def state():
+                song = self._song
+                return {"arrangement_record": bool(song.record_mode),
+                        "session_record": bool(getattr(song, "session_record", False)),
+                        "transport_playing": bool(song.is_playing)}
+
+            result["after"] = self._call_on_main_thread(state)
+            result["was_recording"] = (result["before"]["arrangement_record"] or result["before"]["session_record"]
+                                       or bool(result["slots_ended"]) or bool(result["slots_cancelled"]))
+            return result
+        except Exception as e:
+            self.log_message("Error stopping the recording: " + str(e))
             raise
 
     def _delete_return_track(self, index, expected_name, confirm=False):
