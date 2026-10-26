@@ -1,0 +1,197 @@
+# Live.Song
+
+> Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
+
+## Song.Song
+
+This class represents a Live set.
+
+Base: LomObject.LomObject. Not constructable from Python.
+
+Properties (r = read-only, rw = settable):
+
+- `appointed_device` (rw, listenable): Read, write, and listen access to the appointed Device
+- `arrangement_overdub` (rw, listenable): Get/Set the global arrangement overdub state.
+- `back_to_arranger` (rw, listenable): Get/Set if triggering a Clip in the Session, disabled the playback of Clips in the Arranger.
+- `can_capture_midi` (r, listenable): Get whether there currently is material to be captured on any tracks.
+- `can_jump_to_next_cue` (r, listenable): Returns true when there is a cue marker right to the playing pos that we could jump to.
+- `can_jump_to_prev_cue` (r, listenable): Returns true when there is a cue marker left to the playing pos that we could jump to.
+- `can_redo` (r): Returns true if there is an undone action that we can redo.
+- `can_undo` (r): Returns true if there is an action that we can restore.
+- `canonical_parent` (r): Get the canonical parent of the song.
+- `clip_trigger_quantization` (rw, listenable): Get/Set access to the quantization settings that are used to fire Clips in the Session.
+- `count_in_duration` (r, listenable): Get the count in duration. Returns an index, mapped as follows: 0 - None, 1 - 1 Bar, 2 - 2 Bars, 3 - 4 Bars.
+- `cue_points` (r, listenable): Const access to a list of all cue points of the Live Song.
+- `current_song_time` (rw, listenable): Get/Set access to the songs current playing position in beats.
+- `exclusive_arm` (r, listenable): Get if Tracks should be armed exclusively by default.
+- `exclusive_solo` (r): Get if Tracks should be soloed exclusively by default.
+- `file_path` (r): Get the current Live Set's path on disk.
+- `groove_amount` (rw, listenable): Get/Set the global groove amount, that adjust all setup grooves in all clips.
+- `groove_pool` (r): Get the groove pool.
+- `is_ableton_link_enabled` (rw, listenable): Enable/disable Ableton Link.
+- `is_ableton_link_start_stop_sync_enabled` (rw, listenable): Enable/disable Ableton Link Start Stop Sync.
+- `is_counting_in` (r, listenable): Get whether currently counting in.
+- `is_playing` (rw, listenable): Returns true if the Song is currently playing.
+- `last_event_time` (r): Return the time of the last set event in the song. In contrary to song_length, this will not add some extra beats that are mostly needed for Display purposes in the Arrangerview.
+- `loop` (rw, listenable): Get/Set the looping flag that en/disables the usage of the global loop markers in the song.
+- `loop_length` (rw, listenable): Get/Set the length of the global loop marker position in beats.
+- `loop_start` (rw, listenable): Get/Set the start of the global loop marker position in beats.
+- `master_track` (r): Access to the Main Track (always available)
+- `metronome` (rw, listenable): Get/Set if the metronom is audible.
+- `midi_recording_quantization` (rw, listenable): Get/Set access to the settings that are used to quantize MIDI recordings.
+- `name` (r): Get the current Live Set's name.
+- `nudge_down` (rw, listenable): Get/Set the status of the nudge down button.
+- `nudge_up` (rw, listenable): Get/Set the status of the nudge up button.
+- `overdub` (rw, listenable): Legacy hook for Live 8 overdub state. Now hooks to session record, but never starts playback.
+- `punch_in` (rw, listenable): Get/Set the flag that will enable recording as soon as the Song plays and hits the global loop start region.
+- `punch_out` (rw, listenable): Get/Set the flag that will disable recording as soon as the Song plays and hits the global loop end region.
+- `re_enable_automation_enabled` (r, listenable): Returns true if some automated parameter has been overriden
+- `record_mode` (rw, listenable): Get/Set the state of the global recording flag.
+- `return_tracks` (r, listenable): Const access to the list of available Return Tracks.
+- `root_note` (rw, listenable): Set and access the root (i.e. key) of the song. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
+- `scale_intervals` (r, listenable): Reports the current scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
+- `scale_mode` (rw, listenable): Access to the Scale Mode setting in Live. When on, key tracks that belong to the currently selected scale are highlighted in Live's MIDI Note Editor, and pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones.
+- `scale_name` (rw, listenable): Set and access the currently selected scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
+- `scenes` (r, listenable): Const access to a list of all Scenes in the Live Song.
+- `select_on_launch` (r): Get if Scenes and Clips should be selected when fired.
+- `session_automation_record` (rw, listenable): Returns true if automation recording is enabled.
+- `session_record` (rw, listenable): Get/Set the session record state.
+- `session_record_status` (r, listenable): Get the session slot-recording state.
+- `signature_denominator` (rw, listenable): Get/Set access to the global signature denominator of the Song.
+- `signature_numerator` (rw, listenable): Get/Set access to the global signature numerator of the Song.
+- `song_length` (r, listenable): Return the time of the last set event in the song, plus som extra beats that are usually added for better navigation in the arrangerview.
+- `start_time` (rw, listenable): Get/Set access to the songs current start time in beats. The set time may be overridden by the current loop/locator start time.
+- `swing_amount` (rw, listenable): Get/Set access to the amount of swing that is applied when adding or quantizing notes to MIDI clips
+- `tempo` (rw, listenable): Get/Set the global project tempo.
+- `tempo_follower_enabled` (rw, listenable): Get/Set whether the Tempo Follower is controlling the tempo. The Tempo Follower Toggle must be made visible in the preferences for this property to be effective.
+- `tracks` (r, listenable): Const access to a list of all Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
+- `tuning_system` (r, listenable): Access the currently active tuning system.
+- `view` (r): Representing the view aspects of a Live document: The Session and Arrangerview.
+- `visible_tracks` (r, listenable): Const access to a list of all visible Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
+- `data` (r, listenable)
+- `scale_information` (r, listenable)
+
+Methods:
+
+- `begin_undo_step() -> None`
+- `capture_and_insert_scene(capture_mode: Song.CaptureMode | int) -> None`: Capture currently playing clips and insert them as a new scene after the selected scene. Raises a runtime error if creating a new scene would exceed the limitations.
+- `capture_midi(destination: Song.CaptureDestination | int) -> None`: Capture recently played MIDI material from audible tracks. If no Destination is given or Destination is set to CaptureDestination.auto, the captured material is inserted into the Session or Arrangement depending on which is visible. If Destination is set to CaptureDestination.session or CaptureDestination.arrangement, inserts the material into Session or Arrangement, respectively. Raises a limitation error when capturing into the Session and a new scene would have to be created but can't because it would exceed the limitations.
+- `continue_playing() -> None`: Continue playing the song from the current position
+- `create_audio_track(index: object | None) -> Track.Track`: Create a new audio track at the optional given index and return it.If the index is -1, the new track is added at the end. It will create a default audio track if possible. If the index is invalid or the new track would exceed the limitations, a limitation error is raised.If the index is missing, the track is created after the last selected item
+- `create_midi_track(index: object | None) -> Track.Track`: Create a new midi track at the optional given index and return it.If the index is -1, the new track is added at the end.It will create a default midi track if possible. If the index is invalid or the new track would exceed the limitations, a limitation error is raised.If the index is missing, the track is created after the last selected item
+- `create_return_track() -> Track.Track`: Create a new return track at the end and return it. If the new track would exceed the limitations, a limitation error is raised. If the maximum number of return tracks is exceeded, a RuntimeError is raised.
+- `create_scene(arg2: int) -> Scene.Scene`: Create a new scene at the given index. If the index is -1, the new scene is added at the end. If the index is invalid or the new scene would exceed the limitations, a limitation error is raised.
+- `delete_return_track(arg2: int) -> None`: Delete the return track with the given index. If no track with this index exists, an exception will be raised.
+- `delete_scene(arg2: int) -> None`: Delete the scene with the given index. If no scene with this index exists, an exception will be raised.
+- `delete_track(arg2: int) -> None`: Delete the track with the given index. If no track with this index exists, an exception will be raised.
+- `duplicate_scene(arg2: int) -> None`: Duplicates a scene and selects the new one. Raises a limitation error if creating a new scene would exceed the limitations.
+- `duplicate_track(arg2: int) -> None`: Duplicates a track and selects the new one. If the track is inside a folded group track, the group track is unfolded. Raises a limitation error if creating a new track would exceed the limitations.
+- `end_undo_step() -> None`
+- `find_device_position(device: Device.Device, target: LomObject.LomObject, target_position: int) -> int`: Returns the closest possible position to the given target, where the device can be inserted. If inserting is not possible at all (i.e. if the device type is wrong), -1 is returned.
+- `force_link_beat_time() -> None`: Force the Link timeline to jump to Lives current beat time. Danger: This can cause beat time discontinuities in other connected apps.
+- `get_beats_loop_length() -> Song.BeatTime`: Get const access to the songs loop length, using a BeatTime class with the current global set signature.
+- `get_beats_loop_start() -> Song.BeatTime`: Get const access to the songs loop start, using a BeatTime class with the current global set signature.
+- `get_current_beats_song_time() -> Song.BeatTime`: Get const access to the songs current playing position, using a BeatTime class with the current global set signature.
+- `get_current_smpte_song_time(arg2: int) -> Song.SmptTime`: Get const access to the songs current playing position, by specifying the SMPTE format in which you would like to receive the time.
+- `get_data(key: str, default_value: object) -> object`: Get data for the given key, that was previously stored using set_data.
+- `is_cue_point_selected() -> bool`: Return true if the global playing pos is currently on a cue point.
+- `jump_by(arg2: float) -> None`: Set a new playing pos, relative to the current one.
+- `jump_to_next_cue() -> None`: Jump to the next cue (marker) if possible.
+- `jump_to_prev_cue() -> None`: Jump to the prior cue (marker) if possible.
+- `move_device(device: Device.Device, target: LomObject.LomObject, target_position: int) -> int`: Move a device into the target at the given position, where 0 moves it before the first device and len(devices) moves it to the end of the device chain.If the device cannot be moved to this position, the nearest possible position is chosen. If the device type is not valid, a runtime error is raised.Returns the index, where the device was moved to.
+- `play_selection() -> None`: Start playing the current set selection, or do nothing if no selection is set.
+- `re_enable_automation() -> None`: Discards overrides of automated parameters.
+- `redo() -> str`: Redo the last action that was undone.
+- `scrub_by(arg2: float) -> None`: Same as jump_by, but does not stop playback.
+- `set_data(key: str, value: object) -> None`: Store data for the given key in this object. The data is persistent and will be restored when loading the Live Set.
+- `set_or_delete_cue() -> None`: When a cue is selected, it gets deleted. If no cue is selected, a new cue is created at the current global songtime.
+- `start_playing() -> None`: Start playing from the startmarker
+- `stop_all_clips(quantized: bool) -> None`: Stop all playing Clips (if any) but continue playing the Song.
+- `stop_playing() -> None`: Stop playing the Song.
+- `sync_parameter_changes() -> None` *(new)*: Synchronize parameter changes with the UI thread. For performance reasons, parameter changes are not synchronized individually. This function is available in case synchronization of the parameter change into the document is needed before subsequent device operations.
+- `tap_tempo() -> None`: Trigger the tap tempo function.
+- `trigger_session_record(record_length: float) -> None`: Triggers a new session recording.
+- `undo() -> str`: Undo the last action that was made.
+
+## Song.BeatTime
+
+Represents a Time, splitted into Bars, Beats, SubDivision and Ticks.
+
+Properties (r = read-only, rw = settable):
+
+- `bars` (rw)
+- `beats` (rw)
+- `sub_division` (rw)
+- `ticks` (rw)
+
+Methods:
+
+- `__init__() -> None`
+
+## Song.CuePoint
+
+Represents a 'Marker' in the arrangement.
+
+Base: LomObject.LomObject. Not constructable from Python.
+
+Properties (r = read-only, rw = settable):
+
+- `canonical_parent` (r): Get the canonical parent of the cue point.
+- `name` (rw, listenable): Get/Set/Listen to the name of this CuePoint, as visible in the arranger.
+- `time` (r, listenable): Get/Listen to the CuePoint's time in beats.
+
+Methods:
+
+- `jump() -> None`: When the Song is playing, set the playing-position quantized to this Cuepoint's time. When not playing, simply move the start playing position.
+
+## Song.SmptTime
+
+Represents a Time, split into Hours, Minutes, Seconds and Frames. The frame type must be specified when calling a function that returns a SmptTime.
+
+Properties (r = read-only, rw = settable):
+
+- `frames` (rw)
+- `hours` (rw)
+- `minutes` (rw)
+- `seconds` (rw)
+
+Methods:
+
+- `__init__() -> None`
+
+## Song.Song.View
+
+Representing the view aspects of a Live document: The Session and Arrangerview.
+
+Base: LomObject.LomObject. Not constructable from Python.
+
+Properties (r = read-only, rw = settable):
+
+- `canonical_parent` (r): Get the canonical parent of the song view.
+- `detail_clip` (rw, listenable): Get/Set the Clip that is currently visible in Lives Detailview.
+- `draw_mode` (rw, listenable): Get/Set if the Envelope/Note draw mode is enabled.
+- `follow_song` (rw, listenable): Get/Set if the Arrangerview should scroll to show the playmarker.
+- `highlighted_clip_slot` (rw): Get/Set the clip slot, defined via the selected track and scene in the Session.Will be None for Main- and Sendtracks.
+- `mod_mapping_device` (rw, listenable) *(new)*: The device that is waiting for a parameter (via mod_mapping_parameter) to modulate, or None if no device is waiting.
+- `mod_mapping_parameter` (r, listenable) *(new)*: Get the device parameter that's current selected to be mapped.
+- `selected_chain` (rw, listenable): Get the highlighted chain if available.
+- `selected_parameter` (r, listenable): Get the currently selected device parameter.
+- `selected_scene` (rw, listenable): Get/Set the current selected scene in Lives Sessionview.
+- `selected_track` (rw, listenable): Get/Set the current selected Track in Lives Session or Arrangerview.
+
+Methods:
+
+- `select_device(arg2: Device.Device, should_appoint_device: bool) -> None`: Select the given device.
+
+## Functions
+
+- `get_all_scales_ordered() -> tuple`: Get an ordered tuple of tuples of all available scale names to intervals.
+
+## Enums
+
+- `CaptureDestination`: auto=0, session=1, arrangement=2
+- `CaptureMode`: all=0, all_except_selected=1
+- `Quantization`: q_no_q=0, q_8_bars=1, q_4_bars=2, q_2_bars=3, q_bar=4, q_half=5, q_half_triplet=6, q_quarter=7, q_quarter_triplet=8, q_eight=9, q_eight_triplet=10, q_sixtenth=11, q_sixtenth_triplet=12, q_thirtytwoth=13
+- `RecordingQuantization`: rec_q_no_q=0, rec_q_quarter=1, rec_q_eight=2, rec_q_eight_triplet=3, rec_q_eight_eight_triplet=4, rec_q_sixtenth=5, rec_q_sixtenth_triplet=6, rec_q_sixtenth_sixtenth_triplet=7, rec_q_thirtysecond=8
+- `SessionRecordStatus`: off=0, transition=2, on=1
+- `TimeFormat`: ms_time=0, smpte_24=1, smpte_25=2, smpte_30=3, smpte_30_drop=4, smpte_29=5

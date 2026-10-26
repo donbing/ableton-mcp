@@ -1,0 +1,22 @@
+# Live.DrumPad
+
+> Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
+
+## DrumPad.DrumPad
+
+This class represents a drum group device pad in Live.
+
+Base: LomObject.LomObject. Not constructable from Python.
+
+Properties (r = read-only, rw = settable):
+
+- `canonical_parent` (r): Get the canonical parent of the drum pad.
+- `chains` (r, listenable): Return const access to the list of chains in this drum pad.
+- `mute` (rw, listenable): Mute/unmute the pad.
+- `name` (r, listenable): Return const access to the drum pad's name. It depends on the contained chains.
+- `note` (r): Get the MIDI note of the drum pad.
+- `solo` (rw, listenable): Solo/unsolo the pad.
+
+Methods:
+
+- `delete_all_chains() -> None`: Deletes all chains associated with a drum pad. This is equivalent to deleting a drum rack pad in Live.
