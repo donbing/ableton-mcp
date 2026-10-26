@@ -62,7 +62,7 @@ A property marked `listenable` has `add_<name>_listener(cb)`, `remove_<name>_lis
 Do not edit `references/` by hand. After a new capture in LiveAPI, update `provenance.json` and run:
 
 ```bash
-python tools/gen_live_api_skill.py --seed ../LiveAPI/probe/12.4.6/seed --baseline ../LiveAPI/probe/12.3.6/seed --provenance skills/push3-live-api/provenance.json --out skills/push3-live-api/references
+python tools/gen_live_api_skill.py --seed ../LiveAPI/probe/12.4.6/seed --baseline ../LiveAPI/probe/12.3.6/seed --provenance .claude/skills/push3-live-api/provenance.json --out .claude/skills/push3-live-api/references
 ```
 
 The generator needs PyYAML. Rules and quirks learned on the Push go in this file, not in `references/`.

@@ -14,8 +14,8 @@ Only files under references/ are written; SKILL.md stays hand-written.
     python tools/gen_live_api_skill.py \
         --seed ../LiveAPI/probe/12.4.6/seed \
         --baseline ../LiveAPI/probe/12.3.6/seed \
-        --provenance skills/push3-live-api/provenance.json \
-        --out skills/push3-live-api/references
+        --provenance .claude/skills/push3-live-api/provenance.json \
+        --out .claude/skills/push3-live-api/references
 """
 
 import argparse
