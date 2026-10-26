@@ -6715,12 +6715,13 @@ class AbletonMCP(ControlSurface):
 
     # ── Recording ─────────────────────────────────────────────────────────────
     # set_track_arm, set_track_routing, set_track_monitoring and set_transport_options prepare a
-    # take; these start and end it. From the Live Object Model documentation, NOT yet run on a real
-    # Live: ClipSlot.fire(record_length=beats) (Live 11+) records an armed track into an empty slot
-    # for that many beats and then plays the new clip; firing a slot that is recording ends the take
-    # the same way. Song.record_mode is the Arrangement record button; with the transport stopped
-    # it only lights the button, so start_playing() follows. The Arrangement auto-stop polls with
-    # schedule_message (about one ~100 ms tick), so a take can run up to a tick past end_time.
+    # take; these start and end it. Measured on Push 3 standalone, Live 12.4.6 (2026-10-26):
+    # ClipSlot.fire(record_length=beats) records an armed track into an empty slot, starting the
+    # transport and waiting for the launch quantization, then stops at exactly that length and plays
+    # the new clip (while recording, Clip.length reads as a huge placeholder); firing a slot that is
+    # recording ends the take the same way. Song.record_mode is the Arrangement record button; with
+    # the transport stopped it only lights the button, so start_playing() follows. The Arrangement
+    # auto-stop polls with schedule_message: a 16-24 take ended at 24.03 (about 15 ms late at 120 BPM).
 
     # A cap on length_bars so a typo cannot start a take that runs for hours.
     RECORD_MAX_BARS = 256

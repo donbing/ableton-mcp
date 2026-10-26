@@ -1,8 +1,8 @@
 """1.10.21: start and end a take (record_into_slot, start_arrangement_record, stop_recording).
 
-The fakes follow the Live Object Model documentation, NOT a run on a real Live yet: ClipSlot.fire takes
-record_length in beats (Live 11+; Boost.Python raises a TypeError subclass for an unknown keyword on
-older versions), an empty slot fired on an armed track waits for the launch quantization
+The fakes follow what Push 3 standalone, Live 12.4.6 did (2026-10-26): ClipSlot.fire takes
+record_length in beats (the fallback is for a Live without the keyword: Boost.Python raises a TypeError
+subclass for an unknown one), an empty slot fired on an armed track waits for the launch quantization
 (is_triggered) and then records (is_recording), firing a recording slot ends the take, and
 Song.record_mode is the Arrangement record button.
 """
