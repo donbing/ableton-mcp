@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## Sample.Sample
 
 This class represents a sample file loaded into a Simpler instance.
@@ -10,29 +12,29 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `beats_granulation_resolution` (rw, listenable): Access to the Granulation Resolution parameter in Beats Warp Mode.
-- `beats_transient_envelope` (rw, listenable): Access to the Transient Envelope parameter in Beats Warp Mode.
-- `beats_transient_loop_mode` (rw, listenable): Access to the Transient Loop Mode parameter in Beats Warp Mode.
-- `canonical_parent` (r): Access to the sample's canonical parent.
-- `complex_pro_envelope` (rw, listenable): Access to the Envelope parameter in Complex Pro Mode.
-- `complex_pro_formants` (rw, listenable): Access to the Formants parameter in Complex Pro Warp Mode.
-- `end_marker` (rw, listenable): Access to the position of the sample's end marker.
-- `file_path` (r, listenable): Get the path of the sample file.
-- `gain` (rw, listenable): Access to the sample gain.
-- `length` (r): Get the length of the sample file in sample frames.
-- `sample_rate` (r): Access to the audio sample rate of the sample.
-- `slices` (r, listenable): Access to the list of slice points in sample time in the sample.
-- `slicing_beat_division` (rw, listenable): Access to sample's slicing step size.
-- `slicing_region_count` (rw, listenable): Access to sample's slicing split count.
-- `slicing_sensitivity` (rw, listenable): Access to sample's slicing sensitivity whose sensitivity is in between 0.0 and 1.0. The higher the sensitivity, the more slices will be available.
-- `slicing_style` (rw, listenable): Access to sample's slicing style.
-- `start_marker` (rw, listenable): Access to the position of the sample's start marker.
-- `texture_flux` (rw, listenable): Access to the Flux parameter in Texture Warp Mode.
-- `texture_grain_size` (rw, listenable): Access to the Grain Size parameter in Texture Warp Mode.
-- `tones_grain_size` (rw, listenable): Access to the Grain Size parameter in Tones Warp Mode.
-- `warp_markers` (r, listenable): Get the warp markers for this sample.
-- `warp_mode` (rw, listenable): Access to the sample's warp mode.
-- `warping` (rw, listenable): Access to the sample's warping property.
+- `beats_granulation_resolution` `int`† (rw, listenable): Access to the Granulation Resolution parameter in Beats Warp Mode.
+- `beats_transient_envelope` `float`† (rw, listenable): Access to the Transient Envelope parameter in Beats Warp Mode.
+- `beats_transient_loop_mode` `int`† (rw, listenable): Access to the Transient Loop Mode parameter in Beats Warp Mode.
+- `canonical_parent` `SimplerDevice.SimplerDevice`† (r): Access to the sample's canonical parent.
+- `complex_pro_envelope` `float`† (rw, listenable): Access to the Envelope parameter in Complex Pro Mode.
+- `complex_pro_formants` `float`† (rw, listenable): Access to the Formants parameter in Complex Pro Warp Mode.
+- `end_marker` `int`† (rw, listenable): Access to the position of the sample's end marker.
+- `file_path` `str`† (r, listenable): Get the path of the sample file.
+- `gain` `float`† (rw, listenable): Access to the sample gain.
+- `length` `int`† (r): Get the length of the sample file in sample frames.
+- `sample_rate` `float`† (r): Access to the audio sample rate of the sample.
+- `slices` `tuple`† (r, listenable): Access to the list of slice points in sample time in the sample.
+- `slicing_beat_division` `int`† (rw, listenable): Access to sample's slicing step size.
+- `slicing_region_count` `int`† (rw, listenable): Access to sample's slicing split count.
+- `slicing_sensitivity` `float`† (rw, listenable): Access to sample's slicing sensitivity whose sensitivity is in between 0.0 and 1.0. The higher the sensitivity, the more slices will be available.
+- `slicing_style` `int`† (rw, listenable): Access to sample's slicing style.
+- `start_marker` `int`† (rw, listenable): Access to the position of the sample's start marker.
+- `texture_flux` `float`† (rw, listenable): Access to the Flux parameter in Texture Warp Mode.
+- `texture_grain_size` `float`† (rw, listenable): Access to the Grain Size parameter in Texture Warp Mode.
+- `tones_grain_size` `float`† (rw, listenable): Access to the Grain Size parameter in Tones Warp Mode.
+- `warp_markers` `Clip.WarpMarkerVector`† (r, listenable): Get the warp markers for this sample.
+- `warp_mode` `int`† (rw, listenable): Access to the sample's warp mode.
+- `warping` `bool`† (rw, listenable): Access to the sample's warping property.
 
 Methods:
 

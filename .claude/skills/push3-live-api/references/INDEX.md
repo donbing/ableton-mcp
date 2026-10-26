@@ -2,8 +2,9 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
-This is a raw capture without a property probe, so most properties have no type. Read the doc
-string, or check the value at runtime, before relying on a type.
+This is a raw capture without a property probe, so it has no property types of its own. Types marked †
+are borrowed from the older version's probe for properties present in both; properties with no type
+are new or were not probed. Check the value at runtime before relying on a type.
 
 | Module | Classes | Members |
 |---|---|---|

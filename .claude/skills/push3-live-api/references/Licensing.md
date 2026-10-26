@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## Licensing.ProgressDialog
 
 A modal dialog showing a message and a progress animation.
@@ -65,13 +67,13 @@ Returns relevant information after unlock
 
 Properties (r = read-only, rw = settable):
 
-- `authorization_deactivated` (r)
-- `authorization_expired` (r)
-- `has_max_unlock_products` (r)
-- `temp_demo_mode` (r)
-- `time_limited` (r)
-- `unlock_error` (r)
-- `unlocked` (r)
+- `authorization_deactivated` `bool`† (r)
+- `authorization_expired` `bool`† (r)
+- `has_max_unlock_products` `bool`† (r)
+- `temp_demo_mode` `bool`† (r)
+- `time_limited` `bool`† (r)
+- `unlock_error` `bool`† (r)
+- `unlocked` `bool`† (r)
 
 Methods:
 

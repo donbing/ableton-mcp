@@ -7,7 +7,8 @@
 The seed is LiveAPI's per-module Markdown (probe/<version>/seed/*.md): headings
 per class / member, each followed by a YAML block. This script turns it into
 compact references an agent can read one module at a time, plus an index and a
-diff against a baseline seed.
+diff against a baseline seed. Property types missing from a raw capture are
+borrowed from the baseline (marked †).
 
 Only files under references/ are written; SKILL.md stays hand-written.
 
@@ -157,8 +158,37 @@ def new_tag(key, added):
     return " *(new)*" if key in added else ""
 
 
+def borrow_types(seed, baseline, baseline_version):
+    """Fill missing property types from the baseline seed, for properties present in both.
+
+    A raw capture has no property probe, so it lacks types; the baseline's came from a probe. Each borrowed type is
+    marked with type_from so the reference can say where it came from. Returns the number borrowed.
+    """
+    known = {}
+    for module, data in baseline.items():
+        for cls in data["classes"]:
+            for name, info in cls["properties"]:
+                # "None" only means the probed value was empty at the time (no groove, nothing appointed).
+                if info.get("type") and info["type"] not in ("None", "NoneType"):
+                    known[f"{class_path(module, cls)}.{name}"] = info["type"]
+    count = 0
+    for module, data in seed.items():
+        for cls in data["classes"]:
+            for name, info in cls["properties"]:
+                key = f"{class_path(module, cls)}.{name}"
+                if not info.get("type") and key in known:
+                    info["type"], info["type_from"] = known[key], baseline_version
+                    count += 1
+    return count
+
+
 def render_module(module, data, added, header):
     out = [f"# Live.{module}", "", header, ""]
+    borrowed = {
+        p["type_from"] for c in data["classes"] for _, p in c["properties"] if p.get("type_from")
+    }
+    if borrowed:
+        out += [f"Types marked † come from the Live {', '.join(sorted(borrowed))} property probe, not this capture.", ""]
     for cls in data["classes"]:
         info = cls["info"]
         path = class_path(module, cls)
@@ -180,6 +210,8 @@ def render_module(module, data, added, header):
             out += ["Properties (r = read-only, rw = settable):", ""]
             for name, p in cls["properties"]:
                 typ = f" `{short_type(p['type'])}`" if p.get("type") else ""
+                if p.get("type_from"):
+                    typ += "†"
                 doc = one_line(p.get("raw_doc"))
                 out.append(f"- `{name}`{typ} ({access(p)}){new_tag(f'{path}.{name}', added)}" + (f": {doc}" if doc else ""))
             out.append("")
@@ -225,8 +257,9 @@ def render_index(seed, prov, header):
     out = [f"# Live {prov['live_version']} API: module index", "", header, ""]
     if prov.get("capture") == "raw":
         out += [
-            "This is a raw capture without a property probe, so most properties have no type. Read the doc",
-            "string, or check the value at runtime, before relying on a type.",
+            "This is a raw capture without a property probe, so it has no property types of its own. Types marked †",
+            "are borrowed from the older version's probe for properties present in both; properties with no type",
+            "are new or were not probed. Check the value at runtime before relying on a type.",
             "",
         ]
     out += ["| Module | Classes | Members |", "|---|---|---|"]
@@ -265,13 +298,15 @@ def generate(seed_dir, out_dir, provenance, baseline_dir=None):
     header = provenance_header(provenance)
 
     added, removed, changed = set(), set(), {}
-    baseline_version = None
+    baseline_version, borrowed = None, 0
     if baseline_dir:
         baseline_version = Path(baseline_dir).parent.name
-        old, new = member_keys(load_seed(baseline_dir)), member_keys(seed)
+        baseline = load_seed(baseline_dir)
+        old, new = member_keys(baseline), member_keys(seed)
         added = set(new) - set(old)
         removed = set(old) - set(new)
         changed = {k: (old[k], new[k]) for k in set(old) & set(new) if old[k] != new[k]}
+        borrowed = borrow_types(seed, baseline, baseline_version)
 
     out_dir = Path(out_dir)
     if out_dir.exists():
@@ -284,13 +319,16 @@ def generate(seed_dir, out_dir, provenance, baseline_dir=None):
         (out_dir / "CHANGES.md").write_text(
             render_changes(added, removed, changed, provenance, baseline_version, header), encoding="utf-8"
         )
-    return {"modules": len(seed), "added": len(added), "removed": len(removed), "changed": len(changed)}
+    return {
+        "modules": len(seed), "added": len(added), "removed": len(removed), "changed": len(changed),
+        "borrowed_types": borrowed,
+    }
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--seed", required=True, help="LiveAPI probe/<version>/seed directory")
-    ap.add_argument("--baseline", help="older seed directory to diff against")
+    ap.add_argument("--baseline", help="older seed directory to diff against and borrow property types from")
     ap.add_argument("--provenance", required=True, help="JSON file describing the capture")
     ap.add_argument("--out", required=True, help="references directory to (re)write")
     args = ap.parse_args(argv)

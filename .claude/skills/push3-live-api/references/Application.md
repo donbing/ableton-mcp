@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## Application.Application
 
 This class represents the Live application.
@@ -10,17 +12,17 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `average_process_usage` (r, listenable): Reports Live's average CPU load.
-- `browser` (r): Returns an interface to the browser.
+- `average_process_usage` `float`† (r, listenable): Reports Live's average CPU load.
+- `browser` `Browser.Browser`† (r): Returns an interface to the browser.
 - `canonical_parent` (r): Returns the canonical parent of the application.
-- `control_surfaces` (r, listenable): Const access to a list of the control surfaces selected in preferences, in the same order. The list contains None if no control surface is active at that index.
-- `current_dialog_button_count` (r): Number of buttons on the current dialog.
-- `current_dialog_message` (r): Text of the last dialog that appeared; Empty if all dialogs just disappeared.
-- `number_of_push_apps_running` (r): Returns the number of connected Push apps.
-- `open_dialog_count` (r, listenable): The number of open dialogs in Live. 0 if not dialog is open.
-- `peak_process_usage` (r, listenable): Reports Live's peak CPU load.
-- `unavailable_features` (r, listenable): List of features that are unavailable due to limitations of the current Live edition.
-- `view` (r): Returns the applications view component.
+- `control_surfaces` `Base.Vector[object]`† (r, listenable): Const access to a list of the control surfaces selected in preferences, in the same order. The list contains None if no control surface is active at that index.
+- `current_dialog_button_count` `int`† (r): Number of buttons on the current dialog.
+- `current_dialog_message` `str`† (r): Text of the last dialog that appeared; Empty if all dialogs just disappeared.
+- `number_of_push_apps_running` `int`† (r): Returns the number of connected Push apps.
+- `open_dialog_count` `int`† (r, listenable): The number of open dialogs in Live. 0 if not dialog is open.
+- `peak_process_usage` `float`† (r, listenable): Reports Live's peak CPU load.
+- `unavailable_features` `Application.UnavailableFeatureVector`† (r, listenable): List of features that are unavailable due to limitations of the current Live edition.
+- `view` `Application.Application.View`† (r): Returns the applications view component.
 
 Methods:
 
@@ -42,8 +44,8 @@ Describes a control present in a control surface proxy
 
 Properties (r = read-only, rw = settable):
 
-- `id` (r)
-- `name` (r)
+- `id` `int`† (r)
+- `name` `str`† (r)
 
 Methods:
 
@@ -101,9 +103,9 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `browse_mode` (r, listenable): Return true if HotSwap mode is active for any target.
-- `canonical_parent` (r): Get the canonical parent of the application view.
-- `focused_document_view` (r, listenable): Return the name of the document view ('Session' or 'Arranger') shown in the currently selected window.
+- `browse_mode` `bool`† (r, listenable): Return true if HotSwap mode is active for any target.
+- `canonical_parent` `Application.Application`† (r): Get the canonical parent of the application view.
+- `focused_document_view` `str`† (r, listenable): Return the name of the document view ('Session' or 'Arranger') shown in the currently selected window.
 - `view_focus_changed` (r, listenable)
 
 Methods:

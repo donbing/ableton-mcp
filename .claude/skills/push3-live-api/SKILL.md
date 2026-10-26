@@ -16,7 +16,9 @@ the reference as a guide only: check anything important at runtime on the Push.
 
 The current capture is a **raw** capture (no property probe):
 
-- Most properties have no type. Read the doc string, or check the value at runtime.
+- It has no property types of its own. Types marked † are borrowed from the Live 12.3.6 property probe (LiveAPI's
+  committed seed) for properties that exist in both versions; they are very likely right but were not measured on
+  the Push. Properties with no type are new in 12.4.6 or were never probed: check the value at runtime.
 - `references/CHANGES.md` lists what differs from Live 12.3.6. Its "Missing from this capture" list is unverified:
   most entries are gaps in a raw capture, not real removals.
 - Intro is a limited edition. A class being in the API does not mean its device is available on the Push.

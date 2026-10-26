@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## MaxDevice.MaxDevice
 
 This class represents a Max for Live device.
@@ -10,16 +12,16 @@ Base: Device.Device, LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `audio_inputs` (r, listenable): Const access to a list of all audio inputs of the device.
-- `audio_outputs` (r, listenable): Const access to a list of all audio outputs of the device.
-- `is_active` (r): Return const access to whether this device is active. This will be false bothwhen the device is off and when it's inside a rack device which is off.
+- `audio_inputs` `Base.Vector[DeviceIO.DeviceIO]`† (r, listenable): Const access to a list of all audio inputs of the device.
+- `audio_outputs` `Base.Vector[DeviceIO.DeviceIO]`† (r, listenable): Const access to a list of all audio outputs of the device.
+- `is_active` `bool`† (r): Return const access to whether this device is active. This will be false bothwhen the device is off and when it's inside a rack device which is off.
 - `is_using_compare_preset_b` (rw) *(new)*: Returns whether the Device has loaded the preset in compare slot B. Only relevant if can_compare_ab, otherwise errors.
-- `latency_in_ms` (r): Returns the latency of the device in ms.
-- `latency_in_samples` (r): Returns the latency of the device in samples.
-- `midi_inputs` (r, listenable): Const access to a list of all midi outputs of the device.
-- `midi_outputs` (r, listenable): Const access to a list of all midi outputs of the device.
-- `name` (rw): Return access to the name of the device.
-- `parameters` (r): Const access to the list of available automatable parameters for this device.
+- `latency_in_ms` `float`† (r): Returns the latency of the device in ms.
+- `latency_in_samples` `int`† (r): Returns the latency of the device in samples.
+- `midi_inputs` `Base.Vector`† (r, listenable): Const access to a list of all midi outputs of the device.
+- `midi_outputs` `Base.Vector`† (r, listenable): Const access to a list of all midi outputs of the device.
+- `name` `str`† (rw): Return access to the name of the device.
+- `parameters` `Device.ATimeableValueVector`† (r): Const access to the list of available automatable parameters for this device.
 - `bank_parameters_changed` (r, listenable)
 
 Methods:

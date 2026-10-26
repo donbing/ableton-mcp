@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## ClipSlot.ClipSlot
 
 This class represents an entry in Lives Session view matrix.
@@ -10,19 +12,19 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `canonical_parent` (r): Get the canonical parent of the ClipSlot.
-- `clip` (r): Returns the Clip which this clipslots currently owns. Might be None.
-- `color` (r, listenable): Returns the canonical color for the clip slot or None if it does not exist.
-- `color_index` (r, listenable): Returns the canonical color index for the clip slot or None if it does not exist.
-- `controls_other_clips` (r, listenable): Returns true if firing this slot will fire clips in other slots. Can only be true for slots in group tracks.
-- `has_clip` (r, listenable): Returns true if this Clipslot owns a Clip.
-- `has_stop_button` (rw, listenable): Get/Set if this Clip has a stop button, which will, if fired, stop any other Clip that is currently playing the Track we do belong to.
-- `is_group_slot` (r): Returns whether this clip slot is a group track slot (group slot).
-- `is_playing` (r): Returns whether the clip associated with the slot is playing.
-- `is_recording` (r): Returns whether the clip associated with the slot is recording.
-- `is_triggered` (r, listenable): Const access to the triggering state of the clip slot.
-- `playing_status` (r, listenable): Const access to the playing state of the clip slot. Can be either stopped, playing, or recording.
-- `will_record_on_start` (r): returns true if the clip slot will record on being fired.
+- `canonical_parent` `Track.Track`† (r): Get the canonical parent of the ClipSlot.
+- `clip` `Clip.Clip`† (r): Returns the Clip which this clipslots currently owns. Might be None.
+- `color` `int`† (r, listenable): Returns the canonical color for the clip slot or None if it does not exist.
+- `color_index` `int`† (r, listenable): Returns the canonical color index for the clip slot or None if it does not exist.
+- `controls_other_clips` `bool`† (r, listenable): Returns true if firing this slot will fire clips in other slots. Can only be true for slots in group tracks.
+- `has_clip` `bool`† (r, listenable): Returns true if this Clipslot owns a Clip.
+- `has_stop_button` `bool`† (rw, listenable): Get/Set if this Clip has a stop button, which will, if fired, stop any other Clip that is currently playing the Track we do belong to.
+- `is_group_slot` `bool`† (r): Returns whether this clip slot is a group track slot (group slot).
+- `is_playing` `bool`† (r): Returns whether the clip associated with the slot is playing.
+- `is_recording` `bool`† (r): Returns whether the clip associated with the slot is recording.
+- `is_triggered` `bool`† (r, listenable): Const access to the triggering state of the clip slot.
+- `playing_status` `ClipSlot.ClipSlotPlayingState`† (r, listenable): Const access to the playing state of the clip slot. Can be either stopped, playing, or recording.
+- `will_record_on_start` `bool`† (r): returns true if the clip slot will record on being fired.
 
 Methods:
 

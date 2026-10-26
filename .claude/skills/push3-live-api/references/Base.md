@@ -2,6 +2,8 @@
 
 > Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
+Types marked † come from the Live 12.3.6 property probe, not this capture.
+
 ## Base.FloatVector
 
 A simple container for returning floats from Live.
@@ -54,7 +56,7 @@ Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `running` (r)
+- `running` `bool`† (r)
 
 Methods:
 

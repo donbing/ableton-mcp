@@ -149,7 +149,38 @@ def test_changes_lists_added_changed_and_missing(seeds):
     assert "`Live.Clip.LaunchMode`: was `enum trigger=0`, now `enum trigger=0, gate=1`" in text
     assert "- `Live.Clip.Clip.old_gain`" in text and "- `Live.Clip.Removed`" in text
     assert "unverified" in text  # raw capture caveat
-    assert stats == {"modules": 1, "added": 1, "removed": 2, "changed": 1}
+    assert stats == {"modules": 1, "added": 1, "removed": 2, "changed": 1, "borrowed_types": 0}
+
+
+def test_types_are_borrowed_from_baseline_for_shared_properties(seeds):
+    new, old, out = seeds
+    old_clip = old / "Clip.md"
+    old_clip.write_text(
+        old_clip.read_text(encoding="utf-8")
+        .replace("settable: true\nlistenable: true", "type: int\nsettable: true\nlistenable: true")
+        .replace("##### old_gain\n\n```yaml\n", "##### old_gain\n\n```yaml\ntype: float\n"),
+        encoding="utf-8",
+    )
+    stats = gen.generate(new, out, PROV, old)
+    text = (out / "Clip.md").read_text(encoding="utf-8")
+    assert stats["borrowed_types"] == 1
+    assert "- `color` `int`† (rw, listenable)" in text
+    assert "- `gain` (r) *(new)*" in text  # new property: nothing to borrow
+    assert "Types marked † come from the Live 12.3.6 property probe" in text
+
+
+def test_capture_types_win_over_baseline(seeds):
+    new, old, out = seeds
+    for path, typ in ((new / "Clip.md", "bool"), (old / "Clip.md", "int")):
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "settable: true\nlistenable: true", f"type: {typ}\nsettable: true\nlistenable: true"
+            ),
+            encoding="utf-8",
+        )
+    gen.generate(new, out, PROV, old)
+    text = (out / "Clip.md").read_text(encoding="utf-8")
+    assert "- `color` `bool` (rw, listenable)" in text and "†" not in text
 
 
 def test_generate_replaces_stale_files(seeds):
