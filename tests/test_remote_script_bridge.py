@@ -232,8 +232,8 @@ def test_browser_tree_caps_a_huge_folder_and_flags_it(script_module):
 
     category = inst.get_browser_tree("instruments")["categories"][0]
 
-    assert len(category["children"]) == 64
-    assert category["has_more"] is True
+    assert len(category["children"]) == 50
+    assert category["truncated"] is True and category["total_children"] == 200
 
 
 # ------------------------------------------------------------------ logging

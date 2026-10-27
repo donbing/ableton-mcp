@@ -8,7 +8,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, List, Optional, Union
+from typing import AsyncIterator, Dict, Any, List, Literal, Optional, Union
 
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
@@ -2287,59 +2287,74 @@ def stop_playback(ctx: Context, user_prompt: str = "") -> str:
         logger.error(f"Error stopping playback: {str(e)}")
         return f"Error stopping playback: {str(e)}"
 
+# The Remote Script's BROWSER_ROOTS. As Literal types they become enums in the tool
+# schemas, so a client sees the valid names and refuses a wrong one before Live does.
+BrowserCategory = Literal["all", "instruments", "sounds", "drums", "audio_effects", "midi_effects",
+                          "plugins", "user_library", "packs", "samples", "clips", "current_project"]
+BrowserKind = Literal["all", "folder", "device", "preset", "sample"]
+
+
 @mcp.tool()
 @rich_telemetry_tool("get_browser_tree")
 @trajectory_tool("get_browser_tree")
-def get_browser_tree(ctx: Context, category_type: str = "all", user_prompt: str = "") -> str:
+def get_browser_tree(ctx: Context, category_type: BrowserCategory = "all", user_prompt: str = "",
+                     depth: int = 1, with_counts: bool = True) -> str:
     """
-    Get a hierarchical tree of browser categories from Ableton.
+    Overview of Ableton's browser: the folders of each category, and how many loadable
+    items sit below each folder. Use it first, to see what sounds exist. Each folder lists
+    its first 50 children. A folder marked [...] was not expanded, and one marked truncated
+    has more children than are listed: page through either with get_browser_items_at_path.
+    To find an item by name, use search_browser_items. Uris come from search_browser_items
+    or from get_browser_items_at_path with compact=false.
 
     Parameters:
-    - category_type: Type of categories to get ('all', 'instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects')
+    - category_type: "all" (default) or one category. samples (every audio file) and clips
+      are long flat lists, current_project holds the open set's own files (empty until saved)
+    - depth: 1-3 (default 1), the folder levels to list under each category
+    - with_counts: true (default) to count the loadable items below each folder. The counts
+      are approximate when the 5 second budget runs out (approximate is then true)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_browser_tree", {
-            "category_type": category_type
+            "category_type": category_type, "depth": depth, "with_counts": with_counts
         })
-        
+
         # Check if we got any categories
         if "available_categories" in result and len(result.get("categories", [])) == 0:
             available_cats = result.get("available_categories", [])
             return (f"No categories found for '{category_type}'. "
                    f"Available browser categories: {', '.join(available_cats)}")
-        
-        # Format the tree in a more readable way
+
         total_folders = result.get("total_folders", 0)
-        formatted_output = f"Browser tree for '{category_type}' (showing {total_folders} folders):\n\n"
-        
-        def format_tree(item, indent=0):
-            output = ""
-            if item:
-                prefix = "  " * indent
-                name = item.get("name", "Unknown")
-                path = item.get("path", "")
-                has_more = item.get("has_more", False)
-                
-                # Add this item
-                output += f"{prefix}• {name}"
-                if path:
-                    output += f" (path: {path})"
-                if has_more:
-                    output += " [...]"
-                output += "\n"
-                
-                # Add children
-                for child in item.get("children", []):
-                    output += format_tree(child, indent + 1)
+        header = f"Browser tree for '{category_type}' (depth {depth}, showing {total_folders} folders"
+        if with_counts:
+            header += ", with item counts"
+            if result.get("approximate"):
+                header += "; counts approximate, the time budget ran out"
+        formatted_output = header + "):\n\n"
+
+        def format_tree(item, path, indent=0):
+            name = item.get("name", "Unknown")
+            line = "  " * indent + "• " + name
+            if "item_count" in item:
+                line += f" ({item['item_count']} items)"
+            if item.get("is_folder"):
+                line += f" (path: {path})"
+            if item.get("has_more"):
+                line += " [...]"
+            if item.get("truncated"):
+                line += f" [first {len(item.get('children', []))} of {item.get('total_children')} children]"
+            output = line + "\n"
+            for child in item.get("children", []):
+                output += format_tree(child, f"{path}/{child.get('name', '')}", indent + 1)
             return output
-        
-        # Format each category
+
+        # Format each category; its path is the root name the items_at_path tool takes
         for category in result.get("categories", []):
-            formatted_output += format_tree(category)
-            formatted_output += "\n"
-        
+            formatted_output += format_tree(category, category.get("root", category.get("name", ""))).rstrip("\n") + "\n\n"
+
         return formatted_output
     except Exception as e:
         error_msg = str(e)
@@ -2356,28 +2371,37 @@ def get_browser_tree(ctx: Context, category_type: str = "all", user_prompt: str 
 @mcp.tool()
 @rich_telemetry_tool("get_browser_items_at_path")
 @trajectory_tool("get_browser_items_at_path")
-def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "") -> str:
+def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "", offset: int = 0,
+                              limit: int = 50, compact: bool = True, kind: BrowserKind = "all") -> str:
     """
-    Get browser items at a specific path in Ableton's browser.
+    Page through the items in one folder of Ableton's browser, after get_browser_tree has
+    shown where to look. The reply has total, offset and limit, and next_offset while more
+    items remain. To find an item by name across the browser, use search_browser_items.
 
     Parameters:
-    - path: Path in the format "category/folder/subfolder"
-            where category is one of the available browser categories in Ableton
+    - path: Path in the format "category/folder/subfolder" (for example "drums/Kits")
+    - offset: Position of the first item on the page (default 0)
+    - limit: Items per page, 1-200 (default 50)
+    - compact: true (default) for {name, type} items, where type is folder, device, preset
+      or sample; anything with items inside (a folder, or a device like Wavetable) carries
+      item_count. false for the full items with uri, which load_instrument_or_effect and
+      preview_browser_item take
+    - kind: "all" (default) or one item type. Filters before paging
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_browser_items_at_path", {
-            "path": path
+            "path": path, "offset": offset, "limit": limit, "compact": compact, "kind": kind
         })
-        
+
         # Check if there was an error with available categories
         if "error" in result and "available_categories" in result:
             error = result.get("error", "")
             available_cats = result.get("available_categories", [])
             return (f"Error: {error}\n"
                    f"Available browser categories: {', '.join(available_cats)}")
-        
+
         return json.dumps(result, indent=2)
     except Exception as e:
         error_msg = str(e)
@@ -2424,7 +2448,7 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str, 
         
         # Step 2: Get the drum kit items at the specified path
         kit_result = ableton.send_command("get_browser_items_at_path", {
-            "path": kit_path
+            "path": kit_path, "limit": 200, "compact": False
         })
         
         if "error" in kit_result:
@@ -3406,7 +3430,7 @@ def duplicate_track(
 def search_browser_items(
     ctx: Context,
     query: str,
-    category: str = "all",
+    category: BrowserCategory = "all",
     max_results: int = 20,
     loadable_only: bool = False,
     max_seconds: float = 6.0,
@@ -3422,8 +3446,7 @@ def search_browser_items(
 
     Parameters:
     - query: Words to look for
-    - category: "all" (default) or instruments, sounds, drums, audio_effects,
-      midi_effects, plugins, user_library, packs
+    - category: "all" (default) or one category
     - max_results: 1-200 (default 20)
     - loadable_only: true to leave out folders and other items that cannot be loaded
     - max_seconds: Time budget, up to 30 (default 6)

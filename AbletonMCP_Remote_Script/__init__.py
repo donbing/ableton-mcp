@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.21"
+SCRIPT_VERSION = "1.10.22"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -1164,11 +1164,13 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_browser_items(path, item_type)
             # Add the new browser commands
             elif command_type == "get_browser_tree":
-                category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
+                response["result"] = self.get_browser_tree(
+                    params.get("category_type", "all"), params.get("depth", 1),
+                    params.get("with_counts", True))
             elif command_type == "get_browser_items_at_path":
-                path = params.get("path", "")
-                response["result"] = self.get_browser_items_at_path(path)
+                response["result"] = self.get_browser_items_at_path(
+                    params.get("path", ""), params.get("offset", 0), params.get("limit", 50),
+                    params.get("compact", True), params.get("kind", "all"))
             # Read-only arrangement command – no main-thread scheduling required
             elif command_type == "get_arrangement_clips":
                 track_index = params.get("track_index", 0)
@@ -5646,8 +5648,10 @@ class AbletonMCP(ControlSurface):
     # walking folders of 150+ items. Breadth first (what is near the top, like a
     # device, comes before presets deep inside), with a time budget.
 
+    # Live's Browser also has max_for_live (nothing loadable on Intro) and the lists
+    # user_folders, colors and legacy_libraries, which are vectors rather than one item.
     BROWSER_ROOTS = ("instruments", "sounds", "drums", "audio_effects", "midi_effects",
-                     "plugins", "user_library", "packs")
+                     "plugins", "user_library", "packs", "samples", "clips", "current_project")
 
     def _search_browser_items(self, query, category="all", max_results=20, max_seconds=6.0,
                               loadable_only=False):
@@ -8909,186 +8913,226 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error setting device parameter: " + str(e))
             raise
 
-    def get_browser_tree(self, category_type="all"):
+    # Browser overview and paging (1.10.22). get_browser_tree shows the folders of every
+    # root with the loadable items below each; get_browser_items_at_path pages through
+    # one folder. Counting shares one time budget per reply, so a walk cannot hang Live.
+
+    BROWSER_TREE_CHILDREN = 50
+    BROWSER_COUNT_SECONDS = 5.0
+    BROWSER_TITLES = {"instruments": "Instruments", "sounds": "Sounds", "drums": "Drums",
+                      "audio_effects": "Audio Effects", "midi_effects": "MIDI Effects",
+                      "plugins": "Plugins", "user_library": "User Library", "packs": "Packs",
+                      "samples": "Samples", "clips": "Clips", "current_project": "Current Project"}
+    BROWSER_KINDS = ("all", "folder", "device", "preset", "sample")
+    BROWSER_SAMPLE_EXTENSIONS = (".wav", ".aif", ".aiff", ".flac", ".mp3")
+
+    @staticmethod
+    def _browser_children(item):
+        """The children of a browser item; [] for a leaf or one that cannot be read."""
+        try:
+            return list(getattr(item, "children", None) or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _browser_whole(value, low, high, name):
+        """value as a whole number from low to high, or a ValueError that names it."""
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = None
+        if number is None or number < low or number > high:
+            raise ValueError("%s must be a whole number from %d to %d" % (name, low, high))
+        return number
+
+    def _browser_kind(self, item, children):
+        """device, folder, sample or preset. A device has is_device (it may hold presets,
+        like Wavetable), a folder has children, a sample has an audio file name; anything
+        else is a preset."""
+        if getattr(item, "is_device", False):
+            return "device"
+        if children:
+            return "folder"
+        if (getattr(item, "name", "") or "").lower().endswith(self.BROWSER_SAMPLE_EXTENSIONS):
+            return "sample"
+        return "preset"
+
+    def _browser_count_below(self, item, budget):
+        """Loadable items anywhere below item. budget is {"deadline": ..., "approximate": ...}:
+        past the deadline the count stops where it is and budget["approximate"] turns true."""
+        total = 0
+        for child in self._browser_children(item):
+            if time.time() > budget["deadline"]:
+                budget["approximate"] = True
+                break
+            if getattr(child, "is_loadable", False):
+                total += 1
+            total += self._browser_count_below(child, budget)
+        return total
+
+    def get_browser_tree(self, category_type="all", depth=1, with_counts=True):
         """
-        Get a simplified tree of browser categories.
-        
+        Overview of the browser: the folders of each category down to depth levels, and
+        with with_counts the number of loadable items below every folder.
+
         Args:
-            category_type: Type of categories to get ('all', 'instruments', 'sounds', etc.)
-            
+            category_type: 'all' or one of BROWSER_ROOTS
+            depth: 1-3. Folders at that depth are returned with has_more and not expanded
+            with_counts: count the loadable items below each folder, within
+                BROWSER_COUNT_SECONDS (approximate is true when the budget ran out)
+
+        At most BROWSER_TREE_CHILDREN children are listed per folder; total_children
+        and truncated say when there are more. get_browser_items_at_path pages through them.
+
         Returns:
             Dictionary with the browser tree structure
         """
         try:
+            if category_type != "all" and category_type not in self.BROWSER_ROOTS:
+                raise ValueError("category_type must be 'all' or one of %s" % ", ".join(self.BROWSER_ROOTS))
+            depth = self._browser_whole(depth, 1, 3, "depth")
+            with_counts = bool(with_counts)
+
             # Access the application's browser instance instead of creating a new one
             app = self.application()
             if not app:
                 raise RuntimeError("Could not access Live application")
-                
+
             # Check if browser is available
             if not hasattr(app, 'browser') or app.browser is None:
                 raise RuntimeError("Browser is not available in the Live application")
-            
-            # Log available browser attributes to help diagnose issues
-            browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
-            self.log_message("Available browser attributes: {0}".format(browser_attrs))
-            
-            result = {
-                "type": category_type,
-                "categories": [],
-                "available_categories": browser_attrs
-            }
-            
-            # The full browser is far too large to serialise, so descend one
-            # level and mark anything deeper with has_more. The MCP server
-            # renders that as "[...]" and get_browser_items_at_path walks on
-            # from there.
-            max_depth = 1
-            max_children = 64
+            browser = app.browser
+
+            available = [name for name in self.BROWSER_ROOTS if getattr(browser, name, None) is not None]
+            roots = [name for name in (self.BROWSER_ROOTS if category_type == "all" else (category_type,))
+                     if name in available]
+            budget = {"deadline": time.time() + self.BROWSER_COUNT_SECONDS, "approximate": False}
             folder_count = [0]
 
-            def process_item(item, depth=0):
-                if not item:
-                    return None
+            def counting():
+                """True while the count budget lasts. The first refusal marks the counts approximate."""
+                if not with_counts:
+                    return False
+                if time.time() > budget["deadline"]:
+                    budget["approximate"] = True
+                    return False
+                return True
 
-                children = getattr(item, 'children', None) or []
+            def walk(item, level):
+                """(node, loadable items below item). A node is built when the parent lists
+                it, which is every level up to depth. Children are read when listed or counted."""
+                children = self._browser_children(item)
                 is_folder = bool(children)
-                if is_folder:
+                node = None
+                if level <= depth:
+                    node = {"name": getattr(item, "name", None) or "Unknown",
+                            "is_folder": is_folder,
+                            "is_loadable": bool(getattr(item, "is_loadable", False)),
+                            "is_device": bool(getattr(item, "is_device", False)),
+                            "children": []}
+                    if is_folder:
+                        node["total_children"] = len(children)
+                        if level == depth:
+                            node["has_more"] = True
+                below = 0
+                if is_folder and (level < depth or counting()):
+                    for index, child in enumerate(children):
+                        # beyond the listing cap a child is only worth reading for its count
+                        if index >= self.BROWSER_TREE_CHILDREN and not with_counts:
+                            break
+                        child_node, child_below = walk(child, level + 1)
+                        if getattr(child, "is_loadable", False):
+                            below += 1
+                        below += child_below
+                        if level < depth and index < self.BROWSER_TREE_CHILDREN:
+                            node["children"].append(child_node)
+                            if child_node["is_folder"]:
+                                folder_count[0] += 1
+                    if level < depth and len(children) > self.BROWSER_TREE_CHILDREN:
+                        node["truncated"] = True
+                if node is not None and is_folder and with_counts:
+                    node["item_count"] = below
+                return node, below
+
+            categories = []
+            for name in roots:
+                try:
+                    node, _below = walk(getattr(browser, name), 0)
+                except Exception as e:
+                    self.log_message("Error processing {0}: {1}".format(name, str(e)))
+                    continue
+                node["name"] = self.BROWSER_TITLES.get(name, name)
+                node["root"] = name
+                if node["is_folder"]:
                     folder_count[0] += 1
+                categories.append(node)
 
-                node = {
-                    "name": item.name if hasattr(item, 'name') else "Unknown",
-                    "is_folder": is_folder,
-                    "is_device": hasattr(item, 'is_device') and item.is_device,
-                    "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
-                    "uri": item.uri if hasattr(item, 'uri') else None,
-                    "children": []
-                }
+            result = {
+                "type": category_type,
+                "depth": depth,
+                "with_counts": with_counts,
+                "categories": categories,
+                "available_categories": available,
+                "total_folders": folder_count[0],
+            }
+            if with_counts:
+                result["approximate"] = budget["approximate"]
 
-                if is_folder and depth >= max_depth:
-                    node["has_more"] = True
-                    return node
-
-                for child in children[:max_children]:
-                    try:
-                        processed = process_item(child, depth + 1)
-                    except Exception as e:
-                        self.log_message("Error processing browser child: {0}".format(str(e)))
-                        continue
-                    if processed:
-                        node["children"].append(processed)
-                if len(children) > max_children:
-                    node["has_more"] = True
-
-                return node
-
-            # Process based on category type and available attributes
-            if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
-                try:
-                    instruments = process_item(app.browser.instruments)
-                    if instruments:
-                        instruments["name"] = "Instruments"  # Ensure consistent naming
-                        result["categories"].append(instruments)
-                except Exception as e:
-                    self.log_message("Error processing instruments: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "sounds") and hasattr(app.browser, 'sounds'):
-                try:
-                    sounds = process_item(app.browser.sounds)
-                    if sounds:
-                        sounds["name"] = "Sounds"  # Ensure consistent naming
-                        result["categories"].append(sounds)
-                except Exception as e:
-                    self.log_message("Error processing sounds: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "drums") and hasattr(app.browser, 'drums'):
-                try:
-                    drums = process_item(app.browser.drums)
-                    if drums:
-                        drums["name"] = "Drums"  # Ensure consistent naming
-                        result["categories"].append(drums)
-                except Exception as e:
-                    self.log_message("Error processing drums: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "audio_effects") and hasattr(app.browser, 'audio_effects'):
-                try:
-                    audio_effects = process_item(app.browser.audio_effects)
-                    if audio_effects:
-                        audio_effects["name"] = "Audio Effects"  # Ensure consistent naming
-                        result["categories"].append(audio_effects)
-                except Exception as e:
-                    self.log_message("Error processing audio_effects: {0}".format(str(e)))
-            
-            if (category_type == "all" or category_type == "midi_effects") and hasattr(app.browser, 'midi_effects'):
-                try:
-                    midi_effects = process_item(app.browser.midi_effects)
-                    if midi_effects:
-                        midi_effects["name"] = "MIDI Effects"
-                        result["categories"].append(midi_effects)
-                except Exception as e:
-                    self.log_message("Error processing midi_effects: {0}".format(str(e)))
-            
-            # Try to process other potentially available categories
-            for attr in browser_attrs:
-                if attr not in ['instruments', 'sounds', 'drums', 'audio_effects', 'midi_effects'] and \
-                   (category_type == "all" or category_type == attr):
-                    try:
-                        item = getattr(app.browser, attr)
-                        if hasattr(item, 'children') or hasattr(item, 'name'):
-                            category = process_item(item)
-                            if category:
-                                category["name"] = attr.capitalize()
-                                result["categories"].append(category)
-                    except Exception as e:
-                        self.log_message("Error processing {0}: {1}".format(attr, str(e)))
-            
-            # The MCP server reports this back to the caller; without it the
-            # header always claimed zero folders.
-            result["total_folders"] = folder_count[0]
-
-            self.log_message("Browser tree generated for {0} with {1} root categories".format(
-                category_type, len(result['categories'])))
+            self.log_message("Browser tree generated for {0} (depth {1}) with {2} root categories".format(
+                category_type, depth, len(categories)))
             return result
-            
+
         except Exception as e:
             self._log_command_error("Error getting browser tree", e)
             raise
-    
-    def get_browser_items_at_path(self, path):
+
+    def get_browser_items_at_path(self, path, offset=0, limit=50, compact=True, kind="all"):
         """
-        Get browser items at a specific path.
-        
+        Get one page of the items in a browser folder.
+
         Args:
             path: Path in the format "category/folder/subfolder"
                  where category is one of: instruments, sounds, drums, audio_effects, midi_effects
                  or any other available browser category
-                 
+            offset: Position of the first item on the page, counted after kind filtering
+            limit: Items per page, 1-200
+            compact: True for {name, type} items (type is folder, device, preset or sample;
+                folders, and devices that hold presets, carry item_count). False for the
+                full shape, with uri
+            kind: 'all', or folder, device, preset, sample. Filters before paging
+
         Returns:
-            Dictionary with items at the specified path
+            Dictionary with the page of items at the specified path
         """
         try:
+            offset = self._browser_whole(offset, 0, 10 ** 9, "offset")
+            limit = self._browser_whole(limit, 1, 200, "limit")
+            if kind not in self.BROWSER_KINDS:
+                raise ValueError("kind must be one of %s" % ", ".join(self.BROWSER_KINDS))
+            compact = bool(compact)
+
             # Access the application's browser instance instead of creating a new one
             app = self.application()
             if not app:
                 raise RuntimeError("Could not access Live application")
-                
+
             # Check if browser is available
             if not hasattr(app, 'browser') or app.browser is None:
                 raise RuntimeError("Browser is not available in the Live application")
-            
+
             # Log available browser attributes to help diagnose issues
             browser_attrs = [attr for attr in dir(app.browser) if not attr.startswith('_')]
             self.log_message("Available browser attributes: {0}".format(browser_attrs))
-                
+
             # Parse the path
             path_parts = path.split("/")
             if not path_parts:
                 raise ValueError("Invalid path")
-            
+
             # Determine the root category
             root_category = path_parts[0].lower()
             current_item = None
-            
+
             # Check standard categories first
             if root_category == "instruments" and hasattr(app.browser, 'instruments'):
                 current_item = app.browser.instruments
@@ -9111,7 +9155,7 @@ class AbletonMCP(ControlSurface):
                             break
                         except Exception as e:
                             self.log_message("Error accessing browser attribute {0}: {1}".format(attr, str(e)))
-                
+
                 if not found:
                     # If we still haven't found the category, return available categories
                     return {
@@ -9120,60 +9164,81 @@ class AbletonMCP(ControlSurface):
                         "available_categories": browser_attrs,
                         "items": []
                     }
-            
+
             # Navigate through the path
             for i in range(1, len(path_parts)):
                 part = path_parts[i]
                 if not part:  # Skip empty parts
                     continue
-                
+
                 if not hasattr(current_item, 'children'):
                     return {
                         "path": path,
                         "error": "Item at '{0}' has no children".format('/'.join(path_parts[:i])),
                         "items": []
                     }
-                
+
                 found = False
                 for child in current_item.children:
                     if hasattr(child, 'name') and child.name.lower() == part.lower():
                         current_item = child
                         found = True
                         break
-                
+
                 if not found:
                     return {
                         "path": path,
                         "error": "Path part '{0}' not found".format(part),
                         "items": []
                     }
-            
-            # Get items at the current path
+
+            # Classify every child once, then filter by kind and cut the page
+            children = self._browser_children(current_item)
+            listed = []
+            for child in children:
+                child_children = self._browser_children(child)
+                listed.append((child, child_children, self._browser_kind(child, child_children)))
+            matching = [entry for entry in listed if kind == "all" or entry[2] == kind]
+            page = matching[offset:offset + limit]
+
+            budget = {"deadline": time.time() + self.BROWSER_COUNT_SECONDS, "approximate": False}
             items = []
-            if hasattr(current_item, 'children'):
-                for child in current_item.children:
+            for child, child_children, child_kind in page:
+                name = getattr(child, "name", None) or "Unknown"
+                if compact:
+                    item_info = {"name": name, "type": child_kind}
+                    if child_children:
+                        item_info["item_count"] = self._browser_count_below(child, budget)
+                else:
                     item_info = {
-                        "name": child.name if hasattr(child, 'name') else "Unknown",
-                        "is_folder": hasattr(child, 'children') and bool(child.children),
-                        "is_device": hasattr(child, 'is_device') and child.is_device,
-                        "is_loadable": hasattr(child, 'is_loadable') and child.is_loadable,
-                        "uri": child.uri if hasattr(child, 'uri') else None
+                        "name": name,
+                        "is_folder": bool(child_children),
+                        "is_device": bool(getattr(child, "is_device", False)),
+                        "is_loadable": bool(getattr(child, "is_loadable", False)),
+                        "uri": getattr(child, "uri", None)
                     }
-                    items.append(item_info)
-            
+                items.append(item_info)
+
             result = {
                 "path": path,
                 "name": current_item.name if hasattr(current_item, 'name') else "Unknown",
                 "uri": current_item.uri if hasattr(current_item, 'uri') else None,
-                "is_folder": hasattr(current_item, 'children') and bool(current_item.children),
-                "is_device": hasattr(current_item, 'is_device') and current_item.is_device,
-                "is_loadable": hasattr(current_item, 'is_loadable') and current_item.is_loadable,
+                "is_folder": bool(children),
+                "is_device": hasattr(current_item, 'is_device') and bool(current_item.is_device),
+                "is_loadable": hasattr(current_item, 'is_loadable') and bool(current_item.is_loadable),
+                "total": len(matching),
+                "offset": offset,
+                "limit": limit,
                 "items": items
             }
-            
-            self.log_message("Retrieved {0} items at path: {1}".format(len(items), path))
+            if offset + limit < len(matching):
+                result["next_offset"] = offset + limit
+            if compact and budget["approximate"]:
+                result["approximate"] = True
+
+            self.log_message("Retrieved {0} of {1} items at path: {2}".format(len(items), len(matching), path))
             return result
-            
+
         except Exception as e:
             self._log_command_error("Error getting browser items at path", e)
             raise

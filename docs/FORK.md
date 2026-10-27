@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.21**, **134 MCP tools** (upstream: 37), 1254 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.22**, **134 MCP tools** (upstream: 37), 1296 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -140,6 +140,11 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.21 (run on Push 3 standalone, Live 12.4.6, 2026-10-26) | What | Notes |
 |---|---|---|
 | Start and end a take | `record_into_slot` (an armed track into one EMPTY Session slot, optional `length_bars`), `start_arrangement_record` (every armed track, optional `start_time` / `end_time`), `stop_recording` (Arrangement, Session and slot takes; optional `stop_transport`) | until now the tools could arm, route and monitor a track but never press record. Both starts preview by default (inputs, monitoring, launch quantization, the Arrangement clips a take records over, warnings for No Input, monitoring "in", Session playback and a loop that ends before `end_time`) and need `confirm=true`. Measured: `ClipSlot.fire(record_length=beats)` is accepted and the take stops at exactly that length, then loops (a plain fire is the fallback for a Live without the keyword); `Song.record_mode` plus `start_playing()`; the `end_time` auto-stop is polled once a tick (a 16-24 take ended at 24.03). A mic on Ext. In 1 was recorded both ways |
+
+| Added in 1.10.22 (NOT yet run on Push 3; mocked Live Object Model only) | What | Notes |
+|---|---|---|
+| Browser overview | `get_browser_tree(category_type, depth, with_counts)`: 11 roots (the old 8 plus samples, clips, current_project; category names are an enum in the tool schemas), 1-3 levels, the loadable items below each folder (`item_count`), 50 children listed per folder with `total_children` and `truncated` | counts share a 5 second budget and are `approximate` when it runs out. Replaces the one-level, 64-child, five-root view |
+| Browser paging | `get_browser_items_at_path(path, offset, limit, compact, kind)`: `total`, `offset`, `limit`, `next_offset`; compact items are `{name, type}` (folder, device, preset, sample) with `item_count` on folders; `compact=false` keeps the uri | `kind` filters before paging. `load_drum_kit` asks for 200 full items so it still finds every kit |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
