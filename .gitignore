@@ -66,6 +66,8 @@ MANIFEST.in
 
 # Export output — contains collected user session data
 *.jsonl
+# ...but music eval replies are model output, kept as the evidence behind the reports
+!evals/music/results/*/results.jsonl
 exports/
 
 local_tests/
