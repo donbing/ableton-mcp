@@ -3461,6 +3461,137 @@ def search_browser_items(
         return f"Error searching the browser: {str(e)}"
 
 
+# (browser category, item name) -> uri, or None when Live's browser does not list the item
+_browser_uris: Dict[tuple, Optional[str]] = {}
+
+
+def _browser_uri(name: str, category: str) -> Optional[str]:
+    """The browser uri of the item called exactly `name` (e.g. "Music Box.adg"), or None.
+
+    The tag files describe the whole library, but an edition like Live Intro hides
+    presets for devices it lacks; an item its browser does not list cannot be loaded.
+    """
+    key = (category, name)
+    if key not in _browser_uris:
+        found = get_ableton_connection().send_command("search_browser_items", {
+            "query": os.path.splitext(name)[0], "category": category, "max_results": 20,
+            "loadable_only": True, "max_seconds": 3})
+        _browser_uris[key] = next((r.get("uri") for r in found.get("results", [])
+                                   if r.get("name") == name), None)
+    return _browser_uris[key]
+
+
+def _tagged_item_uri(item: dict) -> Optional[str]:
+    """_browser_uri for a tagged item; a preset of a device the browser lacks (Wavetable
+    on Live Intro) is answered from the device's own lookup, without searching for it."""
+    from . import sound_tags
+    category = sound_tags.browser_category(item)
+    device = sound_tags.device_folder(item)
+    if device and _browser_uri(device, category) is None:
+        return None
+    return _browser_uri(item["name"], category)
+
+
+@mcp.tool()
+@telemetry_tool("list_sound_tags")
+def list_sound_tags(ctx: Context, prefix: str = "", user_prompt: str = "") -> str:
+    """
+    The tags Live 12's browser puts on sounds, presets and samples, with how many
+    items carry each: Character|Soft, Character|Bright, Sounds|Pad, Sounds|Strings|Cello,
+    Type|One Shot, Drums|Kick... Live's API cannot see them; they are read from the
+    libraries' tag files on disk. Use the names with search_sounds_by_tags.
+
+    Parameters:
+    - prefix: Only tags starting with this, e.g. "Character" or "Sounds|Piano" ("" = all)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    from . import sound_tags
+    try:
+        items = sound_tags.load_items()
+        if not items:
+            return json.dumps({"error": "no tag files found", "roots": [str(r) for r in sound_tags.default_roots()],
+                               "hint": "set ABLETON_LIBRARY_ROOTS to the folder holding Live's libraries"})
+        return json.dumps({"items_tagged": len(items), "tags": sound_tags.vocabulary(items, prefix)}, indent=1)
+    except Exception as e:
+        logger.error(f"Error listing sound tags: {str(e)}")
+        return f"Error listing sound tags: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("search_sounds_by_tags")
+def search_sounds_by_tags(
+    ctx: Context,
+    tags: List[str],
+    query: str = "",
+    kind: Literal["all", "presets", "samples", "clips"] = "presets",
+    max_results: int = 20,
+    available_only: bool = True,
+    max_seconds: float = 15.0,
+    user_prompt: str = "",
+) -> str:
+    """
+    Find sounds by what they are, not their name, using Live 12's browser tags:
+    ["soft", "piano"], ["evolving", "pad"], ["Sounds|Strings", "Character|Acoustic"]. An item
+    must carry every tag. A term matches a whole tag (Character|Soft), one part of it
+    (soft), its start (Sounds|Strings) or its end (Strings|Cello). See
+    list_sound_tags for the vocabulary.
+
+    The tag files describe the whole Core Library, but Live Intro and Lite hide what
+    their devices cannot play. So each result is looked up in Live's browser and gets
+    the uri load_instrument_or_effect takes; with available_only (the default) items
+    the browser does not list are left out. Lookups are remembered, so a repeat
+    search is fast; the first can take several seconds. truncated is true when
+    max_seconds ran out before max_results were found.
+
+    Parameters:
+    - tags: Tag terms that must all match
+    - query: Optional words that must appear in the file's path
+    - kind: "presets" (default: .adg, .adv, .amxd), "samples", "clips" or "all"
+    - max_results: 1-50 (default 20)
+    - available_only: Only items Live's browser lists (default true); false also
+      returns the rest with uri null, and still answers when Live cannot be reached
+    - max_seconds: Time budget for the browser lookups, 1-60 (default 15)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    from . import sound_tags
+    import time as _time
+    try:
+        items = sound_tags.load_items()
+        if not items:
+            return json.dumps({"error": "no tag files found", "roots": [str(r) for r in sound_tags.default_roots()],
+                               "hint": "set ABLETON_LIBRARY_ROOTS to the folder holding Live's libraries"})
+        hits = sound_tags.search(items, tags, query, kind)
+        limit = max(1, min(50, max_results))
+        budget = max(1.0, min(60.0, max_seconds))
+        reply = {"tags": tags, "query": query, "kind": kind, "matching_tags": len(hits)}
+        results, unavailable, checked = [], 0, 0
+        started = _time.time()
+        for item in hits:
+            if len(results) >= limit or _time.time() - started > budget:
+                break
+            item["uri"] = None
+            if "browser_error" not in reply:
+                try:
+                    item["uri"] = _tagged_item_uri(item)
+                except Exception as e:
+                    if available_only:
+                        return f"Error searching sounds by tag: could not ask Live's browser: {e}"
+                    reply["browser_error"] = f"could not ask Live's browser, uris are null: {e}"
+            checked += 1
+            if item["uri"] is None:
+                unavailable += 1
+                if available_only:
+                    continue
+            results.append(item)
+        reply.update({"checked": checked, "not_in_browser": unavailable, "count": len(results),
+                      "truncated": checked < len(hits) and len(results) < limit,
+                      "results": results})
+        return json.dumps(reply, indent=1)
+    except Exception as e:
+        logger.error(f"Error searching sounds by tag: {str(e)}")
+        return f"Error searching sounds by tag: {str(e)}"
+
+
 @mcp.tool()
 @telemetry_tool("get_live_status")
 def get_live_status(ctx: Context, user_prompt: str = "") -> str:

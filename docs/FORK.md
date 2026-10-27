@@ -76,6 +76,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.11 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
 | Browser search | `search_browser_items(query, category, max_results, loadable_only, max_seconds)`: items whose name (or folders below the category root) contain every word, with the uri `load_instrument_or_effect` takes | idea from upstream #97 (vanjaoljaca). Breadth first with a time budget; `truncated` says when to narrow it. On the real browser: about 300 to 2500 items a second. |
+| Sound tags | `list_sound_tags(prefix)`, `search_sounds_by_tags(tags, query, kind, max_results, available_only, max_seconds)`: Live 12's browser tags (Character\|Soft, Sounds\|Pad, Type\|One Shot...), read by the server from the libraries' `Ableton Folder Info/*.xmp` files, since Live's API has no tags | Each hit is looked up in Live's browser for its uri, and what the edition hides (Suite presets on Intro) is left out; a device the browser lacks rules out its presets in one lookup. Libraries: `/data/Music/Ableton`, `~/Music/Ableton`, `~/Documents/Ableton`, or `ABLETON_LIBRARY_ROOTS`. On a Push 3 (Intro): 7,000 tagged Core Library items; 2 to 4 s for a first search, under 0.1 s repeated. |
 
 | Changed in 1.10.12 (run on a real Live 12 Lite, 2026-10-24) | What | Notes |
 |---|---|---|
