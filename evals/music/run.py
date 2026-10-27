@@ -52,6 +52,24 @@ def ask(prompt, system, model, effort, workdir, retries=2):
             time.sleep(5 * (attempt + 1))
 
 
+def regrade(run):
+    """Grade saved replies again with the current graders, so a grader fix needs no new calls."""
+    bank = {i["id"]: i for i in items.all_items()}
+    path = os.path.join(run, "results.jsonl")
+    with open(path) as f:
+        rows = [json.loads(line) for line in f]
+    changed = 0
+    for row in rows:
+        if row["id"] in bank and row["reply"]:
+            graded = graders.grade(bank[row["id"]], row["reply"])
+            changed += graded["passed"] != row["passed"]
+            row.update(graded)
+    with open(path, "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in rows)
+    print("re-graded %d replies in %s, %d changed verdict" % (len(rows), run, changed))
+    return run
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--condition", default="baseline", help="a conditions/<name>.md file (default baseline)")
@@ -62,7 +80,10 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=None, help="only the first N items (smoke test)")
     p.add_argument("--jobs", type=int, default=8)
     p.add_argument("--out", default=None)
+    p.add_argument("--regrade", metavar="RUN", help="re-grade a finished run's saved replies (no calls)")
     args = p.parse_args(argv)
+    if args.regrade:
+        return regrade(args.regrade)
 
     bank = [i for i in items.all_items() if not args.category or i["category"] in args.category][:args.limit]
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

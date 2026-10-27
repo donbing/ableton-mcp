@@ -252,14 +252,18 @@ def _hits(notes, kinds, bar):
 
 
 def drums(params, answer):
-    """Genre-defining placements, checked in every bar. Positions are beats from the bar start (0 = beat 1)."""
+    """Genre-defining placements. Positions are beats from the bar start (0 = beat 1).
+
+    Every rule must hold in bar 1, the main pattern; rules marked every_bar (the backbeat)
+    in every bar. Later bars may otherwise vary, as a drummer's turnaround or fill does.
+    """
     notes = _note_list(answer)
     if notes is None:
         return _unreadable("no valid 'notes' list")
     checks = {"readable": True, "valid_notes": _valid(notes)}
     for rule in params["rules"]:
         kinds, ok = rule["kinds"], True
-        for bar in range(params["bars"]):
+        for bar in range(params["bars"] if rule.get("every_bar") else 1):
             hits = set(_hits(notes, kinds, bar))
             if "at" in rule and not set(rule["at"]) <= hits:
                 ok = False
