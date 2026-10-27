@@ -45,6 +45,29 @@ The rule we use: **a skill is worth adding for a category when baseline misses t
 
 `conditions/reference-docs.md` is the off-the-shelf comparison: the seven theory references from [tubone24/midi-mcp-server](https://github.com/tubone24/midi-mcp-server), used unchanged under its MIT licence. Note that it describes durations in its own string format ("d4", "T8"), not Live's beats. That is a realistic hazard of borrowing reference material.
 
+`conditions/glincker-groove-builder.md` is a drum skill from [glincker/ableton-skills](https://github.com/glincker/ableton-skills) (MIT), used unchanged. Its trap template is labelled "half-time feel" but puts the snare on beats 2 and 4. Opus ignored that and put the snare on beat 3 in all three trials, so the drums score didn't change. Run it on a smaller model before assuming the same holds there.
+
+## Related work (surveyed 2026-10)
+
+**Benchmarks.** These test music knowledge in the abstract, not in a DAW:
+- [MusicTheoryBench](https://ar5iv.labs.arxiv.org/html/2406.15885) (from ChatMusician; 367 items designed by people, with knowledge and reasoning splits). It's on Hugging Face (`m-a-p/MusicTheoryBench`) and would make a good harder tier. This environment's network policy blocks huggingface.co.
+- [ZIQI-Eval](https://aclanthology.org/2024.findings-acl.194.pdf) (14k mostly factual questions), [ABC-Eval](https://arxiv.org/html/2509.23350) (ABC notation), [CMI-Bench](https://arxiv.org/pdf/2506.12285), [CSyMR](https://arxiv.org/pdf/2601.11556) (score reasoning, where tool-grounded agents win), [LilyBench](https://arxiv.org/html/2606.08722) (LilyPond generation) and [Libretto](https://arxiv.org/pdf/2606.22708) (musical structure for agents).
+
+**Evals of driving Live.** [Producer Pal](https://github.com/adamjmurray/producer-pal) (GPL-3.0, so we can read it but not copy its code) has the most mature suite: about 100 scenarios against a real Live set, deterministic checks, and a log of findings. Its strong-model runs pass 87-91%, so the failures are in tool use, not theory. Lessons worth taking from it:
+- Grade the end state, not the route the model took.
+- A run that never reached the model is a discard, not a failure.
+- Record the commit with every result.
+- A skill's only example gets copied line for line, even when the user asked for something else.
+- Check that each skill fragment actually reaches the model, before running the full suite.
+
+**Skills.** Most of these are written for other servers' tool names and would need adapting:
+- [PerIPan/music-workflow-skills](https://github.com/PerIPan/music-workflow-skills) (MIT) targets the upstream AbletonMCP. 8 of the tool names its main skill uses still exist here; about a dozen don't.
+- [glincker/ableton-skills](https://github.com/glincker/ableton-skills) (MIT, 12 workflow skills for mixing, sidechain, mastering prep and arrangement).
+- [Korben00/ableton-producer-skills](https://github.com/Korben00/ableton-producer-skills) (MIT, 14, built on the Extension SDK).
+- [valentijnh/livebridge-ableton-mcp](https://github.com/valentijnh/livebridge-ableton-mcp) (MIT, one 268-line skill).
+- [LevyBytes/AI-SKILL-ableton-live](https://github.com/LevyBytes/AI-SKILL-ableton-live) (Apache-2.0, reference material).
+- [bitwize-music-studio/claude-ai-music-skills](https://github.com/bitwize-music-studio/claude-ai-music-skills) (CC0, 53 skills, mostly songwriting and Suno).
+
 ## Credits
 
 The topics follow the references in [tubone24/midi-mcp-server](https://github.com/tubone24/midi-mcp-server) and the code-checked approach of [voho/midi-composer-mcp](https://github.com/voho/midi-composer-mcp) and [kennethreitz/pytheory-skill](https://github.com/kennethreitz/pytheory-skill), all MIT-licensed. No code was copied from them. The answer keys are our own and are checked against [music21](https://github.com/cuthbertLab/music21).
