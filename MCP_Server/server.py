@@ -127,6 +127,7 @@ class AbletonConnection:
             "move_device",
             "duplicate_device",
             "set_song_scale",
+            "set_clip_scale",
             "set_scene_tempo",
             "set_groove",
             "set_clip_groove",
@@ -619,6 +620,14 @@ def get_clip_notes(
             denominator = int(info.get("signature_denominator", 4))
             header = ["# %s: %s" % (key, value) for key, value in result.items() if key not in ("notes", "note_count")]
             header.append("# %d notes, positions in %d/%d" % (len(result["notes"]), numerator, denominator))
+            try:
+                scale = ableton.send_command(
+                    "get_clip_info", _clip_ref(track_index, clip_index, clip_start_time)).get("scale")
+            except Exception:
+                scale = None
+            if scale:
+                header.append("# clip scale: %s %s (%s)" % (
+                    scale["root_name"], scale["scale_name"], " ".join(scale["scale_notes"])))
             return "\n".join(header + [format_notes(result["notes"], numerator, denominator)])
         return json.dumps(result, indent=2)
     except Exception as e:
@@ -639,8 +648,9 @@ def get_clip_info(
     """
     Read the facts about one Session clip: name, length (beats), looping,
     loop_start / loop_end and start_marker / end_marker (beats), is_playing,
-    muted, color_index, and for MIDI clips the note count. Fields Live does not
-    report are null. Read-only.
+    muted, color_index, and for MIDI clips the note count and the clip's own
+    scale (root, scale name, scale mode, intervals, notes; Live 12.4.15+, set it
+    with set_clip_scale). Fields Live does not report are null. Read-only.
 
     Parameters:
     - track_index: Track that owns the clip
@@ -1085,9 +1095,22 @@ def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str
         return f"Error creating audio clip: {str(e)}"
 
 
-def _notes_from_notation(ableton, notes, notation):
-    """The notes to send: the list as given, or the notation parsed in the Set's time signature.
-    Returns (notes, error message)."""
+def _notation_scale(ableton, clip_ref):
+    """The Scale that ^degrees are read in: the clip's own (Live 12.4.15+), else the Set's."""
+    from .notation import Scale
+    try:
+        info = ableton.send_command("get_clip_info", dict(clip_ref))
+        scale = info.get("scale") if isinstance(info, dict) else None
+    except Exception:
+        scale = None
+    if not scale:
+        scale = ableton.send_command("get_song_scale", {})
+    return Scale(scale["root_note"], scale["scale_intervals"], scale.get("scale_name", ""))
+
+
+def _notes_from_notation(ableton, notes, notation, clip_ref=None):
+    """The notes to send: the list as given, or the notation parsed in the Set's time signature
+    (and, for ^degrees, the clip's scale). Returns (notes, error message)."""
     if notation is None:
         if notes is None:
             return None, "Error: give notes (a list) or notation (text)."
@@ -1096,9 +1119,10 @@ def _notes_from_notation(ableton, notes, notation):
         return None, "Error: give notes or notation, not both."
     from .notation import NotationError, parse
     info = ableton.send_command("get_session_info", {})
+    scale = _notation_scale(ableton, clip_ref or {}) if "^" in notation else None
     try:
         return parse(notation, int(info.get("signature_numerator", 4)),
-                     int(info.get("signature_denominator", 4))), None
+                     int(info.get("signature_denominator", 4)), scale), None
     except NotationError as e:
         return None, f"Error in the notation, nothing was written: {e}"
 
@@ -1138,14 +1162,16 @@ def add_notes_to_clip(
       naming (C3 = 60, C1 = 36) or MIDI numbers; lengths 1/4, 1/8. (dotted), 1/8t (triplet) or beats
       (0.5b); events default to 1/4. v80-100 is Live's random velocity range, p0.5 a probability, m mutes,
       *N:K repeats N times K bars apart, # starts a comment. Bars follow the Set's time signature.
+      Scale degrees in the clip's own scale (set_clip_scale; else the Set's): ^1 root in octave 3, ^5,
+      ^8 an octave up, ^b3 / ^#4 a semitone off, ^1:1 the root in octave 1 ("1.1 ^1:1 ^3 ^5 1/1").
       A mistake anywhere means nothing is written, and the reply names every bad line.
     """
     try:
         ableton = get_ableton_connection()
-        notes, error = _notes_from_notation(ableton, notes, notation)
+        params = _clip_ref(track_index, clip_index, clip_start_time)
+        notes, error = _notes_from_notation(ableton, notes, notation, params)
         if error:
             return error
-        params = _clip_ref(track_index, clip_index, clip_start_time)
         params["notes"] = notes
         result = ableton.send_command("add_notes_to_clip", params)
         added = result.get("note_count", len(notes)) if isinstance(result, dict) else len(notes)
@@ -3351,7 +3377,7 @@ def replace_clip_notes(
     - expected_clip_name: The clip's exact current name ("" for an unnamed clip)
     - notes: The new notes
     - notation: The new notes as text instead, as in add_notes_to_clip (e.g. "1.1 C3 E3 G3 1/1 v90",
-      "C1 x...x...x...x... *4")
+      "C1 x...x...x...x... *4", or scale degrees in the clip's scale: "1.1 ^1 ^3 ^5 1/1")
     - confirm: false = preview only (default), true = replace
     - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
       Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
@@ -3361,10 +3387,10 @@ def replace_clip_notes(
         if expected_clip_name is None:
             return ("Error: expected_clip_name is required (the clip's exact current name; "
                     "\"\" for an unnamed clip).")
-        notes, error = _notes_from_notation(get_ableton_connection(), notes, notation)
+        params = _clip_ref(track_index, clip_index, clip_start_time)
+        notes, error = _notes_from_notation(get_ableton_connection(), notes, notation, params)
         if error:
             return error
-        params = _clip_ref(track_index, clip_index, clip_start_time)
         params.update({"expected_clip_name": expected_clip_name, "notes": notes, "confirm": confirm})
         out = _json_call("replace_clip_notes", params, "replacing clip notes")
         return out if confirm else (
@@ -3876,6 +3902,50 @@ def set_song_scale(
     except Exception as e:
         logger.error(f"Error in set_song_scale: {str(e)}")
         return f"Error in set_song_scale: {str(e)}"
+
+
+@mcp.tool()
+@telemetry_tool("set_clip_scale")
+@trajectory_tool("set_clip_scale")
+def set_clip_scale(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    root_note: Optional[str] = None,
+    scale_name: Optional[str] = None,
+    scale_mode: Optional[bool] = None,
+    clip_start_time: Optional[float] = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Set one MIDI clip's own key and scale (Live 12.4.15+), so a clip can be in a different key from the
+    set. Same values as set_song_scale: root_note a note name ("A", "F#", "Bb") or 0-11 as text, scale_name
+    as Live shows it (Minor, Dorian, Minor Pentatonic, ...; an unknown name is refused), scale_mode turns on
+    the clip's in-key highlighting and scale-degree editing. It does not move any notes. Notation in
+    add_notes_to_clip / replace_clip_notes can then write scale degrees (^1 ^3 ^5) in this scale. Returns
+    the scale before and after; get_clip_info reads it.
+
+    Parameters:
+    - track_index: Track that owns the clip
+    - clip_index: Session clip slot index
+    - root_note: Key, as a name or 0-11 (0 = C)
+    - scale_name: Scale name
+    - scale_mode: true/false: the clip's in-key highlighting
+    - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
+      Session slot (clip_index is then ignored)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        params = _clip_ref(track_index, clip_index, clip_start_time)
+        if root_note is not None:
+            params["root_note"] = int(root_note) if str(root_note).strip().isdigit() else root_note
+        for key, value in (("scale_name", scale_name), ("scale_mode", scale_mode)):
+            if value is not None:
+                params[key] = value
+        return _json_call("set_clip_scale", params, "setting the clip scale")
+    except Exception as e:
+        logger.error(f"Error in set_clip_scale: {str(e)}")
+        return f"Error in set_clip_scale: {str(e)}"
 
 
 @mcp.tool()

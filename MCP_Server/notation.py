@@ -16,7 +16,9 @@ Every line stands alone: nothing set on one line carries to the next. Two kinds 
 
 Positions are Live's own bar.beat.sixteenth, counted from 1; a beat is the time signature's
 denominator (an eighth in 6/8), as Live shows it. Pitches are names in Live's octave numbering
-(C3 = MIDI 60, C1 = 36, the first Drum Rack pad) or MIDI numbers. LENGTH and STEP are note values
+(C3 = MIDI 60, C1 = 36, the first Drum Rack pad), MIDI numbers, or scale degrees in the clip's scale:
+^1 is the root in octave 3, ^5 the fifth degree, ^8 the root an octave up, ^b3 / ^#4 a semitone off the
+scale, ^1:1 the root in octave 1 (so in A minor, ^1:1 ^3 ^5 is A1 C4 E4). LENGTH and STEP are note values
 (1/4, 1/8. dotted, 1/8t triplet, 3/4) or beats (0.5b); events default to 1/4, steps to 1/16.
 rN sets the release velocity, m mutes. vA-B is Live's own random velocity: velocity A with a deviation of B-A (B below A deviates down). *N repeats a line N
 times, one bar apart (events) or back to back (steps); *N:K spaces the repeats K bars apart.
@@ -29,6 +31,7 @@ NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 EPS = 1e-6
 
 _NOTE = re.compile(r"^([A-G])(#|b)?(-?\d)$")
+_DEGREE = re.compile(r"^\^(#|b)?(\d+)(?::(-?\d))?$")
 _POSITION = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:\+(\S+))?$")
 _VALUE = re.compile(r"^(\d+)/(\d+)(\.|t)?$")
 _BEATS = re.compile(r"^(\d+(?:\.\d+)?|\.\d+)b$")
@@ -62,6 +65,41 @@ def pitch_of(token):
     if not 0 <= value <= 127:
         raise NotationError("pitch %s is outside MIDI 0-127" % token)
     return value
+
+
+class Scale(object):
+    """A key for scale degrees: root 0-11 (0 = C) and the scale's intervals from the root, as Live
+    reports them (Minor -> 0 2 3 5 7 8 10)."""
+    def __init__(self, root_note, intervals, name=""):
+        self.root = int(root_note) % 12
+        self.intervals = sorted(int(i) % 12 for i in intervals) or [0]
+        self.name = name
+
+    def pitch(self, token):
+        """'^5' -> the fifth degree in octave 3; None if the token is not a degree."""
+        m = _DEGREE.match(token)
+        if not m:
+            return None
+        degree = int(m.group(2))
+        if degree < 1:
+            raise NotationError("%s: degrees count from ^1 (the root)" % token)
+        octave = int(m.group(3)) if m.group(3) is not None else 3
+        step, up = (degree - 1) % len(self.intervals), (degree - 1) // len(self.intervals)
+        value = ((octave + 2) * 12 + self.root + self.intervals[step] + 12 * up
+                 + {"#": 1, "b": -1, None: 0}[m.group(1)])
+        if not 0 <= value <= 127:
+            raise NotationError("%s is outside MIDI 0-127" % token)
+        return value
+
+
+def _pitch(token, scale):
+    """A pitch token: a name, a MIDI number or (with a scale) a degree; None if it is none of these."""
+    pitch = pitch_of(token)
+    if pitch is not None or not token.startswith("^"):
+        return pitch
+    if scale is None:
+        raise NotationError("%s is a scale degree, but there is no scale to read it in" % token)
+    return scale.pitch(token)
 
 
 def name_of(pitch):
@@ -195,7 +233,7 @@ def _is_positions(token):
     return all(_POSITION.match(t) for t in token.split(","))
 
 
-def _event_line(tokens, meter, line_no):
+def _event_line(tokens, meter, line_no, scale=None):
     opts, rest = _options(tokens, line_no, ())
     # The position usually comes first, but it cannot be mistaken for anything else, so "36 1.3 1/16"
     # (pitch first, as on a step line) means the same as "1.3 36 1/16".
@@ -205,7 +243,7 @@ def _event_line(tokens, meter, line_no):
     positions = [meter.position(t) for t in rest.pop(where[0]).split(",")]
     pitches, length = [], None
     for token in rest:
-        pitch = pitch_of(token)
+        pitch = _pitch(token, scale)
         if pitch is not None:
             pitches.append(pitch)
             continue
@@ -222,15 +260,15 @@ def _event_line(tokens, meter, line_no):
             for r in range(opts["repeat"]) for pos in positions for p in pitches]
 
 
-def _step_line(tokens, meter, line_no):
+def _step_line(tokens, meter, line_no, scale=None):
     opts, rest = _options(tokens, line_no, ("start",))
     pitches, steps, step = [], "", None
     for token in rest:
         if _PATTERN.match(token):
             steps += token.replace("|", "")
             continue
-        pitch = pitch_of(token)
-        if pitch is not None and not steps:
+        pitch = _pitch(token, scale) if not steps else None
+        if pitch is not None:
             pitches.append(pitch)
             continue
         value = length_of(token)
@@ -254,9 +292,10 @@ def _step_line(tokens, meter, line_no):
     return notes
 
 
-def parse(text, numerator=4, denominator=4):
+def parse(text, numerator=4, denominator=4, scale=None):
     """Text -> note dicts, sorted by time then pitch. All lines are checked; any error raises
-    NotationError naming every bad line, and nothing is returned."""
+    NotationError naming every bad line, and nothing is returned. scale (a Scale) is what ^degrees
+    are read in."""
     meter = Meter(numerator, denominator)
     notes, errors = [], []
     for line_no, raw in enumerate(str(text).splitlines(), 1):
@@ -266,9 +305,9 @@ def parse(text, numerator=4, denominator=4):
         tokens = line.split()
         try:
             if any(_PATTERN.match(t) for t in tokens):
-                notes += _step_line(tokens, meter, line_no)
+                notes += _step_line(tokens, meter, line_no, scale)
             elif any(_is_positions(t) for t in tokens):
-                notes += _event_line(tokens, meter, line_no)
+                notes += _event_line(tokens, meter, line_no, scale)
             else:
                 raise NotationError("line %d: start with a position (1.1) or give a step pattern (C1 x...)"
                                     % line_no)

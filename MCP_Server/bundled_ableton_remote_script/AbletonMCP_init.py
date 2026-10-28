@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.22"
+SCRIPT_VERSION = "1.10.23"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -197,6 +197,7 @@ SCRIPT_CAPABILITIES = [
     "move_device",
     "duplicate_device",
     "set_song_scale",
+    "set_clip_scale",
     "set_scene_tempo",
     "set_groove",
     "set_clip_groove",
@@ -636,6 +637,7 @@ class AbletonMCP(ControlSurface):
                                  "move_device",
                                  "duplicate_device",
                                  "set_song_scale",
+                                 "set_clip_scale",
                                  "set_scene_tempo",
                                  "set_groove",
                                  "set_clip_groove",
@@ -875,6 +877,11 @@ class AbletonMCP(ControlSurface):
                         elif command_type == "set_song_scale":
                             result = self._set_song_scale(
                                 params.get("root_note"), params.get("scale_name"), params.get("scale_mode"))
+                        elif command_type == "set_clip_scale":
+                            result = self._set_clip_scale(
+                                params.get("track_index", 0), params.get("clip_index", 0),
+                                params.get("root_note"), params.get("scale_name"), params.get("scale_mode"),
+                                params.get("clip_start_time"))
                         elif command_type == "set_scene_tempo":
                             result = self._set_scene_tempo(
                                 params.get("scene_index"), params.get("tempo"), params.get("numerator"),
@@ -3472,6 +3479,12 @@ class AbletonMCP(ControlSurface):
             }
             if clip_start_time is None:
                 info.update(self._clip_launch_state(clip))
+            if is_midi and hasattr(clip, "scale_name"):
+                # Live 12.4.15+: a clip has its own key and scale
+                try:
+                    info["scale"] = self._scale_view(clip)
+                except Exception as e:
+                    self.log_message("get_clip_info scale failed: " + str(e))
             if is_midi and info["length"] is not None:
                 try:
                     info["note_count"] = len(self._notes_in_range(
@@ -5927,8 +5940,9 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error duplicating device: " + str(e))
             raise
 
-    def _scale_view(self):
-        song = self._song
+    def _scale_view(self, target=None):
+        """Key and scale of the set, or of one clip (Live 12.4.15 gave clips their own)."""
+        song = self._song if target is None else target
         root = int(song.root_note)
         intervals = [int(i) for i in song.scale_intervals]
         return {"root_note": root, "root_name": self.NOTE_NAMES[root % 12],
@@ -5950,55 +5964,80 @@ class AbletonMCP(ControlSurface):
         shows it ('Major', 'Minor', 'Dorian', 'Minor Pentatonic', 'Harmonic Minor', ...); scale_mode
         switches Live's in-key highlighting."""
         try:
-            if root_note is None and scale_name is None and scale_mode is None:
-                raise ValueError("Give root_note, scale_name and/or scale_mode")
-            before = self._scale_view()
-            if root_note is not None:
-                if isinstance(root_note, bool):
-                    raise TypeError("root_note must be 0-11 or a note name")
-                if isinstance(root_note, str):
-                    key = root_note.strip().upper()
-                    if key in self.FLAT_NAMES:
-                        value = self.FLAT_NAMES[key]
-                    elif key.title() in self.NOTE_NAMES or key in self.NOTE_NAMES:
-                        value = self.NOTE_NAMES.index(key if key in self.NOTE_NAMES else key.title())
-                    else:
-                        raise ValueError("Unknown root note %r (use C, C#, D, Eb, ... or 0-11)" % root_note)
-                else:
-                    value = int(root_note)
-                if not 0 <= value <= 11:
-                    raise ValueError("root_note must be 0-11 (0 = C)")
-                self._song.root_note = value
-            if scale_name is not None:
-                if not isinstance(scale_name, str) or not scale_name.strip():
-                    raise ValueError("scale_name must be a name such as 'Minor' or 'Dorian'")
-                names_hint = ("Names are the ones Live shows: Major, Minor, Dorian, Mixolydian, Lydian, Phrygian, "
-                              "Locrian, Whole Tone, Minor Pentatonic, Major Pentatonic, Harmonic Minor, "
-                              "Melodic Minor, ...")
-                previous_name = before["scale_name"]
-                try:
-                    self._song.scale_name = scale_name
-                except Exception as e:
-                    raise ValueError("Live did not accept the scale %r (%s). %s"
-                                     % (scale_name, str(e).strip()[:80], names_hint))
-                # Live does not raise for an unknown name: it falls back to Major. Read it back.
-                if str(self._song.scale_name).lower() != scale_name.strip().lower():
-                    got = self._song.scale_name
-                    try:
-                        self._song.scale_name = previous_name
-                    except Exception:
-                        pass
-                    raise ValueError("Live does not know a scale called %r (it answered %r); the scale was put "
-                                     "back to %r. %s" % (scale_name, got, previous_name, names_hint))
-            if scale_mode is not None:
-                if not isinstance(scale_mode, bool):
-                    raise TypeError("scale_mode must be true or false")
-                self._song.scale_mode = scale_mode
-            return {"before": {k: before[k] for k in ("root_name", "scale_name", "scale_mode")},
-                    "after": self._scale_view()}
+            return self._apply_scale(None, root_note, scale_name, scale_mode)
         except Exception as e:
             self.log_message("Error setting the song scale: " + str(e))
             raise
+
+    def _set_clip_scale(self, track_index, clip_index, root_note=None, scale_name=None, scale_mode=None,
+                        clip_start_time=None):
+        """Set one MIDI clip's own key and/or scale (Live 12.4.15+), with the same values as
+        _set_song_scale. With scale_mode on, the clip's scale is what Live highlights in its note editor.
+        clip_start_time picks an Arrangement clip instead of a Session slot."""
+        try:
+            track, clip = self._session_clip(track_index, clip_index, midi=True,
+                                             clip_start_time=clip_start_time)
+            if not hasattr(clip, "scale_name"):
+                raise ValueError("This Live has no clip scales (they arrived in Live 12.4.15); "
+                                 "use set_song_scale")
+            result = self._apply_scale(clip, root_note, scale_name, scale_mode)
+            result.update({"track_index": track_index, "clip_index": clip_index, "clip_name": clip.name})
+            if clip_start_time is not None:
+                result["clip_start_time"] = clip_start_time
+            return result
+        except Exception as e:
+            self.log_message("Error setting the clip scale: " + str(e))
+            raise
+
+    def _apply_scale(self, target, root_note, scale_name, scale_mode):
+        """Write root_note / scale_name / scale_mode to the song (target None) or a clip, reading back."""
+        owner = self._song if target is None else target
+        if root_note is None and scale_name is None and scale_mode is None:
+            raise ValueError("Give root_note, scale_name and/or scale_mode")
+        before = self._scale_view(target)
+        if root_note is not None:
+            if isinstance(root_note, bool):
+                raise TypeError("root_note must be 0-11 or a note name")
+            if isinstance(root_note, str):
+                key = root_note.strip().upper()
+                if key in self.FLAT_NAMES:
+                    value = self.FLAT_NAMES[key]
+                elif key.title() in self.NOTE_NAMES or key in self.NOTE_NAMES:
+                    value = self.NOTE_NAMES.index(key if key in self.NOTE_NAMES else key.title())
+                else:
+                    raise ValueError("Unknown root note %r (use C, C#, D, Eb, ... or 0-11)" % root_note)
+            else:
+                value = int(root_note)
+            if not 0 <= value <= 11:
+                raise ValueError("root_note must be 0-11 (0 = C)")
+            owner.root_note = value
+        if scale_name is not None:
+            if not isinstance(scale_name, str) or not scale_name.strip():
+                raise ValueError("scale_name must be a name such as 'Minor' or 'Dorian'")
+            names_hint = ("Names are the ones Live shows: Major, Minor, Dorian, Mixolydian, Lydian, Phrygian, "
+                          "Locrian, Whole Tone, Minor Pentatonic, Major Pentatonic, Harmonic Minor, "
+                          "Melodic Minor, ...")
+            previous_name = before["scale_name"]
+            try:
+                owner.scale_name = scale_name
+            except Exception as e:
+                raise ValueError("Live did not accept the scale %r (%s). %s"
+                                 % (scale_name, str(e).strip()[:80], names_hint))
+            # Live does not raise for an unknown name: it falls back to Major. Read it back.
+            if str(owner.scale_name).lower() != scale_name.strip().lower():
+                got = owner.scale_name
+                try:
+                    owner.scale_name = previous_name
+                except Exception:
+                    pass
+                raise ValueError("Live does not know a scale called %r (it answered %r); the scale was put "
+                                 "back to %r. %s" % (scale_name, got, previous_name, names_hint))
+        if scale_mode is not None:
+            if not isinstance(scale_mode, bool):
+                raise TypeError("scale_mode must be true or false")
+            owner.scale_mode = scale_mode
+        return {"before": {k: before[k] for k in ("root_name", "scale_name", "scale_mode")},
+                "after": self._scale_view(target)}
 
     def _set_scene_tempo(self, scene_index, tempo=None, numerator=None, denominator=None, clear=False,
                          expected_name=None):
