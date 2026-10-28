@@ -19,6 +19,18 @@ AbletonOS). The MCP server and the Remote Script both run on the Push.
 - Sets: `/data/Music/Ableton/Sets/` (the Push autosaves `[Autosave]` copies there)
 - MCP server: uv tool at `/data/uv/tools/ableton-mcp`; Live's command socket is `127.0.0.1:9877` on the Push
 
+## Branches
+
+- `main` on this fork is what the Push runs. Start every branch from the current `main`, deploy it to the Push,
+  then fast-forward `main` to it. Never build on an older `main` or on `upstream`.
+- CI fails a branch that isn't based on the current `main`, lowers `SCRIPT_VERSION`, or lets the bundled Remote
+  Script drift from `AbletonMCP_Remote_Script/__init__.py`.
+- Deploying the server: build the wheel locally (`pip wheel --no-deps -w dist .`), keep the old one in
+  `/data/uv/backups/` as `ableton_mcp-1.4.5-before-<feature>.whl`, copy the new one over
+  `/data/uv/backups/ableton_mcp-1.4.5-py3-none-any.whl`, then on the Push run `/data/uv/uv tool install --force
+  --reinstall --offline --python /usr/bin/python3.10 <wheel>` with `UV_TOOL_DIR=/data/uv/tools
+  UV_TOOL_BIN_DIR=/data/uv/bin UV_CACHE_DIR=/data/uv/cache`.
+
 ## Rules
 
 - Live's API can't save or open a set: ask the user to do it on the Push, and never claim work is saved.
