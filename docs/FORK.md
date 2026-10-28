@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.22**, **134 MCP tools** (upstream: 37), 1296 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.22**, **134 MCP tools** (upstream: 37), 1322 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -146,6 +146,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 |---|---|---|
 | Browser overview | `get_browser_tree(category_type, depth, with_counts)`: 11 roots (the old 8 plus samples, clips, current_project; category names are an enum in the tool schemas), 1-3 levels, the loadable items below each folder (`item_count`), 50 children listed per folder with `total_children` and `truncated` | counts share a 5 second budget and are `approximate` when it runs out. Replaces the one-level, 64-child, five-root view |
 | Browser paging | `get_browser_items_at_path(path, offset, limit, compact, kind)`: `total`, `offset`, `limit`, `next_offset`; compact items are `{name, type}` (folder, device, preset, sample) with `item_count` on folders; `compact=false` keeps the uri | `kind` filters before paging. `load_drum_kit` asks for 200 full items so it still finds every kit |
+
+| Added on the server only (no Remote Script change) | What | Notes |
+|---|---|---|
+| Notes as text | `add_notes_to_clip` and `replace_clip_notes` take `notation` instead of `notes`; `get_clip_notes(format="text")` reads a clip back the same way (`MCP_Server/notation.py`) | events (`1.1 C3 E3 G3 1/1 v90`) and step patterns (`C1 x...x...x...x... *4`), Live's positions and octave numbering, random velocity ranges, probability, release velocity, repeats; every line stands alone; any bad line means nothing is written. Any clip round-trips exactly, except a velocity range that reaches below 0, which is written ending at 0 and sounds the same |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 

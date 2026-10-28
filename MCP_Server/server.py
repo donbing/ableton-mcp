@@ -578,6 +578,7 @@ def get_clip_notes(
     clip_index: int,
     clip_start_time: Optional[float] = None,
     user_prompt: str = "",
+    format: str = "json",
 ) -> str:
     """
     Read all MIDI notes from a clip: a Session clip, or an Arrangement MIDI clip with
@@ -594,10 +595,15 @@ def get_clip_notes(
     - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
       Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    - format: "json" (default) or "text": the notes in the notation add_notes_to_clip takes, a line
+      per chord with the positions where it recurs (a fraction of the tokens; the clip's other fields
+      come as # comment lines)
     """
     try:
         from .script_handshake import require_capability
 
+        if format not in ("json", "text"):
+            return "Error: format must be \"json\" or \"text\"."
         missing = require_capability("get_clip_notes")
         if missing:
             return missing
@@ -606,6 +612,14 @@ def get_clip_notes(
             "get_clip_notes",
             _clip_ref(track_index, clip_index, clip_start_time),
         )
+        if format == "text" and isinstance(result, dict) and isinstance(result.get("notes"), list):
+            from .notation import format_notes
+            info = ableton.send_command("get_session_info", {})
+            numerator = int(info.get("signature_numerator", 4))
+            denominator = int(info.get("signature_denominator", 4))
+            header = ["# %s: %s" % (key, value) for key, value in result.items() if key not in ("notes", "note_count")]
+            header.append("# %d notes, positions in %d/%d" % (len(result["notes"]), numerator, denominator))
+            return "\n".join(header + [format_notes(result["notes"], numerator, denominator)])
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting clip notes: {str(e)}")
@@ -1070,6 +1084,25 @@ def create_audio_clip(ctx: Context, track_index: int, clip_index: int, path: str
         logger.error(f"Error creating audio clip: {str(e)}")
         return f"Error creating audio clip: {str(e)}"
 
+
+def _notes_from_notation(ableton, notes, notation):
+    """The notes to send: the list as given, or the notation parsed in the Set's time signature.
+    Returns (notes, error message)."""
+    if notation is None:
+        if notes is None:
+            return None, "Error: give notes (a list) or notation (text)."
+        return notes, None
+    if notes:
+        return None, "Error: give notes or notation, not both."
+    from .notation import NotationError, parse
+    info = ableton.send_command("get_session_info", {})
+    try:
+        return parse(notation, int(info.get("signature_numerator", 4)),
+                     int(info.get("signature_denominator", 4))), None
+    except NotationError as e:
+        return None, f"Error in the notation, nothing was written: {e}"
+
+
 @mcp.tool()
 @rich_telemetry_tool("add_notes_to_clip", capture_notes=True)
 @trajectory_tool("add_notes_to_clip")
@@ -1077,9 +1110,10 @@ def add_notes_to_clip(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    notes: List[Dict[str, Union[int, float, bool]]],
+    notes: Optional[List[Dict[str, Union[int, float, bool]]]] = None,
     clip_start_time: Optional[float] = None,
-    user_prompt: str = ""
+    user_prompt: str = "",
+    notation: Optional[str] = None,
 ) -> str:
     """
     Add MIDI notes to a clip. The reply says how many notes the clip really holds
@@ -1096,9 +1130,21 @@ def add_notes_to_clip(
     - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
       Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    - notation: Instead of notes, the same notes as text, at a fraction of the tokens. One idea per
+      line; nothing carries from one line to the next. Events: POSITION PITCHES [LENGTH] [vVEL] [pPROB],
+      e.g. "1.1 C3 E3 G3 1/1 v90" (Live's bar.beat.sixteenth, from 1; several positions as 1.1,1.3).
+      Steps: PITCH PATTERN, e.g. "C1 x...x...x...x... *4" (x hit, X accent, o ghost, . rest; 1/16 steps
+      unless a note value is given; *4 repeats it 4 times, @5 starts it at bar 5). Pitches in Live's
+      naming (C3 = 60, C1 = 36) or MIDI numbers; lengths 1/4, 1/8. (dotted), 1/8t (triplet) or beats
+      (0.5b); events default to 1/4. v80-100 is Live's random velocity range, p0.5 a probability, m mutes,
+      *N:K repeats N times K bars apart, # starts a comment. Bars follow the Set's time signature.
+      A mistake anywhere means nothing is written, and the reply names every bad line.
     """
     try:
         ableton = get_ableton_connection()
+        notes, error = _notes_from_notation(ableton, notes, notation)
+        if error:
+            return error
         params = _clip_ref(track_index, clip_index, clip_start_time)
         params["notes"] = notes
         result = ableton.send_command("add_notes_to_clip", params)
@@ -3279,10 +3325,11 @@ def replace_clip_notes(
     track_index: int,
     clip_index: int,
     expected_clip_name: str,
-    notes: List[Dict[str, Union[int, float, bool]]],
+    notes: Optional[List[Dict[str, Union[int, float, bool]]]] = None,
     confirm: bool = False,
     clip_start_time: Optional[float] = None,
     user_prompt: str = "",
+    notation: Optional[str] = None,
 ) -> str:
     """
     Replace ALL the notes of a Session MIDI clip with new ones, in two steps.
@@ -3303,6 +3350,8 @@ def replace_clip_notes(
     - clip_index: The index of the clip slot
     - expected_clip_name: The clip's exact current name ("" for an unnamed clip)
     - notes: The new notes
+    - notation: The new notes as text instead, as in add_notes_to_clip (e.g. "1.1 C3 E3 G3 1/1 v90",
+      "C1 x...x...x...x... *4")
     - confirm: false = preview only (default), true = replace
     - clip_start_time: Optional. The start beat of an ARRANGEMENT MIDI clip to use instead of a
       Session slot (clip_index is then ignored). Read starts with get_arrangement_clips.
@@ -3312,6 +3361,9 @@ def replace_clip_notes(
         if expected_clip_name is None:
             return ("Error: expected_clip_name is required (the clip's exact current name; "
                     "\"\" for an unnamed clip).")
+        notes, error = _notes_from_notation(get_ableton_connection(), notes, notation)
+        if error:
+            return error
         params = _clip_ref(track_index, clip_index, clip_start_time)
         params.update({"expected_clip_name": expected_clip_name, "notes": notes, "confirm": confirm})
         out = _json_call("replace_clip_notes", params, "replacing clip notes")
