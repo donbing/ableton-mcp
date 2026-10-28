@@ -1,0 +1,47 @@
+# main is what the Push 3 runs. Every branch is checked against it.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # the Push runs /usr/bin/python3.10
+          python-version: "3.10"
+      - run: pip install -e . pytest
+      - run: pytest -q
+
+  branch:
+    # a branch must start from the current main and must not lower the Remote Script version
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Based on the current main
+        run: |
+          git merge-base --is-ancestor origin/main HEAD || {
+            echo "::error::This branch is not based on the current main (what the Push runs). Rebase it onto main."
+            exit 1
+          }
+      - name: Remote Script version
+        run: |
+          version() { grep -m1 '^SCRIPT_VERSION = ' | sed 's/.*"\(.*\)".*/\1/'; }
+          ours=$(version < AbletonMCP_Remote_Script/__init__.py)
+          main=$(git show origin/main:AbletonMCP_Remote_Script/__init__.py | version)
+          expected=$(grep -m1 '^EXPECTED_REMOTE_SCRIPT_VERSION = ' MCP_Server/remote_script_install.py | sed 's/.*"\(.*\)".*/\1/')
+          echo "branch $ours, main $main, server expects $expected"
+          lowest=$(printf '%s\n%s\n' "$main" "$ours" | sort -V | head -1)
+          [ "$lowest" = "$main" ] || { echo "::error::SCRIPT_VERSION $ours is lower than main's $main"; exit 1; }
+          [ "$ours" = "$expected" ] || { echo "::error::SCRIPT_VERSION $ours but EXPECTED_REMOTE_SCRIPT_VERSION $expected"; exit 1; }
+          cmp AbletonMCP_Remote_Script/__init__.py MCP_Server/bundled_ableton_remote_script/AbletonMCP_init.py || {
+            echo "::error::the bundled Remote Script differs from AbletonMCP_Remote_Script/__init__.py"
+            exit 1
+          }
