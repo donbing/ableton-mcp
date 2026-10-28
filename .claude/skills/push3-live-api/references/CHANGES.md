@@ -1,9 +1,13 @@
-# Changes from Live 12.3.6 to 12.4.6
+# Changes from Live 12.3.6 to 12.4.15
 
-> Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
+> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
-## Added (12)
+## Added (16)
 
+- `Live.Clip.Clip.root_note`
+- `Live.Clip.Clip.scale_intervals`
+- `Live.Clip.Clip.scale_mode`
+- `Live.Clip.Clip.scale_name`
 - `Live.Envelope.Envelope.create_event()`
 - `Live.Envelope.Envelope.parameter`
 - `Live.Licensing.PythonLicensingBridge.invoke_promotions_callback()`

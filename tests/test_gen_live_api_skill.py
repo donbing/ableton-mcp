@@ -189,3 +189,17 @@ def test_generate_replaces_stale_files(seeds):
     (out / "Gone.md").write_text("stale", encoding="utf-8")
     gen.generate(new, out, PROV)
     assert sorted(p.name for p in out.iterdir()) == ["Clip.md", "INDEX.md"]
+
+
+def test_module_qualified_signatures_are_not_changes():
+    # Live 12.4.15 spells types with their module: `Track.Track`, `(Song.View)arg1`
+    assert gen.same_signature("method create_midi_track( (Song)arg1) -> Track :",
+                              "method create_midi_track( (Song)arg1) -> Track.Track :")
+    assert gen.same_signature("method select_device( (View)arg1, (Device)arg2) -> None :",
+                              "method select_device( (Song.View)arg1, (Device.Device)arg2) -> None :")
+    assert not gen.same_signature("method f( (Clip)arg1) -> int :", "method f( (Clip)arg1) -> bool :")
+
+
+def test_a_bare_boost_signature_is_not_a_doc():
+    assert gen.one_line("None( (Application.ControlDescription)arg1) -> int :\n  C++ signature : ...") == ""
+    assert gen.one_line("Get/Set the global\n  arrangement overdub state.") == "Get/Set the global arrangement overdub state."

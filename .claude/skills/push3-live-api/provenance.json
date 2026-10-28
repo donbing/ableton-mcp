@@ -1,9 +1,9 @@
 {
-  "live_version": "12.4.6",
+  "live_version": "12.4.15",
   "edition": "Intro",
-  "platform": "Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6",
+  "platform": "Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6",
   "capture": "raw",
-  "captured": "2026-10-26",
-  "source": "LiveAPI probe/12.4.6/seed at fa06bfa (local branch probe/12.4.6-push3)",
+  "captured": "2026-10-28",
+  "source": "LiveAPI probe/12.4.15/seed at 673e74d (local branch probe/12.4.15-push3)",
   "baseline": "LiveAPI probe/12.3.6/seed"
 }

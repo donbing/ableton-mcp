@@ -1,6 +1,6 @@
 # ableton-mcp (Push 3 fork)
 
-A personal fork of ableton-mcp aimed at the user's Ableton Push 3 in standalone mode (Live 12.4.6 Intro on
+A personal fork of ableton-mcp aimed at the user's Ableton Push 3 in standalone mode (Live 12.4.15 Intro on
 AbletonOS). The MCP server and the Remote Script both run on the Push.
 
 ## Reaching the Push

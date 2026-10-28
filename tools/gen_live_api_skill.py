@@ -131,7 +131,18 @@ def member_keys(seed):
 
 
 def one_line(doc):
-    return " ".join(str(doc or "").split())
+    text = " ".join(str(doc or "").split())
+    # Live 12.4.15 gives undocumented getters Boost.Python's bare signature as a doc
+    return "" if text.startswith("None( (") else text
+
+
+# Live 12.4.15 module-qualifies the types in its signatures (`Track.Track`, `(Song.View)arg1`).
+QUALIFIER = re.compile(r"\b[A-Z]\w*\.(?=[A-Z]\w*)")
+
+
+def same_signature(old, new):
+    """Equal once module qualifiers are dropped, so 12.4.15's spelling is not a change."""
+    return QUALIFIER.sub("", str(old)) == QUALIFIER.sub("", str(new))
 
 
 def short_type(t):
@@ -305,7 +316,7 @@ def generate(seed_dir, out_dir, provenance, baseline_dir=None):
         old, new = member_keys(baseline), member_keys(seed)
         added = set(new) - set(old)
         removed = set(old) - set(new)
-        changed = {k: (old[k], new[k]) for k in set(old) & set(new) if old[k] != new[k]}
+        changed = {k: (old[k], new[k]) for k in set(old) & set(new) if not same_signature(old[k], new[k])}
         borrowed = borrow_types(seed, baseline, baseline_version)
 
     out_dir = Path(out_dir)

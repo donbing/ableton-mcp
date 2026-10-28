@@ -1,6 +1,6 @@
 # Live.Clip
 
-> Generated from a raw capture: Live 12.4.6, Intro, Push 3 standalone, AbletonOS x86_64 v3.21, Python 3.11.6, captured 2026-10-26. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
+> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 Types marked † come from the Live 12.3.6 property probe, not this capture.
 
@@ -48,8 +48,12 @@ Properties (r = read-only, rw = settable):
 - `playing_position` `float`† (r, listenable): Constant access to the current playing position of the clip. The returned value is the position in beats for midi and warped audio clips, or in seconds for unwarped audio clips. Stopped clips will return 0.
 - `position` `float`† (rw, listenable): Get/Set the loop position of this Clip in beats/seconds (unit depends on warping).
 - `ram_mode` `bool`† (rw, listenable): Available for AudioClips only. Read/write access to the Ram mode setting of the Audio Clip
+- `root_note` (rw, listenable) *(new)*: Set and access the root (i.e. key) of the Clip's scale. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
 - `sample_length` `int`† (r): Available for AudioClips only. Get the sample length in sample time or -1 if there is no sample available.
 - `sample_rate` `float`† (r): Available for AudioClips only. Read-only access to the Clip's sampling rate.
+- `scale_intervals` (r, listenable) *(new)*: Reports the Clip scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
+- `scale_mode` (rw, listenable) *(new)*: Access to the Scale Mode setting of the Clip. When on, pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones, and key tracks that belong to the Clip's scale are highlighted in the MIDI Note Editor.
+- `scale_name` (rw, listenable) *(new)*: Set and access the Clip's scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
 - `signature_denominator` `int`† (rw, listenable): Get/Set access to the global signature denominator of the Clip.
 - `signature_numerator` `int`† (rw, listenable): Get/Set access to the global signature numerator of the Clip.
 - `start_marker` `float`† (rw, listenable): Get/Set the Clips start marker pos in beats/seconds (unit depends on warping).

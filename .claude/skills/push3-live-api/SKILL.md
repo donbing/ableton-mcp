@@ -1,6 +1,6 @@
 ---
 name: push3-live-api
-description: Reference for Ableton Live's Python API (the Live Object Model) as measured on the user's Push 3 standalone, Live 12.4.6 Intro. Use when writing or debugging Remote Script code in this repo (AbletonMCP_Remote_Script), adding a new MCP tool that needs a Live call, or checking whether a class, property, method or enum exists, is settable or is listenable on the Push. Not for making music through the MCP tools (that is ableton-music).
+description: Reference for Ableton Live's Python API (the Live Object Model) as measured on the user's Push 3 standalone, Live 12.4.15 Intro. Use when writing or debugging Remote Script code in this repo (AbletonMCP_Remote_Script), adding a new MCP tool that needs a Live call, or checking whether a class, property, method or enum exists, is settable or is listenable on the Push. Not for making music through the MCP tools (that is ableton-music).
 ---
 
 # Live's Python API on the Push 3
@@ -10,7 +10,7 @@ What the API looks like on the user's Push 3, from a capture taken on the device
 
 ## First: does the reference match the Push?
 
-`references/INDEX.md` names the Live version it was captured from (12.4.6, Intro edition). Before relying on it,
+`references/INDEX.md` names the Live version it was captured from (12.4.15, Intro edition). Before relying on it,
 call `get_remote_script_info` or `get_live_status` and compare the Live version. If they differ, say so and treat
 the reference as a guide only: check anything important at runtime on the Push.
 
@@ -18,7 +18,7 @@ The current capture is a **raw** capture (no property probe):
 
 - It has no property types of its own. Types marked † are borrowed from the Live 12.3.6 property probe (LiveAPI's
   committed seed) for properties that exist in both versions; they are very likely right but were not measured on
-  the Push. Properties with no type are new in 12.4.6 or were never probed: check the value at runtime.
+  the Push. Properties with no type are new since 12.3.6 or were never probed: check the value at runtime.
 - `references/CHANGES.md` lists what differs from Live 12.3.6. Its "Missing from this capture" list is unverified:
   most entries are gaps in a raw capture, not real removals.
 - Intro is a limited edition. A class being in the API does not mean its device is available on the Push.
@@ -64,7 +64,11 @@ A property marked `listenable` has `add_<name>_listener(cb)`, `remove_<name>_lis
 Do not edit `references/` by hand. After a new capture in LiveAPI, update `provenance.json` and run:
 
 ```bash
-python tools/gen_live_api_skill.py --seed ../LiveAPI/probe/12.4.6/seed --baseline ../LiveAPI/probe/12.3.6/seed --provenance .claude/skills/push3-live-api/provenance.json --out .claude/skills/push3-live-api/references
+python tools/gen_live_api_skill.py --seed ../LiveAPI/probe/12.4.15/seed --baseline ../LiveAPI/probe/12.3.6/seed --provenance .claude/skills/push3-live-api/provenance.json --out .claude/skills/push3-live-api/references
 ```
 
 The generator needs PyYAML. Rules and quirks learned on the Push go in this file, not in `references/`.
+
+From 12.4.15 Live writes module-qualified types in its signatures (`(Song.View)arg1`, `-> Track.Track`). LiveAPI's
+parser handles that on its local branch `probe/12.4.15-push3`, and the generator does not count the new spelling as a
+change.
