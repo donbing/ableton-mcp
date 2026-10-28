@@ -278,7 +278,32 @@ def drums(params, answer):
 GRADERS = {f.__name__: f for f in (note_names, chord_list, number, chord_name, progression, satb, melody, drums)}
 
 
+def _load_notation():
+    """MCP_Server/notation.py by path, so grading needs neither the MCP SDK nor the server."""
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "MCP_Server", "notation.py")
+    spec = importlib.util.spec_from_file_location("live_notation", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def notation_answer(text):
+    """The last ```notation block, parsed in 4/4 into {"notes": [...]}; raises ValueError if unusable."""
+    blocks = re.findall(r"```notation\s*\n(.*?)```", text or "", re.S)
+    if not blocks:
+        raise ValueError("no ```notation block found")
+    return {"notes": _load_notation().parse(blocks[-1], 4, 4)}
+
+
 def grade(item, reply_text):
+    if item.get("answer_format") == "notation":
+        try:
+            answer = notation_answer(reply_text)
+        except ValueError as e:
+            return _unreadable("notation: %s" % e)
+        return GRADERS[item["grader"]](item["params"], answer)
     answer = extract_answer(reply_text)
     if answer is None:
         return _unreadable("no JSON answer found")

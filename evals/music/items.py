@@ -210,6 +210,28 @@ def drums():
                     "drums", NOTES_FORMAT, rules=rules, bars=2)
 
 
+# What add_notes_to_clip's description teaches about its notation parameter (MCP_Server/server.py).
+NOTATION_SPEC = """One idea per line; nothing carries from one line to the next.
+Events: POSITION PITCHES [LENGTH] [vVEL] [pPROB], e.g. "1.1 C3 E3 G3 1/1 v90" (Live's bar.beat.sixteenth,
+counted from 1; several positions as 1.1,1.3). Steps: PITCH PATTERN, e.g. "C1 x...x...x...x... *4"
+(x hit, X accent, o ghost, . rest; 1/16 steps unless a note value is given; *4 repeats it 4 times,
+@5 starts it at bar 5). Pitches in Live's naming (C3 = 60, C1 = 36) or MIDI numbers; lengths 1/4,
+1/8. (dotted), 1/8t (triplet) or beats (0.5b); events default to 1/4. v80-100 is a random velocity
+range, p0.5 a probability, m mutes, *N:K repeats N times K bars apart, # starts a comment."""
+
+NOTATION_GRADERS = ("progression", "melody", "drums")
+
+
+def as_notation(item):
+    """The same item, answered in add_notes_to_clip's text notation instead of a JSON note list."""
+    if item["grader"] not in NOTATION_GRADERS:
+        return None
+    head = item["prompt"].split("\n\nEnd your reply with one ```json block")[0]
+    return dict(item, answer_format="notation",
+                prompt=head + "\n\nEnd your reply with one ```notation block holding the notes in this "
+                              "notation (4/4):\n" + NOTATION_SPEC)
+
+
 CATEGORIES = [chord_spelling, scales_modes, roman_numerals, intervals, live_conventions,
               chord_id, progression_midi, voice_leading, melody, drums]
 

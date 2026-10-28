@@ -39,6 +39,13 @@ def sign_test(better, worse):
     return min(1.0, 2 * tail)
 
 
+def answer_chars(reply):
+    """Characters in the reply's last ```json or ```notation block: what a tool call would carry."""
+    import re
+    blocks = re.findall(r"```(?:json|notation)\s*\n(.*?)```", reply or "", re.S)
+    return len(blocks[-1].strip()) if blocks else 0
+
+
 def pct(x):
     return "%.0f%%" % (100 * x)
 
@@ -51,10 +58,12 @@ def item_rates(rows):
 
 
 def summary(meta, rows):
-    out = ["## %s · %s%s" % (meta["condition"], meta["model"], " · effort " + meta["effort"] if meta.get("effort") else ""),
+    out = ["## %s · %s%s%s" % (meta["condition"], meta["model"], " · effort " + meta["effort"] if meta.get("effort") else "",
+                               " · notes as notation" if meta.get("answer_format") == "notation" else ""),
            "", "%d items × %d samples, $%.2f" % (meta["items"], meta["samples"], sum(r["cost_usd"] or 0 for r in rows)), "",
-           "| category | pass | 95% CI | items always right | always wrong | flaky | unreadable |",
-           "|---|---|---|---|---|---|---|"]
+           "| category | pass | 95% CI | items always right | always wrong | flaky | unreadable "
+           "| reply tokens (median) | answer block chars (median) |",
+           "|---|---|---|---|---|---|---|---|---|"]
     cats = collections.OrderedDict()
     for r in rows:
         cats.setdefault(r["category"], []).append(r)
@@ -64,9 +73,12 @@ def summary(meta, rows):
         lo, hi = wilson(k, n)
         rates = item_rates(rs)
         unreadable = sum(1 for r in rs if r["checks"].get("readable") is False or r.get("error"))
-        out.append("| %s | %s | %s–%s | %d | %d | %d | %d |" % (
+        visible = sorted(r["output_tokens"] - (r.get("thinking_tokens") or 0) for r in rs if r.get("output_tokens"))
+        blocks = sorted(answer_chars(r["reply"]) for r in rs if answer_chars(r.get("reply")))
+        out.append("| %s | %s | %s–%s | %d | %d | %d | %d | %s | %s |" % (
             cat, pct(k / float(n)), pct(lo), pct(hi), sum(v == 1 for v in rates.values()),
-            sum(v == 0 for v in rates.values()), sum(0 < v < 1 for v in rates.values()), unreadable))
+            sum(v == 0 for v in rates.values()), sum(0 < v < 1 for v in rates.values()), unreadable,
+            visible[len(visible) // 2] if visible else "–", blocks[len(blocks) // 2] if blocks else "–"))
         total.append(cat)
     spelled = [r["spelled"] for r in rows if "spelled" in r and r["passed"]]
     if spelled:

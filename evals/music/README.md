@@ -35,7 +35,7 @@ python3 -m evals.music.run --model claude-haiku-5-5 --samples 3
 python3 -m evals.music.report evals/music/results/<a> evals/music/results/<b> --out report.md
 ```
 
-`--category` (repeatable) and `--limit` give quicker runs. Each run writes its own folder under `results/`: `meta.json` (including the exact system prompt) and `results.jsonl` (every reply, its checks and its cost).
+`--category` (repeatable) and `--limit` give quicker runs. `--answer-format notation` has the note-writing items (progressions, melodies, drums) answered in `add_notes_to_clip`'s text notation instead of JSON, graded the same way, to compare accuracy and tokens; the report gives the median answer tokens (output minus thinking). Each run writes its own folder under `results/`: `meta.json` (including the exact system prompt) and `results.jsonl` (every reply, its checks and its cost).
 
 ## Testing a skill
 
