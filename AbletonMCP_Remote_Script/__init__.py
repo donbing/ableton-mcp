@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.24"
+SCRIPT_VERSION = "1.10.25"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -171,6 +171,7 @@ SCRIPT_CAPABILITIES = [
     "set_clip_launch",
     "set_transport_options",
     "record_into_slot",
+    "get_slot_state",
     "start_arrangement_record",
     "stop_recording",
     "delete_return_track",
@@ -1230,6 +1231,9 @@ class AbletonMCP(ControlSurface):
                 response["result"] = self._get_clip_info(
                     params.get("track_index", 0), params.get("clip_index", 0),
                     params.get("clip_start_time"))
+            elif command_type == "get_slot_state":
+                response["result"] = self._get_slot_state(
+                    params.get("track_index", 0), params.get("clip_index", 0))
             elif command_type == "get_device_parameters":
                 track_index = params.get("track_index", 0)
                 device_index = params.get("device_index", 0)
@@ -6909,6 +6913,30 @@ class AbletonMCP(ControlSurface):
             return info
         except Exception as e:
             self.log_message("Error recording into a slot: " + str(e))
+            raise
+
+    def _get_slot_state(self, track_index, clip_index):
+        """One Session slot's recording state, for polling a take: has_clip, is_triggered, is_recording,
+        and the clip's is_recording, is_playing and length. Reads nothing else of the track."""
+        try:
+            tracks = list(self._song.tracks)
+            if isinstance(track_index, bool) or not isinstance(track_index, int) \
+                    or not 0 <= track_index < len(tracks):
+                raise IndexError("Track index out of range")
+            slots = list(tracks[track_index].clip_slots)
+            if isinstance(clip_index, bool) or not isinstance(clip_index, int) or not 0 <= clip_index < len(slots):
+                raise IndexError("clip index %r out of range (the track has %d slots)" % (clip_index, len(slots)))
+            slot = slots[clip_index]
+            clip = slot.clip if slot.has_clip else None
+            return {"track_index": track_index, "clip_index": clip_index, "has_clip": bool(slot.has_clip),
+                    "is_triggered": bool(getattr(slot, "is_triggered", False)),
+                    "is_recording": bool(getattr(slot, "is_recording", False)),
+                    "clip": None if clip is None else {
+                        "is_recording": bool(getattr(clip, "is_recording", False)),
+                        "is_playing": bool(getattr(clip, "is_playing", False)),
+                        "length": self._safe_attr(clip, "length", float, None)}}
+        except Exception as e:
+            self.log_message("Error reading a slot's state: " + str(e))
             raise
 
     def _start_arrangement_record(self, start_time=None, end_time=None, confirm=None):

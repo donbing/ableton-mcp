@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.24**, **143 MCP tools** (upstream: 37), 1445 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.25**, **143 MCP tools** (upstream: 37), 1463 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -154,6 +154,13 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Fixed in 1.10.24 (run on Push 3 standalone, Live 12.4.15, 2026-10-29) | What | Notes |
 |---|---|---|
 | Commands after loading another Set | `disconnect()` shuts down the open client sockets and a stopped instance closes a connection without answering, so the MCP server reconnects to the new instance | the old client thread sat in `recv()` across the Set load and served the next command with the destroyed Song: `get_tracks_overview` failed on the Push with `None.None(Song) did not match C++ signature: None(TPyHandle<ASong>)` (Live log: "Client thread still alive during disconnect"). Measured: with 1.10.23 the first `get_tracks_overview` after a Set load failed every time; with 1.10.24 the old connection closes during the load, the server reconnects and the first call works. A new Remote Script needs Live restarted; loading a Set keeps the old module |
+
+| Changed in 1.10.25 (tests pass; not yet run on the Push) | What | Notes |
+|---|---|---|
+| `listen` and `analyze_audio_clip` stay out of Live's way | ffmpeg runs under `nice -n 10` (where `nice` exists) with `-threads 1 -filter_threads 1 -filter_complex_threads 1`, and its timeout is 2 x the audio's length + 10 s instead of a flat 120 s | `listen` needs Live playing, and the music goes on after the take, so ffmpeg (a spectrogram takes about 1 s per second of audio on the Push) shared Live's 4 cores with its audio thread |
+| A pass is capped by time | besides 32 bars, `listen` refuses a pass whose launch wait + take is over 60 s, and says how many bars fit at the current tempo (120 bpm with "bar": 29; 70 bpm: 16). `spectrogram=True` is refused for takes over 30 s; `analyze_audio_clip` returns the text without the image for files over 30 s | 32 bars at 70 bpm was about 110 s of recording plus up to 110 s of spectrogram: near the old ffmpeg timeout, and a 4-minute tool call is past some MCP clients' timeouts |
+| Bars line up | `listen` reads the Set's launch quantization first (`set_transport_options` with no arguments) and refuses anything but "bar", "2 bars", "4 bars" or "8 bars", saying to set `clip_trigger_quantization="bar"` | at a beat, sub-beat or "none" the take starts mid-bar and every row of the per-bar table was silently shifted. An empty slot has no clip launch quantization of its own, so the Set's applies |
+| Lighter polling | new Remote Script command `get_slot_state(track_index, clip_index)`: one slot's `has_clip`, `is_triggered`, `is_recording` and its clip's `is_recording`, `is_playing`, `length`. `listen` polls it every 0.5 s (was `get_track_info`, every slot, device and mixer of the track, every 0.25 s); against an older Remote Script it falls back to `get_track_info` | the take's deadline logic is unchanged |
 
 | Added on the server only (no Remote Script change) | What | Notes |
 |---|---|---|

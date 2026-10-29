@@ -4,6 +4,7 @@ from mcp.types import ToolAnnotations
 import socket
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -4780,8 +4781,14 @@ def stop_recording(ctx: Context, stop_transport: bool = False, user_prompt: str 
 # ------------------------------------------------------------------ listening (ffmpeg on this machine)
 
 LISTEN_MAX_BARS = 32
-# bars a take can wait for the launch quantization; anything shorter than a bar waits at most one
-_LAUNCH_WAIT_BARS = {"none": 0, "8 bars": 8, "4 bars": 4, "2 bars": 2}
+# a pass (launch wait and take) stays under a minute, so the whole call stays inside MCP clients' timeouts
+LISTEN_MAX_SECONDS = 60.0
+# a spectrogram takes about as long as the audio to draw on the Push, while Live plays
+LISTEN_SPECTROGRAM_MAX_SECONDS = 30.0
+# launch quantizations that start a take on a bar, and the most bars the take can wait for one. An empty
+# slot has no clip of its own, so the Set's clip_trigger_quantization is the one that applies.
+_LAUNCH_WAIT_BARS = {"bar": 1, "2 bars": 2, "4 bars": 4, "8 bars": 8}
+_LISTEN_POLL_SECONDS = 0.5
 # the listen poll's clock, replaceable in tests
 _listen_now = time.monotonic
 _listen_sleep = time.sleep
@@ -4802,10 +4809,14 @@ def _seconds_per_bar(tempo: float, time_signature: str) -> float:
     return _listen.bar_seconds(float(tempo), numerator, denominator)
 
 
-def _with_spectrogram(text: str, path: str, spectrogram: bool):
+def _with_spectrogram(text: str, path: str, spectrogram: bool, duration: Optional[float] = None):
     if not spectrogram:
         return text
-    return [text, Image(data=_listen.spectrogram_png(path), format="png")]
+    # half a second of slack: a take of exactly 30 s can come out a few samples longer
+    if duration is not None and duration > LISTEN_SPECTROGRAM_MAX_SECONDS + 0.5:
+        return text + ("\nNo spectrogram: the file is %.0f s long, and it is only drawn up to %.0f s."
+                       % (duration, LISTEN_SPECTROGRAM_MAX_SECONDS))
+    return [text, Image(data=_listen.spectrogram_png(path, duration=duration), format="png")]
 
 
 def _wait_for_file(path: str, timeout: float = 3.0) -> None:
@@ -4845,7 +4856,8 @@ def analyze_audio_clip(
       track's Arrangement clips, as get_arrangement_clips lists them)
     - arrangement: False (default) Session slot, True Arrangement clip
     - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of audio)
+    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of
+      audio; files up to 30 s)
     - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -4861,7 +4873,7 @@ def analyze_audio_clip(
         text = ("Clip '%s' (track %d, %s %d), file %s, bars at %s bpm %s\n"
                 % (clip.get("name", ""), track_index, "arrangement clip" if arrangement else "slot", clip_index,
                    path, overview["tempo"], overview["time_signature"]) + _listen.format_report(result))
-        return _with_spectrogram(text, path, spectrogram)
+        return _with_spectrogram(text, path, spectrogram, result.get("duration"))
     except Exception as e:
         logger.error(f"Error analyzing audio clip: {str(e)}")
         return f"Error analyzing audio clip: {str(e)}"
@@ -4894,19 +4906,60 @@ def _listen_refusal(overview: dict, index: int, expected_name: str) -> Optional[
     return None
 
 
+def _listen_refusal_for_length(quantization: Optional[str], bars: float, spb: float, overview: dict,
+                               spectrogram: bool) -> Optional[str]:
+    """Why a pass of `bars` must not run at this launch quantization and tempo, or None."""
+    if quantization not in _LAUNCH_WAIT_BARS:
+        return ("Error: the launch quantization is '%s', so the take would not start on a bar and every row "
+                "of the per-bar table would be shifted. Nothing was recorded. Set it to a bar first: "
+                "set_transport_options(clip_trigger_quantization='bar')." % quantization)
+    wait = _LAUNCH_WAIT_BARS[quantization]
+    tempo = "%s bpm %s" % (overview["tempo"], overview["time_signature"])
+    fit = min(LISTEN_MAX_BARS, int(math.floor(LISTEN_MAX_SECONDS / spb + 1e-9)) - wait)
+    if (wait + bars) * spb > LISTEN_MAX_SECONDS + 1e-9:
+        return ("Error: %g bars at %s is %.0f s of recording, plus up to %.0f s waiting for the launch "
+                "quantization ('%s'): over the %.0f s a pass may take. Nothing was recorded. %s"
+                % (bars, tempo, bars * spb, wait * spb, quantization, LISTEN_MAX_SECONDS,
+                   "At this tempo at most %d bars fit; listen in several passes for more." % fit if fit >= 1
+                   else "Not one bar fits at this tempo; set the launch quantization to 'bar'."))
+    if spectrogram and bars * spb > LISTEN_SPECTROGRAM_MAX_SECONDS + 1e-9:
+        most = int(math.floor(LISTEN_SPECTROGRAM_MAX_SECONDS / spb + 1e-9))
+        return ("Error: %g bars at %s is %.0f s; a spectrogram is only drawn for takes up to %.0f s (it takes "
+                "about as long as the audio to draw, while Live plays). Nothing was recorded. %s"
+                % (bars, tempo, bars * spb, LISTEN_SPECTROGRAM_MAX_SECONDS,
+                   "Listen to at most %d bars with spectrogram=True, or without it." % most if most >= 1
+                   else "Listen without spectrogram=True."))
+    return None
+
+
+def _slot_state(index: int, slot: int) -> dict:
+    """has_clip and the clip's is_recording for one slot: get_slot_state reads only that slot; a Remote
+    Script older than 1.10.25 has only get_track_info (every slot, device and mixer of the track)."""
+    from .script_handshake import script_has_capability
+
+    if script_has_capability("get_slot_state"):
+        return _live("get_slot_state", {"track_index": index, "clip_index": slot})
+    return _live("get_track_info", {"track_index": index})["clip_slots"][slot]
+
+
 def _record_take(index: int, slot: int, expected_name: str, bars: float, spb: float,
                  did: list, notes: list) -> Optional[dict]:
     """Record into the slot and wait for the take (bounded by the launch wait, its length and a margin).
-    Returns the finished clip's info from get_track_info, or None when no take came."""
+    Returns the finished clip's state, or None when no take came."""
     started = _listen_now()
     rec = _live("record_into_slot", {"track_index": index, "clip_index": slot,
                                      "expected_name": expected_name, "length_bars": bars, "confirm": True})
     stops_itself = rec.get("record_length_applied", True)
-    wait_bars = _LAUNCH_WAIT_BARS.get(rec.get("launch_quantization"), 1)
+    quantization = rec.get("launch_quantization")
+    if quantization not in _LAUNCH_WAIT_BARS:
+        # checked before recording; changed since
+        notes.append("the launch quantization was '%s' when the take was fired, so it may not start on a bar "
+                     "and the rows may be offset" % quantization)
+    wait_bars = _LAUNCH_WAIT_BARS.get(quantization, 1)
     deadline = started + (wait_bars + bars) * spb + 3.0
     recording_since, take = None, None
     while True:
-        state = _live("get_track_info", {"track_index": index})["clip_slots"][slot]
+        state = _slot_state(index, slot)
         clip = state.get("clip") or {}
         if state.get("has_clip") and not clip.get("is_recording"):
             take = clip
@@ -4923,11 +4976,11 @@ def _record_take(index: int, slot: int, expected_name: str, bars: float, spb: fl
             if late:
                 notes.append("the take had not finished after %.1f s, so it was stopped" % (now - started))
             _listen_sleep(0.3)
-            state = _live("get_track_info", {"track_index": index})["clip_slots"][slot]
+            state = _slot_state(index, slot)
             if state.get("has_clip"):
                 take = state.get("clip") or {}
             break
-        _listen_sleep(0.25)
+        _listen_sleep(_LISTEN_POLL_SECONDS)
     if take is not None:
         # a finished take starts playing
         _live("stop_clip", {"track_index": index, "clip_index": slot})
@@ -4955,8 +5008,12 @@ def listen(
     Hear what Live is playing: record `bars` of Live's own output on a scratch audio track, measure
     the take with ffmpeg (as analyze_audio_clip does: loudness, peak, RMS, silence and a per-bar
     level and band table) and delete the take's clip. Start playback or fire the clips first. The
-    take starts at the next launch quantization (usually the next bar), so a pass takes up to a bar
-    longer than its length, plus a moment to measure.
+    take starts at the next launch quantization, so a pass takes up to a bar longer than its length
+    (more at "2 bars" and up), plus a moment to measure. The launch quantization must be whole bars
+    ("bar", "2 bars", "4 bars", "8 bars") so the table's rows are bars; set it with
+    set_transport_options(clip_trigger_quantization="bar"). A pass is at most 60 s, launch wait
+    included (the error says how many bars fit at the current tempo), and draws a spectrogram only
+    for takes up to 30 s. ffmpeg runs at low priority on one core.
     The scratch track must already take its input from Live (input "Resampling", "Main" or another
     track's output) with monitoring "off", so the take cannot feed back into Main; this tool refuses
     otherwise and never reroutes. Set one up once: create_audio_track, set_track_routing
@@ -4967,11 +5024,12 @@ def listen(
     Parameters:
     - scratch_track_index: The scratch audio track
     - expected_name: Its exact current name (safety check)
-    - bars: Bars to record (default 2, at most 32)
+    - bars: Bars to record (default 2, at most 32, and at most 60 s with the launch wait)
     - clip_index: The empty slot to record into (default: the track's first empty slot)
     - keep: True keeps the take's clip in its slot (default false: deleted after measuring)
     - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of audio)
+    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of
+      audio; takes up to 30 s)
     - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
@@ -4999,6 +5057,11 @@ def listen(
         else:
             slot = clip_index
         spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        # set_transport_options with no arguments only reads
+        quantization = (_live("set_transport_options").get("after") or {}).get("clip_trigger_quantization")
+        refusal = _listen_refusal_for_length(quantization, bars, spb, overview, spectrogram)
+        if refusal:
+            return refusal
         armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
 
         did, notes, take = [], [], None
@@ -5043,7 +5106,7 @@ def listen(
         if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
             lines.append("The take is silent: check that the clips play, nothing is muted and Main is up.")
         # the WAV outlives the clip, so the picture can be drawn after the clip is gone
-        return _with_spectrogram("\n".join(lines), path, spectrogram)
+        return _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"))
     except Exception as e:
         logger.error(f"Error in listen: {str(e)}")
         return f"Error in listen: {str(e)}"

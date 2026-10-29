@@ -12,7 +12,9 @@ comes from ffmpeg's ebur128, astats and silencedetect filters, in one ffmpeg cal
   the sample rate the chunk length needs.
 
 Measured on the Push (2026-10-29): a stereo 6 s file takes well under a second; a spectrogram
-(showspectrumpic) takes about as long as the audio, so it is only drawn when asked for.
+(showspectrumpic) takes about as long as the audio, so it is only drawn when asked for. listen runs
+while Live plays, so ffmpeg runs under `nice -n 10` (where nice exists) on one thread, and its timeout
+grows with the audio's length.
 """
 
 import math
@@ -30,6 +32,8 @@ BANDS = (
 # quieter than this reads as silence in the table
 FLOOR_DB = -90.0
 MAX_ROWS = 32
+# one thread for decoding and the filters, so ffmpeg takes one of the Push's 4 cores, not all of them
+ONE_THREAD = ["-threads", "1", "-filter_threads", "1", "-filter_complex_threads", "1"]
 
 
 class ListenError(Exception):
@@ -38,6 +42,17 @@ class ListenError(Exception):
 
 def find_ffmpeg():
     return os.environ.get("ABLETON_MCP_FFMPEG") or shutil.which("ffmpeg")
+
+
+def low_priority(args):
+    """args run below Live's audio (nice -n 10) where nice exists; unchanged where it does not."""
+    nice = shutil.which("nice")
+    return [nice, "-n", "10"] + list(args) if nice else list(args)
+
+
+def timeout_for(duration):
+    """ffmpeg's time limit for audio this many seconds long: twice its length plus 10 s."""
+    return 2.0 * (duration or 0.0) + 10.0
 
 
 def bar_seconds(tempo, numerator, denominator):
@@ -152,10 +167,10 @@ def bar_rows(frames, seconds_per_bar, duration, bars_per_row=None):
 
 def _run(args, cwd, timeout, allow_fail=False):
     try:
-        proc = subprocess.run(args, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+        proc = subprocess.run(low_priority(args), cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise ListenError("ffmpeg took longer than %d s" % timeout)
+        raise ListenError("ffmpeg took longer than %.0f s" % timeout)
     if proc.returncode != 0 and not allow_fail:
         tail = "\n".join(proc.stderr.strip().splitlines()[-5:])
         raise ListenError("ffmpeg failed (exit %d): %s" % (proc.returncode, tail))
@@ -163,8 +178,9 @@ def _run(args, cwd, timeout, allow_fail=False):
 
 
 def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0, silence_seconds=0.5,
-                 ffmpeg=None, timeout=120):
-    """Measure one audio file. With seconds_per_bar, also per-bar rows (the file must start on a bar)."""
+                 ffmpeg=None, timeout=None):
+    """Measure one audio file. With seconds_per_bar, also per-bar rows (the file must start on a bar).
+    timeout: seconds ffmpeg may take (default: timeout_for the file's duration)."""
     ffmpeg = ffmpeg or find_ffmpeg()
     if not ffmpeg:
         raise ListenError("ffmpeg was not found on this machine (set ABLETON_MCP_FFMPEG to its path)")
@@ -173,15 +189,16 @@ def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0
         raise ListenError("No audio file at %s" % path)
     with tempfile.TemporaryDirectory(prefix="ableton-mcp-listen-") as tmp:
         # with no output ffmpeg exits 1 after printing the input's streams
-        probe = parse_log(_run([ffmpeg, "-nostdin", "-hide_banner", "-i", path], tmp, timeout, allow_fail=True))
+        probe = parse_log(_run([ffmpeg, "-nostdin", "-hide_banner", "-i", path], tmp, timeout or 30,
+                               allow_fail=True))
         if "sample_rate" not in probe:
             raise ListenError("ffmpeg found no audio stream in %s" % path)
         # without bars, one-second chunks (unused) keep the graph the same
         chunk = int(round((seconds_per_bar or 1.0) * probe["sample_rate"]))
         # the chunk files are written relative to cwd, so the graph holds no paths to escape
-        log = _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner", "-i", path,
+        log = _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner"] + ONE_THREAD + ["-i", path,
                     "-filter_complex", filtergraph(chunk, silence_db, silence_seconds),
-                    "-map", "[out]", "-f", "null", "-"], tmp, timeout)
+                    "-map", "[out]", "-f", "null", "-"], tmp, timeout or timeout_for(probe.get("duration")))
         frames = {}
         for name in ["full"] + [n for n, _ in BANDS]:
             with open(os.path.join(tmp, name + ".txt"), encoding="utf-8", errors="replace") as f:
@@ -194,15 +211,19 @@ def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0
     return result
 
 
-def spectrogram_png(path, width=800, height=300, ffmpeg=None, timeout=120):
-    """A mono spectrogram (log frequency axis, legend) as PNG bytes."""
+def spectrogram_png(path, width=800, height=300, ffmpeg=None, timeout=None, duration=None):
+    """A mono spectrogram (log frequency axis, legend) as PNG bytes. timeout: seconds ffmpeg may take
+    (default: timeout_for duration, the audio's length in seconds; 120 s when that is not given)."""
     ffmpeg = ffmpeg or find_ffmpeg()
     if not ffmpeg:
         raise ListenError("ffmpeg was not found on this machine (set ABLETON_MCP_FFMPEG to its path)")
     with tempfile.TemporaryDirectory(prefix="ableton-mcp-spectrum-") as tmp:
-        _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner", "-loglevel", "error", "-i", os.path.abspath(path),
-              "-lavfi", "aformat=channel_layouts=mono,showspectrumpic=s=%dx%d:legend=1:fscale=log" % (width, height),
-              "-y", "spectrum.png"], tmp, timeout)
+        if timeout is None:
+            timeout = timeout_for(duration) if duration else 120
+        _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner", "-loglevel", "error"] + ONE_THREAD
+             + ["-i", os.path.abspath(path),
+                "-lavfi", "aformat=channel_layouts=mono,showspectrumpic=s=%dx%d:legend=1:fscale=log" % (width, height),
+                "-y", "spectrum.png"], tmp, timeout)
         with open(os.path.join(tmp, "spectrum.png"), "rb") as f:
             return f.read()
 

@@ -139,6 +139,43 @@ def test_analyze_file_runs_ffmpeg_with_no_stdin_and_no_paths_in_the_graph(tmp_pa
     assert result["integrated_lufs"] == -4.6 and [r["bars"] for r in result["rows"]] == [(1, 1), (2, 2), (3, 3)]
 
 
+def test_ffmpeg_runs_niced_on_one_thread_with_a_timeout_from_the_length(tmp_path, monkeypatch):
+    wav = tmp_path / "take.wav"
+    wav.write_bytes(b"RIFF")
+    calls = []
+
+    def fake_run(args, cwd, stdin, capture_output, text, errors, timeout):
+        calls.append((args, timeout))
+        if "-filter_complex" not in args and "-lavfi" not in args:
+            return types.SimpleNamespace(returncode=1, stderr=captured("probe.txt"))
+        for name in ("full", "low", "mid", "high", "spectrum"):
+            Path(cwd, name + (".png" if name == "spectrum" else ".txt")).write_text(
+                captured(name + ".txt") if name != "spectrum" else "png", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stderr=captured("ffmpeg_log.txt"))
+
+    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    monkeypatch.setattr(L.shutil, "which", lambda name: "/usr/bin/nice" if name == "nice" else None)
+    L.analyze_file(str(wav), 2.0, ffmpeg="ffmpeg")
+    L.spectrogram_png(str(wav), ffmpeg="ffmpeg", duration=6.0)
+    for args, _ in calls:
+        assert args[:4] == ["/usr/bin/nice", "-n", "10", "ffmpeg"]
+    for args, _ in calls[1:]:
+        for option in ("-threads", "-filter_threads", "-filter_complex_threads"):
+            assert args[args.index(option) + 1] == "1" and args.index(option) < args.index("-i")
+    # the probe reads 6 s: 2 x 6 + 10
+    assert [t for _, t in calls] == [30, 22.0, 22.0]
+
+    # where nice is missing, ffmpeg runs as it is
+    calls.clear()
+    monkeypatch.setattr(L.shutil, "which", lambda name: None)
+    L.analyze_file(str(wav), 2.0, ffmpeg="ffmpeg")
+    assert all(args[0] == "ffmpeg" for args, _ in calls) and "-threads" in calls[1][0]
+
+
+def test_the_timeout_grows_with_the_audio():
+    assert L.timeout_for(6.0) == 22.0 and L.timeout_for(110.0) == 230.0 and L.timeout_for(None) == 10.0
+
+
 def test_analyze_file_errors_are_plain(tmp_path, monkeypatch):
     with pytest.raises(L.ListenError, match="No audio file"):
         L.analyze_file(str(tmp_path / "missing.wav"), ffmpeg="ffmpeg")
@@ -303,7 +340,10 @@ class Song(object):
                                                   mixer_device=types.SimpleNamespace(volume=Param(0.85),
                                                                                      panning=Param(0.0)))
         self.tempo, self.signature_numerator, self.signature_denominator = 120.0, 4, 4
-        self.clip_trigger_quantization = 4
+        # 4 is "bar"; the rest only for set_transport_options' read
+        self.clip_trigger_quantization, self.midi_recording_quantization = 4, 0
+        self.punch_in = self.punch_out = self.arrangement_overdub = self.loop = False
+        self.count_in_duration = 0
         self.is_playing, self.exclusive_arm = True, False
         # polls before the take starts and until it ends
         self.wait, self.takes, self.taken_beats = 2, 3, 8.0
@@ -314,15 +354,19 @@ class Song(object):
                 s.tick()
 
 
+POLLS = ("get_slot_state", "get_track_info")
+
+
 class LiveConnection(object):
-    """The server's connection, answered by the real Remote Script. Each get_track_info is one poll."""
+    """The server's connection, answered by the real Remote Script. Each get_slot_state (or, on an older
+    script, get_track_info) is one poll."""
 
     def __init__(self, inst, song):
         self.inst, self.song, self.sent = inst, song, []
 
     def send_command(self, command, params=None):
         self.sent.append((command, params or {}))
-        if command == "get_track_info":
+        if command in POLLS:
             self.song.tick()
         reply = self.inst._process_command({"type": command, "params": params or {}})
         if reply["status"] == "error":
@@ -371,7 +415,7 @@ def measured(monkeypatch):
 
     monkeypatch.setattr(L, "find_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(L, "analyze_file", analyze_file)
-    monkeypatch.setattr(L, "spectrogram_png", lambda path: b"\x89PNG fake")
+    monkeypatch.setattr(L, "spectrogram_png", lambda path, duration=None: b"\x89PNG fake")
     return seen
 
 
@@ -452,8 +496,80 @@ def test_a_take_that_never_starts_is_cancelled_within_its_bound(conn, song, meas
     assert out.startswith("Error: no take was recorded") and "had not finished after" in out
     assert slot.is_triggered is False and slot.clip is None and song.tracks[2].arm is False
     assert measured == [] and "delete_clip" not in conn.commands()
-    # (1 bar of launch wait + 2 bars) at 2 s a bar + 3 s margin, polled every 0.25 s
-    assert 30 <= conn.commands().count("get_track_info") <= 40
+    # (1 bar of launch wait + 2 bars) at 2 s a bar + 3 s margin, polled every 0.5 s with the one-slot read
+    assert 17 <= conn.commands().count("get_slot_state") <= 21
+    # only the slot listing before the take reads the whole track
+    assert conn.commands().count("get_track_info") == 1
+
+
+def test_an_older_remote_script_is_polled_with_get_track_info(conn, song, measured, monkeypatch):
+    import MCP_Server.script_handshake as sh
+
+    caps = [c for c in sh._script_info["capabilities"] if c != "get_slot_state"]
+    monkeypatch.setattr(sh, "_script_info", {"script_version": "1.10.24", "capabilities": caps})
+    out = call(server.listen, None, **LISTEN)
+    assert out.startswith("Listened") and "get_slot_state" not in conn.commands()
+    assert conn.commands().count("get_track_info") > 1
+
+
+def test_get_slot_state_reads_one_slot(conn, song):
+    song.tracks[0].clip_slots[0].clip.is_playing = True
+    state = conn.send_command("get_slot_state", {"track_index": 0, "clip_index": 0})
+    assert state == {"track_index": 0, "clip_index": 0, "has_clip": True, "is_triggered": False,
+                     "is_recording": False, "clip": {"is_recording": False, "is_playing": True, "length": 0.0}}
+    assert conn.send_command("get_slot_state", {"track_index": 2, "clip_index": 1})["clip"] is None
+    with pytest.raises(Exception, match="out of range"):
+        conn.send_command("get_slot_state", {"track_index": 2, "clip_index": 3})
+    with pytest.raises(Exception, match="out of range"):
+        conn.send_command("get_slot_state", {"track_index": 9, "clip_index": 0})
+
+
+@pytest.mark.parametrize("name, attr", [("quarter", "q_quarter"), ("sixteenth", "q_sixtenth"), ("none", "q_no_q")])
+def test_a_launch_quantization_off_the_bar_is_refused(conn, song, measured, live, name, attr):
+    song.clip_trigger_quantization = getattr(live.Song.Quantization, attr)
+    out = call(server.listen, None, **LISTEN)
+    assert out.startswith("Error: the launch quantization is '%s'" % name) and "shifted" in out
+    assert "set_transport_options(clip_trigger_quantization='bar')" in out
+    assert not CHANGES & set(conn.commands()) and measured == []
+
+
+@pytest.mark.parametrize("attr", ["q_bar", "q_2_bars", "q_4_bars", "q_8_bars"])
+def test_whole_bar_launch_quantizations_record(conn, song, measured, live, attr):
+    song.clip_trigger_quantization = getattr(live.Song.Quantization, attr)
+    assert call(server.listen, None, **LISTEN).startswith("Listened")
+
+
+@pytest.mark.parametrize("tempo, attr, fit", [(120.0, "q_bar", 29), (120.0, "q_4_bars", 26), (70.0, "q_bar", 16)])
+def test_a_pass_is_capped_at_a_minute_with_the_launch_wait(conn, song, measured, live, tempo, attr, fit):
+    song.tempo, song.clip_trigger_quantization = tempo, getattr(live.Song.Quantization, attr)
+    out = call(server.listen, None, bars=fit + 1, **LISTEN)
+    assert out.startswith("Error: %d bars at %s bpm 4/4" % (fit + 1, tempo)) and "over the 60 s" in out
+    assert "at most %d bars fit" % fit in out
+    assert not CHANGES & set(conn.commands()) and measured == []
+    assert call(server.listen, None, bars=fit, **LISTEN).startswith("Listened")
+
+
+def test_not_one_bar_fits_says_so(conn, song, measured, live):
+    # 30 bpm is 8 s a bar: 8 bars of launch wait alone are 64 s
+    song.tempo, song.clip_trigger_quantization = 30.0, live.Song.Quantization.q_8_bars
+    out = call(server.listen, None, bars=1, **LISTEN)
+    assert "Not one bar fits" in out and not CHANGES & set(conn.commands())
+
+
+def test_a_spectrogram_is_refused_for_takes_over_30_s(conn, song, measured):
+    out = call(server.listen, None, bars=16, spectrogram=True, **LISTEN)
+    assert out.startswith("Error: 16 bars at 120.0 bpm 4/4 is 32 s") and "at most 15 bars with spectrogram" in out
+    assert not CHANGES & set(conn.commands()) and measured == []
+    assert call(server.listen, None, bars=16, **LISTEN).startswith("Listened")
+    assert isinstance(call(server.listen, None, bars=15, spectrogram=True, **LISTEN), list)
+
+
+def test_a_long_file_gets_no_spectrogram(monkeypatch):
+    drawn = []
+    monkeypatch.setattr(L, "spectrogram_png", lambda path, duration=None: drawn.append(duration) or b"png")
+    out = server._with_spectrogram("text", "/x.wav", True, 95.0)
+    assert out == "text\nNo spectrogram: the file is 95 s long, and it is only drawn up to 30 s." and drawn == []
+    assert server._with_spectrogram("text", "/x.wav", True, 30.2)[1].data == b"png" and drawn == [30.2]
 
 
 def test_a_live_without_record_length_is_stopped_after_the_bars(conn, song, measured):
