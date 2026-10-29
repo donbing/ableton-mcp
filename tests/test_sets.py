@@ -24,6 +24,10 @@ LOG_HEAD = (
     'Arcing the Singularity.als"\n'
     "2026-10-29T01:04:19.429591: info: Default App: End ExchangeDocument\n"
 )
+TEMPLATE = "/opt/push3/products/live/Live/AppLive/Resources/Builtin/Templates/DefaultLiveSet.als"
+# copied from the Push's log: creating a MIDI track logs the default track it is built from
+TRACK_DEFAULT_LINE = ('2026-10-29T13:30:23.078080: info: Loading document "/data/Music/Ableton/Live 12 Core '
+                      'Library/Defaults/Creating Tracks/MIDI Track/Default MIDI Track.als"\n')
 LOAD_LINE = '2026-10-29T01:04:19.429789: info: Loading document "{path}"\n'
 NOT_OPENED_LINE = '2026-10-29T01:04:19.456859: info: Exception: The file "{name}" could not be opened.\n'
 
@@ -81,6 +85,7 @@ class FakePush:
         self.warning = False    # the Push is showing "some referenced media files are missing"
         self.ok_works = True    # False: OK does not close the warning
         self.open_file = self.sets / "Arcing the Singularity Project" / "Arcing the Singularity.als"
+        self.pending = None     # what the answered save question goes on to load
 
     def entries(self):
         return [s["als"] for s in P.list_sets(str(self.sets))]
@@ -99,13 +104,16 @@ class FakePush:
                     lights.append([0.03, [0xB0, P.CC_SETS, 127 if self.browser_open else 14]])
             elif number == P.CC_JOG and self.browser_open:
                 self.highlight = max(0, self.highlight + (1 if value == 1 else -1))
-            elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.dirty:
+            elif number in (P.CC_JOG_PRESS, P.CC_NEW_SET) and value == 127 and self.browser_open and self.dirty:
                 # as measured: the Sets and Save lights go dark, the three answers light up
                 self.prompt = True
+                self.pending = TEMPLATE if number == P.CC_NEW_SET else None
                 lights += [[0.05, [0xB0, 80, 0]], [0.05, [0xB0, 82, 0]], [0.05, [0xB0, 24, 122]],
                            [0.05, [0xB0, 26, 122]], [0.05, [0xB0, 27, 126]]]
             elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.loads:
                 lights += self.load()
+            elif number == P.CC_NEW_SET and value == 127 and self.browser_open and self.loads:
+                lights += self.load(TEMPLATE)
             elif self.warning and number == 27 and value == 127 and self.ok_works:
                 # as measured: OK relights every button, the Sets light at 14
                 self.warning = False
@@ -119,7 +127,7 @@ class FakePush:
                 if number == 27:
                     os.utime(self.open_file, (self.clock.t + 1, self.clock.t + 1))
                 self.dirty = False
-                lights += self.load()
+                lights += self.load(self.pending)
             elif number == P.CC_SAVE and value == 127 and self.saves:
                 lights.append([0.1, [0xB0, P.CC_SAVE, 0]])
                 path = self.sets / "Set 12-1 Project" / "Set 12-1.als"
@@ -127,9 +135,9 @@ class FakePush:
         self.clock.t += listen
         return lights
 
-    def load(self):
+    def load(self, path=None):
         with open(self.log, "a", encoding="utf-8") as f:
-            f.write(LOAD_LINE.format(path=self.entries()[self.highlight]))
+            f.write(LOAD_LINE.format(path=path or self.entries()[self.highlight]))
             for name in self.missing:
                 f.write(NOT_OPENED_LINE.format(name=name))
         self.browser_open = False
@@ -466,3 +474,37 @@ def test_a_silent_sets_light_is_reported_not_guessed(push):
     push.browser_open, push.sets_light = True, False
     assert not P.close_set_browser([[0.1, [0xB0, 80, 127]]])
     assert push.sent.count([0xB0, 80, 127]) == 2
+
+
+# --------------------------------------------------------------------------- new_set and track defaults
+
+def test_a_new_tracks_default_is_not_the_open_set(push):
+    with open(push.log, "a", encoding="utf-8") as f:
+        f.write(TRACK_DEFAULT_LINE)
+    assert P.current_document()[1].endswith("Arcing the Singularity.als")
+
+
+def test_new_set_previews_without_pressing(push):
+    out = call(server.new_set, None)
+    assert out.startswith("NOT STARTED") and "Arcing the Singularity.als" in out and push.sent == []
+
+
+def test_new_set_presses_sets_then_new_set_and_checks_the_template_loaded(push):
+    out = call(server.new_set, None, confirm=True)
+    assert out.startswith("Loaded a new Set (pressed Sets once and New Set")
+    assert push.sent == [[0xB0, 80, 127], [0xB0, 80, 0], [0xB0, 103, 127], [0xB0, 103, 0]]
+    assert P.is_template(P.current_document()[1])
+    assert "not saved under a name yet" in call(server.which_set, None)
+
+
+def test_new_set_leaves_unsaved_changes_to_the_user(push):
+    push.dirty = True
+    out = call(server.new_set, None, confirm=True)
+    assert out.startswith("Not loaded:") and "call new_set again" in out
+    assert P.current_document()[1].endswith("Arcing the Singularity.als") and not push.browser_open
+
+
+def test_new_set_can_drop_unsaved_changes(push):
+    push.dirty = True
+    out = call(server.new_set, None, unsaved="discard", confirm=True)
+    assert "with Don't Save" in out and P.is_template(P.current_document()[1])

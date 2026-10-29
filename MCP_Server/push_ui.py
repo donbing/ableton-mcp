@@ -19,7 +19,10 @@ the results in Live's log and on disk. Measured on Push 3 standalone, Live 12.4.
   OK button below the screen, CC27, lights green (126), and nothing answers the Sets button until OK
   is pressed. Live's log has a line `Exception: The file "<name>" could not be opened.` for each.
   Pressing OK closes it: the Push relights every button, the Sets light back at 14.
-- Live's Log.txt says `Loading document "<path>"` for every Set it opens.
+- "+ New Set" is the second button above the screen (CC103) while the browser is open; it asks the
+  same save question first, then Live loads its default template.
+- Live's Log.txt says `Loading document "<path>"` for every Set it opens (and for the default track
+  a new track is built from, under Defaults/, which is skipped).
 """
 
 import glob
@@ -39,6 +42,8 @@ SETS_LIGHT_OPEN = 127
 # the buttons below the screen that "Save changes before closing?" lights: Don't Save (white, 122),
 # Cancel (white, 122) and Save (green, 126)
 CC_PROMPT_DONT_SAVE, CC_PROMPT_CANCEL, CC_PROMPT_SAVE = 24, 26, 27
+# the second button above the screen is "+ New Set" while the Set browser is open (lit 122)
+CC_NEW_SET = 103
 PROMPT_SAVE_GREEN = 126
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
@@ -198,7 +203,9 @@ def loaded_documents(log_path):
     with open(log_path, "rb") as f:
         f.seek(max(0, os.path.getsize(log_path) - LOG_TAIL_BYTES))
         text = f.read().decode("utf-8", "replace")
-    return [m.groups() for m in map(LOADING.match, text.splitlines()) if m]
+    # Live logs the default track it builds a new track from (".../Defaults/Creating Tracks/MIDI
+    # Track/Default MIDI Track.als") the same way; those are not Sets
+    return [m.groups() for m in map(LOADING.match, text.splitlines()) if m and "/Defaults/" not in m.group(2)]
 
 
 def current_document(log_path=None):

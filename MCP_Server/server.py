@@ -6266,6 +6266,60 @@ def which_set(ctx: Context, user_prompt: str = "") -> str:
         return f"Error reading the open Set: {str(e)}"
 
 
+def _finish_set_change(button, did, log, before, unsaved, missing_media, expected, label, tool):
+    """Press the button that closes the open Set (the jog press on a Set, New Set), answer the Push's
+    save-changes question as `unsaved` says, wait for Live's log to show the load, check it is the
+    `expected` file and deal with the missing-media warning. Returns the tool's reply."""
+    pressed = int(_push.now())
+    # until the save question or the missing-media warning lights its green button (both measured
+    # within about 2.5 s of the press); a clean load runs out the time
+    lights = _push.send(_push.press(button), listen=6.0, until_cc=_push.CC_PROMPT_SAVE,
+                        until_value=_push.PROMPT_SAVE_GREEN)
+    if _push.save_prompt_shown(lights):
+        if unsaved == "ask":
+            cancelled = _push.send(_push.press(_push.CC_PROMPT_CANCEL), listen=1.5, until_cc=_push.CC_SETS)
+            closed = _push.close_set_browser(cancelled)
+            return ("Not loaded: %s has unsaved changes and the Push asked \"Save changes before closing?\". "
+                    "I pressed Cancel%s, so it stays open as it was. Ask the user, then call %s again "
+                    "with unsaved=\"save\" or unsaved=\"discard\"."
+                    % (_describe_open(before), " and closed the browser" if closed else
+                       "; the Sets light did not say whether the browser closed, so it may still be showing", tool))
+        answer = _push.CC_PROMPT_SAVE if unsaved == "save" else _push.CC_PROMPT_DONT_SAVE
+        # saving first takes about 3 s more
+        lights = _push.send(_push.press(answer), listen=10.0, until_cc=_push.CC_MEDIA_OK,
+                            until_value=_push.PROMPT_SAVE_GREEN)
+        did.append("answered the save-changes question with %s" % ("Save" if unsaved == "save" else "Don't Save"))
+    loaded = _push.wait_for_load(log, before)
+    opened = ", ".join(did)
+    if unsaved == "save" and len(did) > 1:
+        written = _push.set_files_written_since(pressed)
+        if not any(before and _push.same_file(f, before[1]) for f in written):
+            opened += "; WARNING: no new file for the Set that was open, so its changes may not be saved"
+    if loaded is None:
+        return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: the "
+                "browser may be on another entry, or the Push may be asking something." % opened)
+    if not expected(loaded[1]):
+        return ("Error: Live loaded %s, not %s (%s). The browser's order may differ from the folders' "
+                "dates; check list_sets." % (loaded[1], label, opened))
+    done = "Loaded %s (%s; Live's log: %s)." % (label, opened, loaded[0][:19])
+    missing = _push.files_not_opened(log, loaded)
+    named = " Live could not open: %s." % ", ".join(missing) if missing else ""
+    if _push.media_warning_shown(lights) and missing_media == "ok":
+        if _push.dismiss_media_warning():
+            return done + named + " The Push said \"some referenced media files are missing\"; I pressed OK."
+        return (done + named + " The Push said \"some referenced media files are missing\"; I pressed OK "
+                "but its lights did not come back, so the message may still be showing: ask the user to "
+                "look at its screen.")
+    if _push.media_warning_shown(lights):
+        return (done + named + " The Push is showing \"some referenced media files are missing\" and "
+                "ignores its other buttons until OK is pressed: ask the user to press OK, or to find the "
+                "files with the File Manager.")
+    if missing:
+        return (done + named + " The Push may be showing \"some referenced media files are missing\": "
+                "ask the user to look at its screen.")
+    return done
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
 @telemetry_tool("load_set")
 @trajectory_tool("load_set")
@@ -6326,59 +6380,57 @@ def load_set(
         if steps:
             _push.send(_push.jog(steps))
         _push.sleep(0.5)
-        pressed = int(_push.now())
-        # until the save question or the missing-media warning lights its green button (both measured
-        # within about 2.5 s of the press); a clean load runs out the time
-        lights = _push.send(_push.press(_push.CC_JOG_PRESS), listen=6.0, until_cc=_push.CC_PROMPT_SAVE,
-                            until_value=_push.PROMPT_SAVE_GREEN)
         did = ["pressed Sets %s, jogged %d down and pressed the jog wheel" % (
             "once" if presses == 1 else "twice (the browser was open)", steps)]
-        if _push.save_prompt_shown(lights):
-            if unsaved == "ask":
-                cancelled = _push.send(_push.press(_push.CC_PROMPT_CANCEL), listen=1.5, until_cc=_push.CC_SETS)
-                closed = _push.close_set_browser(cancelled)
-                return ("Not loaded: %s has unsaved changes and the Push asked \"Save changes before closing?\". "
-                        "I pressed Cancel%s, so it stays open as it was. Ask the user, then call load_set again "
-                        "with unsaved=\"save\" or unsaved=\"discard\"."
-                        % (_describe_open(before), " and closed the browser" if closed else
-                           "; the Sets light did not say whether the browser closed, so it may still be showing"))
-            answer = _push.CC_PROMPT_SAVE if unsaved == "save" else _push.CC_PROMPT_DONT_SAVE
-            # saving first takes about 3 s more
-            lights = _push.send(_push.press(answer), listen=10.0, until_cc=_push.CC_MEDIA_OK,
-                                until_value=_push.PROMPT_SAVE_GREEN)
-            did.append("answered the save-changes question with %s" % ("Save" if unsaved == "save" else "Don't Save"))
-        loaded = _push.wait_for_load(log, before)
-        opened = ", ".join(did)
-        if unsaved == "save" and len(did) > 1:
-            written = _push.set_files_written_since(pressed)
-            if not any(before and _push.same_file(f, before[1]) for f in written):
-                opened += "; WARNING: no new file for the Set that was open, so its changes may not be saved"
-        if loaded is None:
-            return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: the "
-                    "browser may be on another entry, or the Push may be asking something." % opened)
-        if not _push.same_file(loaded[1], target["als"]):
-            return ("Error: Live loaded %s, not '%s' (%s). The browser's order may differ from the folders' "
-                    "dates; check list_sets." % (loaded[1], target["name"], opened))
-        done = "Loaded '%s' (%s; Live's log: %s)." % (target["name"], opened, loaded[0][:19])
-        missing = _push.files_not_opened(log, loaded)
-        named = " Live could not open: %s." % ", ".join(missing) if missing else ""
-        if _push.media_warning_shown(lights) and missing_media == "ok":
-            if _push.dismiss_media_warning():
-                return done + named + " The Push said \"some referenced media files are missing\"; I pressed OK."
-            return (done + named + " The Push said \"some referenced media files are missing\"; I pressed OK "
-                    "but its lights did not come back, so the message may still be showing: ask the user to "
-                    "look at its screen.")
-        if _push.media_warning_shown(lights):
-            return (done + named + " The Push is showing \"some referenced media files are missing\" and "
-                    "ignores its other buttons until OK is pressed: ask the user to press OK, or to find the "
-                    "files with the File Manager.")
-        if missing:
-            return (done + named + " The Push may be showing \"some referenced media files are missing\": "
-                    "ask the user to look at its screen.")
-        return done
+        return _finish_set_change(_push.CC_JOG_PRESS, did, log, before, unsaved, missing_media,
+                                  lambda path: _push.same_file(path, target["als"]), "'%s'" % target["name"],
+                                  "load_set")
     except Exception as e:
         logger.error(f"Error loading a Set: {str(e)}")
         return f"Error loading a Set: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("new_set")
+@trajectory_tool("new_set")
+def new_set(
+    ctx: Context,
+    unsaved: Literal["ask", "save", "discard"] = "ask",
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Start a new, empty Set from Live's default template by pressing the Push 3's own buttons: Sets
+    (checking its light, as load_set does), then "+ New Set" (the second button above the screen),
+    then Live's log must show the template loading. The open Set is closed: if it has unsaved
+    changes the Push asks "Save changes before closing?" and `unsaved` answers it as in load_set:
+    "ask" (default) presses Cancel, closes the browser and changes nothing; "save" or "discard" only
+    when the user said so. The new Set has no name until save_set saves it.
+    Two steps: confirm=false (default) says what would be closed; confirm=true presses the buttons.
+
+    Parameters:
+    - unsaved: What to answer if the open Set has unsaved changes: "ask" (default), "save" or "discard"
+    - confirm: false = preview only (default), true = start the new Set
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if unsaved not in ("ask", "save", "discard"):
+            return "Error: unsaved must be \"ask\", \"save\" or \"discard\"."
+        log = _push.live_log()
+        before = _push.current_document(log)
+        if not confirm:
+            return ("NOT STARTED (preview only). This would open the Set browser and press New Set, closing %s; "
+                    "if that Set has unsaved changes: %s.\nTo start it, call new_set again with the same "
+                    "arguments and confirm=true." % (_describe_open(before), {
+                        "ask": "press Cancel and change nothing", "save": "save them first",
+                        "discard": "drop them"}[unsaved]))
+        presses = _push.open_set_browser()
+        did = ["pressed Sets %s and New Set" % ("once" if presses == 1 else "twice (the browser was open)")]
+        return _finish_set_change(_push.CC_NEW_SET, did, log, before, unsaved, "leave", _push.is_template,
+                                  "a new Set", "new_set")
+    except Exception as e:
+        logger.error(f"Error starting a new Set: {str(e)}")
+        return f"Error starting a new Set: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
