@@ -1,0 +1,6 @@
+frame:0    pts:0       pts_time:0
+lavfi.astats.Overall.RMS_level=-95.161181
+frame:1    pts:96000   pts_time:2
+lavfi.astats.Overall.RMS_level=-10.435743
+frame:2    pts:192000  pts_time:4
+lavfi.astats.Overall.RMS_level=-56.150414

@@ -1,0 +1,76 @@
+Guessed Channel Layout for Input Stream #0.0 : stereo
+Input #0, wav, from '../t.wav':
+  Duration: 00:00:06.00, bitrate: 1536 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, stereo, s16, 1536 kb/s
+[ebur128@whole @ 0x7508c0] Summary:
+
+  Integrated loudness:
+    I:         -70.0 LUFS
+    Threshold:   0.0 LUFS
+
+  Loudness range:
+    LRA:         0.0 LU
+    Threshold:   0.0 LUFS
+    LRA low:     0.0 LUFS
+    LRA high:    0.0 LUFS
+
+  True peak:
+    Peak:       -inf dBFS
+Stream mapping:
+  Stream #0:0 (pcm_s16le) -> asplit:default
+  silencedetect:default -> Stream #0:0 (pcm_s16le)
+Output #0, null, to 'pipe:':
+  Metadata:
+    encoder         : Lavf59.16.100
+  Stream #0:0: Audio: pcm_s16le, 48000 Hz, stereo, s16, 1536 kb/s
+    Metadata:
+      encoder         : Lavc59.18.100 pcm_s16le
+[silencedetect @ 0x764600] silence_start: 4
+size=N/A time=00:00:06.00 bitrate=N/A speed=26.9x    
+video:0kB audio:1125kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: unknown
+[Parsed_astats_25 @ 0x84d3c0] Overall
+[Parsed_astats_25 @ 0x84d3c0] RMS level dB: -56.150414
+[Parsed_astats_19 @ 0x84eb00] Overall
+[Parsed_astats_19 @ 0x84eb00] RMS level dB: -60.715562
+[Parsed_astats_11 @ 0x809100] Overall
+[Parsed_astats_11 @ 0x809100] RMS level dB: -74.869206
+[Parsed_astats_5 @ 0x7522c0] Overall
+[Parsed_astats_5 @ 0x7522c0] Peak level dB: -inf
+[Parsed_astats_5 @ 0x7522c0] RMS level dB: -inf
+[silencedetect @ 0x764600] silence_end: 6 | silence_duration: 2
+[astats@whole @ 0x7595c0] Overall
+[astats@whole @ 0x7595c0] DC offset: 0.000000
+[astats@whole @ 0x7595c0] Min level: -0.499969
+[astats@whole @ 0x7595c0] Max level: 0.499969
+[astats@whole @ 0x7595c0] Min difference: 0.000000
+[astats@whole @ 0x7595c0] Max difference: 0.353516
+[astats@whole @ 0x7595c0] Mean difference: 0.084717
+[astats@whole @ 0x7595c0] RMS difference: 0.156240
+[astats@whole @ 0x7595c0] Peak level dB: -6.021130
+[astats@whole @ 0x7595c0] RMS level dB: -10.792479
+[astats@whole @ 0x7595c0] RMS peak dB: -8.962933
+[astats@whole @ 0x7595c0] RMS trough dB: -182.748517
+[astats@whole @ 0x7595c0] Flat factor: 0.000000
+[astats@whole @ 0x7595c0] Peak count: 24400.000000
+[astats@whole @ 0x7595c0] Noise floor dB: -inf
+[astats@whole @ 0x7595c0] Noise floor count: 93601.000000
+[astats@whole @ 0x7595c0] Entropy: 0.309797
+[astats@whole @ 0x7595c0] Bit depth: 16/16
+[astats@whole @ 0x7595c0] Number of samples: 288000
+[astats@whole @ 0x7595c0] Number of NaNs: 0.000000
+[astats@whole @ 0x7595c0] Number of Infs: 0.000000
+[astats@whole @ 0x7595c0] Number of denormals: 0.000000
+[ebur128@whole @ 0x759140] Summary:
+
+  Integrated loudness:
+    I:          -4.6 LUFS
+    Threshold: -14.7 LUFS
+
+  Loudness range:
+    LRA:         2.7 LU
+    Threshold: -24.8 LUFS
+    LRA low:    -6.7 LUFS
+    LRA high:   -4.0 LUFS
+
+  True peak:
+    Peak:       -6.0 dBFS

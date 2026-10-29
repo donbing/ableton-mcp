@@ -1,0 +1,498 @@
+"""listen and analyze_audio_clip: measure what Live plays with ffmpeg, on the machine the server runs on.
+
+- Parsers run on ffmpeg 5.0.3 output captured on the Push 3 (2026-10-29, tests/data/listen): a 6 s
+  stereo WAV at 120 bpm 4/4, bar 1 a 100 Hz sine, bar 2 a 6 kHz sine, bar 3 silence.
+- analyze_file runs with subprocess mocked (it replays those files), and once with the real ffmpeg on
+  a WAV synthesised with `wave` when ffmpeg is installed (skipped otherwise).
+- The listen flow runs the real Remote Script handlers on a fake Song (as in test_batch_1_10_21) with
+  ffmpeg mocked. The fake slot follows what Live 12.4.6 did on the Push (2026-10-28): fired on an
+  armed track it waits for the launch quantization, then records, and with a record length it ends by
+  itself and the new clip plays.
+"""
+import math
+import struct
+import sys
+import types
+import wave
+from pathlib import Path
+
+import pytest
+
+import MCP_Server.listen as L
+import MCP_Server.server as server
+from MCP_Server.dataset.trajectory_decorator import MODIFYING_TOOLS
+from MCP_Server.remote_script_install import EXPECTED_REMOTE_SCRIPT_VERSION
+from tests.test_batch_1_10_19 import FakeLive
+from tests.test_notes_edit import make_inst, script_module  # noqa: F401
+from tests.test_scenes import call
+
+DATA = Path(__file__).resolve().parent / "data" / "listen"
+
+
+def captured(name):
+    return (DATA / name).read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- parsers
+
+def test_the_last_summary_and_the_whole_file_stats_are_read():
+    info = L.parse_log(captured("ffmpeg_log.txt"))
+    # ffmpeg prints an empty ebur128 summary first (-70 LUFS); the real one comes last
+    assert info["integrated_lufs"] == -4.6 and info["loudness_range_lu"] == 2.7 and info["true_peak_db"] == -6.0
+    assert info["peak_db"] == pytest.approx(-6.02, abs=0.01) and info["rms_db"] == pytest.approx(-10.79, abs=0.01)
+    assert info["duration"] == 6.0 and info["sample_rate"] == 48000
+    assert info["channels"] == "stereo" and info["codec"] == "pcm_s16le"
+    assert info["silences"] == [(4.0, 6.0)]
+
+
+def test_the_probe_alone_gives_the_sample_rate():
+    info = L.parse_log(captured("probe.txt"))
+    assert info["sample_rate"] == 48000 and "integrated_lufs" not in info and info["silences"] == []
+
+
+def test_silence_running_to_the_end_ends_with_the_file():
+    log = "  Duration: 00:00:08.00, bitrate: 1\n[silencedetect @ 0x1] silence_start: -0.01\n" \
+          "[silencedetect @ 0x1] silence_end: 1.5 | silence_duration: 1.5\n[silencedetect @ 0x1] silence_start: 6.2\n"
+    assert L.parse_log(log)["silences"] == [(0.0, 1.5), (6.2, 8.0)]
+
+
+def test_chunk_files_parse_into_one_dict_per_bar():
+    frames = L.parse_frames(captured("full.txt"))
+    assert [f["t"] for f in frames] == [0.0, 2.0, 4.0]
+    assert frames[0]["RMS_level"] == pytest.approx(-9.03, abs=0.01) and frames[2]["Peak_level"] == -math.inf
+
+
+def captured_frames():
+    return {name: L.parse_frames(captured(name + ".txt")) for name in ("full", "low", "mid", "high")}
+
+
+def test_bars_show_where_the_energy_is():
+    rows = L.bar_rows(captured_frames(), 2.0, 6.0)
+    assert [r["bars"] for r in rows] == [(1, 1), (2, 2), (3, 3)]
+    low_bar, high_bar, silent = rows
+    assert low_bar["low_db"] > low_bar["mid_db"] + 25 and low_bar["high_db"] < -50
+    assert high_bar["high_db"] > high_bar["mid_db"] + 10 and high_bar["low_db"] < -35
+    # the filters ring on into the silent bar; the table shows it as silent
+    assert silent["rms_db"] == -math.inf and silent["low_db"] == -math.inf and silent["peak_db"] == -math.inf
+
+
+def test_bars_are_grouped_by_power_not_by_averaging_decibels():
+    rows = L.bar_rows(captured_frames(), 2.0, 6.0, bars_per_row=2)
+    assert [r["bars"] for r in rows] == [(1, 2), (3, 3)]
+    assert rows[0]["rms_db"] == pytest.approx(-9.03, abs=0.01) and rows[0]["peak_db"] == pytest.approx(-6.02, abs=0.01)
+    # one loud bar and one 30 dB quieter: about 3 dB under the loud one, not halfway
+    assert rows[0]["low_db"] == pytest.approx(-9.26 - 3.0, abs=0.05)
+
+
+def test_long_takes_fold_into_at_most_32_rows():
+    frames = {"full": [{"t": i * 2.0, "RMS_level": -20.0, "Peak_level": -6.0} for i in range(64)]}
+    rows = L.bar_rows(frames, 2.0, 128.0)
+    assert len(rows) == 32 and rows[0]["bars"] == (1, 2) and rows[-1]["bars"] == (63, 64)
+
+
+def test_bar_lengths():
+    assert L.bar_seconds(120, 4, 4) == 2.0
+    assert L.bar_seconds(120, 6, 8) == 1.5
+    assert L.bar_seconds(90, 3, 4) == 2.0
+
+
+def test_the_report_is_a_compact_table():
+    result = dict(L.parse_log(captured("ffmpeg_log.txt")), silence_db=-50.0, silence_seconds=0.5,
+                  seconds_per_bar=2.0, rows=L.bar_rows(captured_frames(), 2.0, 6.0))
+    text = L.format_report(result)
+    assert "6.00 s, 48000 Hz, stereo, pcm_s16le" in text
+    assert "Loudness -4.6 LUFS integrated, range 2.7 LU, true peak -6.0 dBTP; peak -6.0 dBFS, RMS -10.8 dBFS" in text
+    assert "4.00-6.00 s (bar 3)" in text
+    lines = text.splitlines()
+    header = lines.index("bars       rms   peak    low    mid   high")
+    assert lines[header + 3].split() == ["3", "-inf", "-inf", "-inf", "-inf", "-inf"]
+    assert "ffmpeg" not in text and "lavfi" not in text
+
+
+def test_a_silent_file_says_so():
+    text = L.format_report({"duration": 4.0, "integrated_lufs": -70.0, "silences": [(0.0, 4.0)],
+                            "silence_db": -50.0, "silence_seconds": 0.5})
+    assert "-70.0 LUFS integrated (silent)" in text
+
+
+# --------------------------------------------------------------------------- analyze_file, ffmpeg mocked
+
+def test_analyze_file_runs_ffmpeg_with_no_stdin_and_no_paths_in_the_graph(tmp_path, monkeypatch):
+    wav = tmp_path / "take.wav"
+    wav.write_bytes(b"RIFF")
+    calls = []
+
+    def fake_run(args, cwd, stdin, capture_output, text, errors, timeout):
+        calls.append((args, stdin))
+        if "-filter_complex" not in args:
+            return types.SimpleNamespace(returncode=1, stderr=captured("probe.txt"))
+        for name in ("full", "low", "mid", "high"):
+            Path(cwd, name + ".txt").write_text(captured(name + ".txt"), encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stderr=captured("ffmpeg_log.txt"))
+
+    monkeypatch.setattr(L.subprocess, "run", fake_run)
+    result = L.analyze_file(str(wav), 2.0, ffmpeg="ffmpeg")
+    assert len(calls) == 2 and all(stdin is L.subprocess.DEVNULL and "-nostdin" in a for a, stdin in calls)
+    graph = calls[1][0][calls[1][0].index("-filter_complex") + 1]
+    # one chunk per bar: 2 s at 48 kHz
+    assert "asetnsamples=n=96000:p=0" in graph and str(tmp_path) not in graph
+    assert result["integrated_lufs"] == -4.6 and [r["bars"] for r in result["rows"]] == [(1, 1), (2, 2), (3, 3)]
+
+
+def test_analyze_file_errors_are_plain(tmp_path, monkeypatch):
+    with pytest.raises(L.ListenError, match="No audio file"):
+        L.analyze_file(str(tmp_path / "missing.wav"), ffmpeg="ffmpeg")
+    monkeypatch.setattr(L, "find_ffmpeg", lambda: None)
+    with pytest.raises(L.ListenError, match="ffmpeg was not found"):
+        L.analyze_file(str(tmp_path / "x.wav"))
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"RIFF")
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: types.SimpleNamespace(
+        returncode=1, stderr="x.wav: Invalid data found when processing input\n"))
+    with pytest.raises(L.ListenError, match="no audio stream"):
+        L.analyze_file(str(wav), ffmpeg="ffmpeg")
+
+
+# --------------------------------------------------------------------------- the real ffmpeg
+
+def synth_wav(path, rate=48000, bar=96000):
+    """Bar 1 a 100 Hz sine, bar 2 a 6 kHz sine, bar 3 silence: 120 bpm 4/4, stereo, 16 bit."""
+    frames = bytearray()
+    for i in range(3 * bar):
+        b = i // bar
+        v = 0 if b == 2 else int(0.5 * 32767 * math.sin(2 * math.pi * (100.0 if b == 0 else 6000.0) * i / rate))
+        frames += struct.pack("<hh", v, v)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(frames))
+
+
+@pytest.mark.skipif(not L.find_ffmpeg(), reason="ffmpeg is not installed")
+def test_the_real_ffmpeg_splits_bands_per_bar_and_finds_the_silence(tmp_path):
+    wav = tmp_path / "bands.wav"
+    synth_wav(wav)
+    result = L.analyze_file(str(wav), 2.0)
+    low_bar, high_bar, silent = result["rows"]
+    assert low_bar["low_db"] > -10 and low_bar["low_db"] > low_bar["mid_db"] + 25 and low_bar["high_db"] < -60
+    assert high_bar["high_db"] > -11 and high_bar["high_db"] > high_bar["mid_db"] + 10 and high_bar["low_db"] < -35
+    assert silent["rms_db"] == -math.inf
+    assert len(result["silences"]) == 1 and result["silences"][0] == pytest.approx((4.0, 6.0), abs=0.05)
+    assert result["peak_db"] == pytest.approx(-6.0, abs=0.1) and result["rms_db"] == pytest.approx(-10.8, abs=0.1)
+    assert L.spectrogram_png(str(wav), 200, 100).startswith(b"\x89PNG")
+
+
+# --------------------------------------------------------------------------- the listen flow
+
+@pytest.fixture(autouse=True)
+def live(monkeypatch):
+    fake = FakeLive()
+    monkeypatch.setitem(sys.modules, "Live", fake)
+    return fake
+
+
+class Param(object):
+    def __init__(self, value):
+        self.value = value
+
+    def str_for_value(self, value):
+        return "%.1f" % value
+
+
+class Clip(object):
+    def __init__(self, name, audio=True):
+        self.name, self.is_audio_clip = name, audio
+        self.is_recording, self.is_playing, self.length = False, False, 0.0
+        self.file_path = None
+
+
+class Slot(object):
+    """Fired empty on an armed track: waits `wait` polls (the launch quantization), then records; with a
+    record length it ends `takes` polls later and the new clip plays."""
+
+    def __init__(self, song, clip=None, takes_length=True):
+        self.song, self.clip, self.takes_length = song, clip, takes_length
+        self.is_triggered, self.record_length, self.left = False, None, 0
+        self.fired, self.stopped = [], 0
+
+    @property
+    def has_clip(self):
+        return self.clip is not None
+
+    @property
+    def is_recording(self):
+        return self.clip is not None and self.clip.is_recording
+
+    def fire(self, **kwargs):
+        if kwargs and not self.takes_length:
+            raise TypeError("fire() got an unexpected keyword argument")
+        self.fired.append(kwargs)
+        if self.is_recording:
+            self.finish()
+        elif self.clip is None:
+            self.is_triggered, self.record_length, self.left = True, kwargs.get("record_length"), self.song.wait
+
+    def stop(self):
+        self.stopped += 1
+        if self.is_triggered:
+            self.is_triggered = False
+        elif self.is_recording:
+            self.finish()
+        elif self.clip is not None:
+            self.clip.is_playing = False
+
+    def delete_clip(self):
+        self.clip = None
+
+    def finish(self):
+        self.clip.is_recording, self.clip.is_playing = False, True
+        self.clip.length = self.song.taken_beats
+        self.clip.file_path = "/data/Music/Ableton/Sets/Test Project/Samples/Recorded/0001 Listen.wav"
+
+    def tick(self):
+        if self.is_triggered and self.song.is_playing:
+            self.left -= 1
+            if self.left <= 0:
+                self.is_triggered, self.clip = False, Clip("1-Listen")
+                self.clip.is_recording, self.left = True, self.song.takes
+        elif self.is_recording and self.record_length is not None:
+            self.left -= 1
+            if self.left <= 0:
+                self.finish()
+
+
+def routing(name):
+    return types.SimpleNamespace(display_name=name)
+
+
+class Track(object):
+    def __init__(self, song, name, midi=False, armed=False, input_type="Resampling", monitoring=2, slots=3):
+        self.song, self.name = song, name
+        self.has_midi_input, self.has_audio_input = midi, not midi
+        self.can_be_armed, self._arm = True, armed
+        self.mute = self.solo = False
+        self.devices, self.arrangement_clips, self.group_track, self.color_index = [], [], None, 0
+        self.mixer_device = types.SimpleNamespace(volume=Param(0.85), panning=Param(0.0))
+        self.clip_slots = [Slot(song) for _ in range(slots)]
+        self.input_routing_type, self.input_routing_channel = routing(input_type), routing("Post FX")
+        self.available_input_routing_types = [routing(n) for n in ("Ext. In", "Resampling", "No Input")]
+        self.available_input_routing_channels = [routing("Post FX")]
+        self.current_monitoring_state = monitoring
+
+    @property
+    def arm(self):
+        return self._arm
+
+    @arm.setter
+    def arm(self, value):
+        if value and self.song.exclusive_arm:
+            for t in self.song.tracks:
+                t._arm = False
+        self._arm = value
+
+
+class Song(object):
+    def __init__(self):
+        self.tracks = [Track(self, "Drums", midi=True, input_type="All Ins"),
+                       Track(self, "Vox", input_type="Ext. In", monitoring=1),
+                       Track(self, "Listen")]
+        self.tracks[0].clip_slots[0].clip = Clip("Beat", audio=False)
+        self.return_tracks, self.scenes, self.cue_points = [], [None] * 3, []
+        self.master_track = types.SimpleNamespace(name="Main", devices=[],
+                                                  mixer_device=types.SimpleNamespace(volume=Param(0.85),
+                                                                                     panning=Param(0.0)))
+        self.tempo, self.signature_numerator, self.signature_denominator = 120.0, 4, 4
+        self.clip_trigger_quantization = 4
+        self.is_playing, self.exclusive_arm = True, False
+        # polls before the take starts and until it ends
+        self.wait, self.takes, self.taken_beats = 2, 3, 8.0
+
+    def tick(self):
+        for t in self.tracks:
+            for s in t.clip_slots:
+                s.tick()
+
+
+class LiveConnection(object):
+    """The server's connection, answered by the real Remote Script. Each get_track_info is one poll."""
+
+    def __init__(self, inst, song):
+        self.inst, self.song, self.sent = inst, song, []
+
+    def send_command(self, command, params=None):
+        self.sent.append((command, params or {}))
+        if command == "get_track_info":
+            self.song.tick()
+        reply = self.inst._process_command({"type": command, "params": params or {}})
+        if reply["status"] == "error":
+            raise Exception(reply["message"])
+        return reply["result"]
+
+    def commands(self):
+        return [c for c, _ in self.sent]
+
+
+@pytest.fixture
+def song():
+    return Song()
+
+
+@pytest.fixture
+def conn(script_module, song, monkeypatch):
+    import MCP_Server.dataset.consent as consent
+    import MCP_Server.script_handshake as sh
+    import MCP_Server.telemetry_decorator as td
+
+    inst = make_inst(script_module, song)
+    monkeypatch.setattr(script_module.time, "sleep", lambda s: None)
+    fake = LiveConnection(inst, song)
+    clock = [1000.0]
+    monkeypatch.setattr(server, "_listen_now", lambda: clock[0])
+    monkeypatch.setattr(server, "_listen_sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(server, "get_ableton_connection", lambda: fake)
+    monkeypatch.setattr(td, "get_telemetry", lambda: types.SimpleNamespace(record_event=lambda *a, **k: None),
+                        raising=False)
+    monkeypatch.setattr(consent, "maybe_consent_notice", lambda: "")
+    # the real check, against what this Remote Script reports in the handshake
+    monkeypatch.setattr(sh, "_script_info", {"script_version": EXPECTED_REMOTE_SCRIPT_VERSION,
+                                             "capabilities": list(script_module.SCRIPT_CAPABILITIES)})
+    return fake
+
+
+@pytest.fixture
+def measured(monkeypatch):
+    seen = []
+
+    def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0):
+        seen.append((path, seconds_per_bar, bars_per_row, silence_db))
+        return dict(L.parse_log(captured("ffmpeg_log.txt")), path=path, silence_db=silence_db, silence_seconds=0.5,
+                    seconds_per_bar=seconds_per_bar, rows=L.bar_rows(captured_frames(), 2.0, 6.0))
+
+    monkeypatch.setattr(L, "find_ffmpeg", lambda: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(L, "analyze_file", analyze_file)
+    monkeypatch.setattr(L, "spectrogram_png", lambda path: b"\x89PNG fake")
+    return seen
+
+
+LISTEN = dict(scratch_track_index=2, expected_name="Listen")
+CHANGES = {"set_track_arm", "record_into_slot", "stop_clip", "delete_clip"}
+
+
+def test_listen_records_measures_and_cleans_up(conn, song, measured):
+    out = call(server.listen, None, bars=2, **LISTEN)
+    slot = song.tracks[2].clip_slots[0]
+    assert slot.fired == [{"record_length": 8.0}]
+    # the take was stopped once it played, then deleted; the arm is back off
+    assert slot.stopped == 1 and slot.clip is None and song.tracks[2].arm is False
+    assert measured == [(
+        "/data/Music/Ableton/Sets/Test Project/Samples/Recorded/0001 Listen.wav", 2.0, None, -50.0)]
+    assert out.startswith("Listened on 'Listen' (track 2) at 120.0 bpm 4/4: armed it for the take; "
+                          "recorded 2 bars into slot 0")
+    assert "stopped the new clip" in out and "disarmed it again" in out and "deleted the take's clip" in out
+    assert "Loudness -4.6 LUFS integrated" in out and "bars       rms   peak    low    mid   high" in out
+    assert "Note:" not in out
+
+
+def test_keep_leaves_the_stopped_take_and_an_armed_track_stays_armed(conn, song, measured):
+    song.tracks[2]._arm = True
+    out = call(server.listen, None, bars=1, clip_index=1, keep=True, **LISTEN)
+    slot = song.tracks[2].clip_slots[1]
+    assert slot.fired == [{"record_length": 4.0}] and slot.clip is not None and slot.clip.is_playing is False
+    assert song.tracks[2].arm is True and "set_track_arm" not in conn.commands()
+    assert "kept the take in slot 1" in out
+
+
+def test_exclusive_arm_is_undone(conn, song, measured):
+    song.exclusive_arm, song.tracks[1]._arm = True, True
+    out = call(server.listen, None, **LISTEN)
+    assert song.tracks[1].arm is True and song.tracks[2].arm is False
+    assert "re-armed track(s) 1, which Exclusive Arm had disarmed" in out
+
+
+@pytest.mark.parametrize("change, expected", [
+    (lambda s: None, "not 'Lisen'"),
+    (lambda s: setattr(s.tracks[2], "input_routing_type", routing("Ext. In")), "records from 'Ext. In'"),
+    (lambda s: setattr(s.tracks[2], "input_routing_type", routing("No Input")), "records from 'No Input'"),
+    (lambda s: setattr(s.tracks[2], "current_monitoring_state", 1), "monitoring on 'Listen' is 'auto'"),
+    (lambda s: setattr(s, "is_playing", False), "Live is not playing"),
+    (lambda s: [setattr(slot, "clip", Clip("x")) for slot in s.tracks[2].clip_slots], "no empty slot"),
+])
+def test_listen_refuses_and_changes_nothing(conn, song, measured, change, expected):
+    change(song)
+    name = "Lisen" if "Lisen" in expected else "Listen"
+    out = call(server.listen, None, scratch_track_index=2, expected_name=name)
+    assert out.startswith("Error") and expected in out
+    assert not CHANGES & set(conn.commands()) and measured == []
+    if "records from" in out or "monitoring" in out:
+        assert "set_track_routing(track_index=2, expected_name='Listen', direction='input', " \
+               "routing_type='Resampling') and set_track_monitoring(track_index=2, state='off')" in out
+
+
+def test_listen_refuses_bad_arguments(conn, song, measured):
+    assert "listen needs an audio track" in call(server.listen, None, scratch_track_index=0, expected_name="Drums")
+    assert "out of range" in call(server.listen, None, scratch_track_index=7, expected_name="X")
+    assert "bars must be" in call(server.listen, None, bars=0, **LISTEN)
+    assert "bars must be" in call(server.listen, None, bars=33, **LISTEN)
+    song.tracks[2].clip_slots[1].clip = Clip("Old")
+    assert "holds a clip" in call(server.listen, None, clip_index=1, **LISTEN)
+    assert "slot 9 out of range" in call(server.listen, None, clip_index=9, **LISTEN)
+    assert not CHANGES & set(conn.commands())
+
+
+def test_listen_needs_ffmpeg(conn, monkeypatch):
+    monkeypatch.setattr(L, "find_ffmpeg", lambda: None)
+    assert "ffmpeg was not found" in call(server.listen, None, **LISTEN) and conn.sent == []
+
+
+def test_a_take_that_never_starts_is_cancelled_within_its_bound(conn, song, measured):
+    song.wait = 10 ** 6
+    out = call(server.listen, None, bars=2, **LISTEN)
+    slot = song.tracks[2].clip_slots[0]
+    assert out.startswith("Error: no take was recorded") and "had not finished after" in out
+    assert slot.is_triggered is False and slot.clip is None and song.tracks[2].arm is False
+    assert measured == [] and "delete_clip" not in conn.commands()
+    # (1 bar of launch wait + 2 bars) at 2 s a bar + 3 s margin, polled every 0.25 s
+    assert 30 <= conn.commands().count("get_track_info") <= 40
+
+
+def test_a_live_without_record_length_is_stopped_after_the_bars(conn, song, measured):
+    for slot in song.tracks[2].clip_slots:
+        slot.takes_length = False
+    out = call(server.listen, None, bars=1, **LISTEN)
+    assert out.startswith("Listened") and "Note:" not in out
+    assert song.tracks[2].clip_slots[0].fired == [{}] and song.tracks[2].clip_slots[0].clip is None
+
+
+def test_a_failed_measurement_still_deletes_the_take(conn, song, measured, monkeypatch):
+    def broken(*a, **k):
+        raise L.ListenError("ffmpeg failed (exit 1): boom")
+
+    monkeypatch.setattr(L, "analyze_file", broken)
+    out = call(server.listen, None, **LISTEN)
+    assert out == "Error in listen: ffmpeg failed (exit 1): boom"
+    assert song.tracks[2].clip_slots[0].clip is None and song.tracks[2].arm is False
+
+
+def test_the_spectrogram_comes_back_as_an_image_only_when_asked(conn, song, measured):
+    out = call(server.listen, None, spectrogram=True, **LISTEN)
+    assert isinstance(out, list) and out[0].startswith("Listened") and out[1].data == b"\x89PNG fake"
+    assert isinstance(call(server.listen, None, **LISTEN), str)
+
+
+def test_analyze_audio_clip_reads_the_clips_file_at_the_set_tempo(conn, song, measured):
+    clip = Clip("Hihat Clap House")
+    clip.file_path = "/data/Music/Ableton/Core Library/Samples/Loops/Hihat Clap House 120 bpm.wav"
+    song.tracks[2].clip_slots[1].clip = clip
+    song.tempo = 90.0
+    out = call(server.analyze_audio_clip, None, 2, 1, bars_per_row=2)
+    assert measured == [(clip.file_path, 8.0 / 3, 2, -50.0)]
+    assert out.startswith("Clip 'Hihat Clap House' (track 2, slot 1), file ") and "bars at 90.0 bpm 4/4" in out
+    assert not CHANGES & set(conn.commands())
+    assert "not an audio clip" in call(server.analyze_audio_clip, None, 0, 0)
+    with_image = call(server.analyze_audio_clip, None, 2, 1, spectrogram=True)
+    assert isinstance(with_image, list) and with_image[1].data == b"\x89PNG fake"
+
+
+def test_listen_is_a_modifying_tool_and_analyze_is_read_only():
+    assert "listen" in MODIFYING_TOOLS and "analyze_audio_clip" not in MODIFYING_TOOLS

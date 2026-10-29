@@ -1,15 +1,17 @@
 # ableton_mcp_server.py
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import FastMCP, Context, Image
 from mcp.types import ToolAnnotations
 import socket
 import json
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Literal, Optional, Union
 
+from . import listen as _listen
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 from .dataset import dataset_enabled, get_recorder
@@ -4772,6 +4774,278 @@ def stop_recording(ctx: Context, stop_transport: bool = False, user_prompt: str 
     except Exception as e:
         logger.error(f"Error in stop_recording: {str(e)}")
         return f"Error in stop_recording: {str(e)}"
+
+
+# ------------------------------------------------------------------ listening (ffmpeg on this machine)
+
+LISTEN_MAX_BARS = 32
+# bars a take can wait for the launch quantization; anything shorter than a bar waits at most one
+_LAUNCH_WAIT_BARS = {"none": 0, "8 bars": 8, "4 bars": 4, "2 bars": 2}
+# the listen poll's clock, replaceable in tests
+_listen_now = time.monotonic
+_listen_sleep = time.sleep
+
+
+def _live(command: str, params: Optional[dict] = None) -> Dict[str, Any]:
+    from .script_handshake import _LEGACY_CAPABILITIES, require_capability
+
+    # commands older than the handshake (stop_clip) are not in the capability list
+    missing = None if command in _LEGACY_CAPABILITIES else require_capability(command)
+    if missing:
+        raise _listen.ListenError(missing)
+    return get_ableton_connection().send_command(command, params or {})
+
+
+def _seconds_per_bar(tempo: float, time_signature: str) -> float:
+    numerator, denominator = (int(x) for x in str(time_signature).split("/"))
+    return _listen.bar_seconds(float(tempo), numerator, denominator)
+
+
+def _with_spectrogram(text: str, path: str, spectrogram: bool):
+    if not spectrogram:
+        return text
+    return [text, Image(data=_listen.spectrogram_png(path), format="png")]
+
+
+def _wait_for_file(path: str, timeout: float = 3.0) -> None:
+    """Live finishes writing a take just after the clip appears: wait until its size holds still."""
+    deadline, last = _listen_now() + timeout, None
+    while _listen_now() < deadline:
+        size = os.path.getsize(path) if os.path.isfile(path) else None
+        if size and size == last:
+            return
+        last = size
+        _listen_sleep(0.2)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True), structured_output=False)
+@telemetry_tool("analyze_audio_clip")
+@trajectory_tool("analyze_audio_clip")
+def analyze_audio_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    arrangement: bool = False,
+    bars_per_row: Optional[int] = None,
+    spectrogram: bool = False,
+    silence_db: float = -50.0,
+    user_prompt: str = "",
+):
+    """
+    Measure an audio clip's file with ffmpeg: integrated loudness (LUFS), loudness range, true peak,
+    peak and RMS, silent stretches, and a per-bar table of RMS, peak and the low (<250 Hz), mid
+    (250 Hz-4 kHz) and high (>4 kHz) band levels. Bars are counted from the start of the file at the
+    set's current tempo, so they line up for a take recorded in this set (listen, record_into_slot)
+    but not for a sample at another tempo or one whose start marker is moved. It reads the whole
+    file, not just the clip's loop. Read-only.
+
+    Parameters:
+    - track_index, clip_index: The clip (a Session slot, or with arrangement=True the position in the
+      track's Arrangement clips, as get_arrangement_clips lists them)
+    - arrangement: False (default) Session slot, True Arrangement clip
+    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
+    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of audio)
+    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        clip = _live("get_audio_clip_info", {"track_index": track_index, "clip_index": clip_index,
+                                             "arrangement": arrangement})
+        path = clip.get("file_path")
+        if not path:
+            return "Error: Live reports no file for this clip, so there is nothing to measure."
+        overview = _live("get_tracks_overview")
+        spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
+        text = ("Clip '%s' (track %d, %s %d), file %s, bars at %s bpm %s\n"
+                % (clip.get("name", ""), track_index, "arrangement clip" if arrangement else "slot", clip_index,
+                   path, overview["tempo"], overview["time_signature"]) + _listen.format_report(result))
+        return _with_spectrogram(text, path, spectrogram)
+    except Exception as e:
+        logger.error(f"Error analyzing audio clip: {str(e)}")
+        return f"Error analyzing audio clip: {str(e)}"
+
+
+def _listen_refusal(overview: dict, index: int, expected_name: str) -> Optional[str]:
+    """Why listen must not record on this track, or None. Nothing is changed either way."""
+    tracks = overview.get("tracks", [])
+    if not 0 <= index < len(tracks):
+        return "Error: track index %d out of range (the set has %d tracks)." % (index, len(tracks))
+    row = tracks[index]
+    if row.get("name") != expected_name:
+        return ("Error: track %d is '%s', not '%s'; indices may have shifted. Nothing was recorded."
+                % (index, row.get("name"), expected_name))
+    if row.get("kind") != "audio":
+        return "Error: '%s' is a %s track; listen needs an audio track." % (expected_name, row.get("kind"))
+    setup = ("Set it up once: set_track_routing(track_index=%d, expected_name='%s', direction='input', "
+             "routing_type='Resampling') and set_track_monitoring(track_index=%d, state='off')."
+             % (index, expected_name, index))
+    input_type = (_live("get_track_routing", {"track_index": index}).get("input") or {}).get("type")
+    if input_type in (None, "No Input", "Ext. In"):
+        return ("Error: '%s' records from %s, not from Live's output. Nothing was recorded. %s"
+                % (expected_name, "'%s'" % input_type if input_type else "no input", setup))
+    if row.get("monitoring") != "off":
+        return ("Error: monitoring on '%s' is '%s'; it must be 'off' so the take cannot play back into "
+                "what it records. Nothing was recorded. %s" % (expected_name, row.get("monitoring"), setup))
+    if not overview.get("is_playing"):
+        return ("Error: Live is not playing, so the take would be silent. Nothing was recorded. "
+                "Fire the clips (or start playback) first.")
+    return None
+
+
+def _record_take(index: int, slot: int, expected_name: str, bars: float, spb: float,
+                 did: list, notes: list) -> Optional[dict]:
+    """Record into the slot and wait for the take (bounded by the launch wait, its length and a margin).
+    Returns the finished clip's info from get_track_info, or None when no take came."""
+    started = _listen_now()
+    rec = _live("record_into_slot", {"track_index": index, "clip_index": slot,
+                                     "expected_name": expected_name, "length_bars": bars, "confirm": True})
+    stops_itself = rec.get("record_length_applied", True)
+    wait_bars = _LAUNCH_WAIT_BARS.get(rec.get("launch_quantization"), 1)
+    deadline = started + (wait_bars + bars) * spb + 3.0
+    recording_since, take = None, None
+    while True:
+        state = _live("get_track_info", {"track_index": index})["clip_slots"][slot]
+        clip = state.get("clip") or {}
+        if state.get("has_clip") and not clip.get("is_recording"):
+            take = clip
+            break
+        now = _listen_now()
+        if clip.get("is_recording") and recording_since is None:
+            recording_since = now
+        late = now > deadline
+        # a Live without record_length: end the take by hand once it is long enough
+        long_enough = not stops_itself and recording_since is not None and now - recording_since >= bars * spb
+        if late or long_enough:
+            # stopping a recording slot ends the take; a slot still waiting to record is cancelled
+            _live("stop_clip", {"track_index": index, "clip_index": slot})
+            if late:
+                notes.append("the take had not finished after %.1f s, so it was stopped" % (now - started))
+            _listen_sleep(0.3)
+            state = _live("get_track_info", {"track_index": index})["clip_slots"][slot]
+            if state.get("has_clip"):
+                take = state.get("clip") or {}
+            break
+        _listen_sleep(0.25)
+    if take is not None:
+        # a finished take starts playing
+        _live("stop_clip", {"track_index": index, "clip_index": slot})
+        did.append("recorded %g bars into slot %d (%.1f s) and stopped the new clip"
+                   % (bars, slot, _listen_now() - started))
+    return take
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
+@telemetry_tool("listen")
+@trajectory_tool("listen")
+def listen(
+    ctx: Context,
+    scratch_track_index: int,
+    expected_name: str,
+    bars: float = 2.0,
+    clip_index: Optional[int] = None,
+    keep: bool = False,
+    bars_per_row: Optional[int] = None,
+    spectrogram: bool = False,
+    silence_db: float = -50.0,
+    user_prompt: str = "",
+):
+    """
+    Hear what Live is playing: record `bars` of Live's own output on a scratch audio track, measure
+    the take with ffmpeg (as analyze_audio_clip does: loudness, peak, RMS, silence and a per-bar
+    level and band table) and delete the take's clip. Start playback or fire the clips first. The
+    take starts at the next launch quantization (usually the next bar), so a pass takes up to a bar
+    longer than its length, plus a moment to measure.
+    The scratch track must already take its input from Live (input "Resampling", "Main" or another
+    track's output) with monitoring "off", so the take cannot feed back into Main; this tool refuses
+    otherwise and never reroutes. Set one up once: create_audio_track, set_track_routing
+    (direction "input", routing_type "Resampling") and set_track_monitoring "off". It arms the track
+    for the take and leaves every arm as it was (re-arming tracks Live's Exclusive Arm disarmed).
+    The WAV stays in the project's Samples/Recorded folder (Live keeps track of project files).
+
+    Parameters:
+    - scratch_track_index: The scratch audio track
+    - expected_name: Its exact current name (safety check)
+    - bars: Bars to record (default 2, at most 32)
+    - clip_index: The empty slot to record into (default: the track's first empty slot)
+    - keep: True keeps the take's clip in its slot (default false: deleted after measuring)
+    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
+    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of audio)
+    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if not _listen.find_ffmpeg():
+            return "Error: ffmpeg was not found where the MCP server runs, so nothing can be measured."
+        if isinstance(bars, bool) or not 0 < float(bars) <= LISTEN_MAX_BARS:
+            return "Error: bars must be above 0 and at most %d." % LISTEN_MAX_BARS
+        bars, index = float(bars), scratch_track_index
+        overview = _live("get_tracks_overview")
+        refusal = _listen_refusal(overview, index, expected_name)
+        if refusal:
+            return refusal
+        slots = _live("get_track_info", {"track_index": index}).get("clip_slots", [])
+        if clip_index is None:
+            free = [s["index"] for s in slots if not s.get("has_clip")]
+            if not free:
+                return ("Error: '%s' has no empty slot; delete a clip on it or create_scene. Nothing was recorded."
+                        % expected_name)
+            slot = free[0]
+        elif not 0 <= clip_index < len(slots):
+            return "Error: slot %d out of range ('%s' has %d slots)." % (clip_index, expected_name, len(slots))
+        elif slots[clip_index].get("has_clip"):
+            return "Error: slot %d on '%s' holds a clip; pick an empty one." % (clip_index, expected_name)
+        else:
+            slot = clip_index
+        spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
+
+        did, notes, take = [], [], None
+        try:
+            if index not in armed_before:
+                _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
+                                        "expected_name": expected_name})
+                did.append("armed it for the take")
+            take = _record_take(index, slot, expected_name, bars, spb, did, notes)
+        finally:
+            restore = [(index, False)] if index not in armed_before else []
+            now_armed = {t["index"] for t in _live("get_tracks_overview").get("tracks", []) if t.get("arm")}
+            # Live's Exclusive Arm disarms the others when one track is armed
+            rearm = sorted(armed_before - now_armed - {index})
+            for i, arm in restore + [(i, True) for i in rearm]:
+                _live("set_track_arm", {"track_index": i, "enabled": arm, "track_type": "track"})
+            if restore:
+                did.append("disarmed it again")
+            if rearm:
+                did.append("re-armed track(s) %s, which Exclusive Arm had disarmed" % ", ".join(map(str, rearm)))
+        if take is None:
+            return ("Error: no take was recorded on '%s' (%s). Is the transport still playing?"
+                    % (expected_name, "; ".join(did + notes) or "nothing changed"))
+
+        path = None
+        try:
+            path = _live("get_audio_clip_info", {"track_index": index, "clip_index": slot}).get("file_path")
+            if not path:
+                raise _listen.ListenError("Live reports no file for the take")
+            _wait_for_file(path)
+            result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
+        finally:
+            if keep:
+                did.append("kept the take in slot %d" % slot)
+            else:
+                _live("delete_clip", {"track_index": index, "clip_index": slot})
+                did.append("deleted the take's clip (the WAV stays)")
+        lines = ["Listened on '%s' (track %d) at %s bpm %s: %s."
+                 % (expected_name, index, overview["tempo"], overview["time_signature"], "; ".join(did))]
+        lines += ["Note: %s." % n for n in notes]
+        lines += ["File: %s" % path, _listen.format_report(result)]
+        if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
+            lines.append("The take is silent: check that the clips play, nothing is muted and Main is up.")
+        # the WAV outlives the clip, so the picture can be drawn after the clip is gone
+        return _with_spectrogram("\n".join(lines), path, spectrogram)
+    except Exception as e:
+        logger.error(f"Error in listen: {str(e)}")
+        return f"Error in listen: {str(e)}"
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

@@ -62,6 +62,7 @@ MODIFYING_TOOLS = {
     "copy_clip_to_slot",
     "press_dialog_button",
     "set_track_monitoring",
+    "listen",
     "duplicate_track",
     "replace_clip_notes",
     "set_color",

@@ -1,0 +1,5 @@
+Guessed Channel Layout for Input Stream #0.0 : stereo
+Input #0, wav, from '../t.wav':
+  Duration: 00:00:06.00, bitrate: 1536 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, stereo, s16, 1536 kb/s
+At least one output file must be specified

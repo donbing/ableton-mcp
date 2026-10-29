@@ -1,0 +1,9 @@
+frame:0    pts:0       pts_time:0
+lavfi.astats.Overall.Peak_level=-6.020865
+lavfi.astats.Overall.RMS_level=-9.031239
+frame:1    pts:96000   pts_time:2
+lavfi.astats.Overall.Peak_level=-6.020865
+lavfi.astats.Overall.RMS_level=-9.031364
+frame:2    pts:192000  pts_time:4
+lavfi.astats.Overall.Peak_level=-inf
+lavfi.astats.Overall.RMS_level=-inf
