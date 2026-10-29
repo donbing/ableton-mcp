@@ -1,8 +1,6 @@
 # Live.Song
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## Song.Song
 
@@ -12,64 +10,64 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `appointed_device` (rw, listenable): Read, write, and listen access to the appointed Device
-- `arrangement_overdub` `bool`† (rw, listenable): Get/Set the global arrangement overdub state.
-- `back_to_arranger` `bool`† (rw, listenable): Get/Set if triggering a Clip in the Session, disabled the playback of Clips in the Arranger.
-- `can_capture_midi` `bool`† (r, listenable): Get whether there currently is material to be captured on any tracks.
-- `can_jump_to_next_cue` `bool`† (r, listenable): Returns true when there is a cue marker right to the playing pos that we could jump to.
-- `can_jump_to_prev_cue` `bool`† (r, listenable): Returns true when there is a cue marker left to the playing pos that we could jump to.
-- `can_redo` `bool`† (r): Returns true if there is an undone action that we can redo.
-- `can_undo` `bool`† (r): Returns true if there is an action that we can restore.
-- `canonical_parent` (r): Get the canonical parent of the song.
-- `clip_trigger_quantization` `Song.Quantization`† (rw, listenable): Get/Set access to the quantization settings that are used to fire Clips in the Session.
-- `count_in_duration` `int`† (r, listenable): Get the count in duration. Returns an index, mapped as follows: 0 - None, 1 - 1 Bar, 2 - 2 Bars, 3 - 4 Bars.
-- `cue_points` `Base.Vector[Song.CuePoint]`† (r, listenable): Const access to a list of all cue points of the Live Song.
-- `current_song_time` `float`† (rw, listenable): Get/Set access to the songs current playing position in beats.
-- `exclusive_arm` `bool`† (r, listenable): Get if Tracks should be armed exclusively by default.
-- `exclusive_solo` `bool`† (r): Get if Tracks should be soloed exclusively by default.
-- `file_path` `str`† (r): Get the current Live Set's path on disk.
-- `groove_amount` `float`† (rw, listenable): Get/Set the global groove amount, that adjust all setup grooves in all clips.
-- `groove_pool` `GroovePool.GroovePool`† (r): Get the groove pool.
-- `is_ableton_link_enabled` `bool`† (rw, listenable): Enable/disable Ableton Link.
-- `is_ableton_link_start_stop_sync_enabled` `bool`† (rw, listenable): Enable/disable Ableton Link Start Stop Sync.
-- `is_counting_in` `bool`† (r, listenable): Get whether currently counting in.
-- `is_playing` `bool`† (rw, listenable): Returns true if the Song is currently playing.
-- `last_event_time` `float`† (r): Return the time of the last set event in the song. In contrary to song_length, this will not add some extra beats that are mostly needed for Display purposes in the Arrangerview.
-- `loop` `bool`† (rw, listenable): Get/Set the looping flag that en/disables the usage of the global loop markers in the song.
-- `loop_length` `float`† (rw, listenable): Get/Set the length of the global loop marker position in beats.
-- `loop_start` `float`† (rw, listenable): Get/Set the start of the global loop marker position in beats.
-- `master_track` `Track.Track`† (r): Access to the Main Track (always available)
-- `metronome` `bool`† (rw, listenable): Get/Set if the metronom is audible.
-- `midi_recording_quantization` `Song.RecordingQuantization`† (rw, listenable): Get/Set access to the settings that are used to quantize MIDI recordings.
-- `name` `str`† (r): Get the current Live Set's name.
-- `nudge_down` `bool`† (rw, listenable): Get/Set the status of the nudge down button.
-- `nudge_up` `bool`† (rw, listenable): Get/Set the status of the nudge up button.
-- `overdub` `bool`† (rw, listenable): Legacy hook for Live 8 overdub state. Now hooks to session record, but never starts playback.
-- `punch_in` `bool`† (rw, listenable): Get/Set the flag that will enable recording as soon as the Song plays and hits the global loop start region.
-- `punch_out` `bool`† (rw, listenable): Get/Set the flag that will disable recording as soon as the Song plays and hits the global loop end region.
-- `re_enable_automation_enabled` `bool`† (r, listenable): Returns true if some automated parameter has been overriden
-- `record_mode` `bool`† (rw, listenable): Get/Set the state of the global recording flag.
-- `return_tracks` `Base.Vector[Track.Track]`† (r, listenable): Const access to the list of available Return Tracks.
-- `root_note` `int`† (rw, listenable): Set and access the root (i.e. key) of the song. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
-- `scale_intervals` `Base.IntVector`† (r, listenable): Reports the current scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
-- `scale_mode` `bool`† (rw, listenable): Access to the Scale Mode setting in Live. When on, key tracks that belong to the currently selected scale are highlighted in Live's MIDI Note Editor, and pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones.
-- `scale_name` `str`† (rw, listenable): Set and access the currently selected scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
-- `scenes` `Base.Vector[Scene.Scene]`† (r, listenable): Const access to a list of all Scenes in the Live Song.
-- `select_on_launch` `bool`† (r): Get if Scenes and Clips should be selected when fired.
-- `session_automation_record` `bool`† (rw, listenable): Returns true if automation recording is enabled.
-- `session_record` `bool`† (rw, listenable): Get/Set the session record state.
-- `session_record_status` `int`† (r, listenable): Get the session slot-recording state.
-- `signature_denominator` `int`† (rw, listenable): Get/Set access to the global signature denominator of the Song.
-- `signature_numerator` `int`† (rw, listenable): Get/Set access to the global signature numerator of the Song.
-- `song_length` `float`† (r, listenable): Return the time of the last set event in the song, plus som extra beats that are usually added for better navigation in the arrangerview.
-- `start_time` `float`† (rw, listenable): Get/Set access to the songs current start time in beats. The set time may be overridden by the current loop/locator start time.
-- `swing_amount` `float`† (rw, listenable): Get/Set access to the amount of swing that is applied when adding or quantizing notes to MIDI clips
-- `tempo` `float`† (rw, listenable): Get/Set the global project tempo.
-- `tempo_follower_enabled` `bool`† (rw, listenable): Get/Set whether the Tempo Follower is controlling the tempo. The Tempo Follower Toggle must be made visible in the preferences for this property to be effective.
-- `tracks` `Base.Vector[Track.Track]`† (r, listenable): Const access to a list of all Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
-- `tuning_system` `TuningSystem.TuningSystem`† (r, listenable): Access the currently active tuning system.
-- `view` `Song.Song.View`† (r): Representing the view aspects of a Live document: The Session and Arrangerview.
-- `visible_tracks` `Base.Vector[Track.Track]`† (r, listenable): Const access to a list of all visible Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
+- `appointed_device` `None` (rw, listenable): Read, write, and listen access to the appointed Device
+- `arrangement_overdub` `bool` (rw, listenable): Get/Set the global arrangement overdub state.
+- `back_to_arranger` `bool` (rw, listenable): Get/Set if triggering a Clip in the Session, disabled the playback of Clips in the Arranger.
+- `can_capture_midi` `bool` (r, listenable): Get whether there currently is material to be captured on any tracks.
+- `can_jump_to_next_cue` `bool` (r, listenable): Returns true when there is a cue marker right to the playing pos that we could jump to.
+- `can_jump_to_prev_cue` `bool` (r, listenable): Returns true when there is a cue marker left to the playing pos that we could jump to.
+- `can_redo` `bool` (r): Returns true if there is an undone action that we can redo.
+- `can_undo` `bool` (r): Returns true if there is an action that we can restore.
+- `canonical_parent` `None` (r): Get the canonical parent of the song.
+- `clip_trigger_quantization` `Song.Quantization` (rw, listenable): Get/Set access to the quantization settings that are used to fire Clips in the Session.
+- `count_in_duration` `int` (r, listenable): Get the count in duration. Returns an index, mapped as follows: 0 - None, 1 - 1 Bar, 2 - 2 Bars, 3 - 4 Bars.
+- `cue_points` `Base.Vector[Song.CuePoint]` (r, listenable): Const access to a list of all cue points of the Live Song.
+- `current_song_time` `float` (rw, listenable): Get/Set access to the songs current playing position in beats.
+- `exclusive_arm` `bool` (r, listenable): Get if Tracks should be armed exclusively by default.
+- `exclusive_solo` `bool` (r): Get if Tracks should be soloed exclusively by default.
+- `file_path` `str` (r): Get the current Live Set's path on disk.
+- `groove_amount` `float` (rw, listenable): Get/Set the global groove amount, that adjust all setup grooves in all clips.
+- `groove_pool` `GroovePool.GroovePool` (r): Get the groove pool.
+- `is_ableton_link_enabled` `bool` (rw, listenable): Enable/disable Ableton Link.
+- `is_ableton_link_start_stop_sync_enabled` `bool` (rw, listenable): Enable/disable Ableton Link Start Stop Sync.
+- `is_counting_in` `bool` (r, listenable): Get whether currently counting in.
+- `is_playing` `bool` (rw, listenable): Returns true if the Song is currently playing.
+- `last_event_time` `float` (r): Return the time of the last set event in the song. In contrary to song_length, this will not add some extra beats that are mostly needed for Display purposes in the Arrangerview.
+- `loop` `bool` (rw, listenable): Get/Set the looping flag that en/disables the usage of the global loop markers in the song.
+- `loop_length` `float` (rw, listenable): Get/Set the length of the global loop marker position in beats.
+- `loop_start` `float` (rw, listenable): Get/Set the start of the global loop marker position in beats.
+- `master_track` `Track.Track` (r): Access to the Main Track (always available)
+- `metronome` `bool` (rw, listenable): Get/Set if the metronom is audible.
+- `midi_recording_quantization` `Song.RecordingQuantization` (rw, listenable): Get/Set access to the settings that are used to quantize MIDI recordings.
+- `name` `str` (r): Get the current Live Set's name.
+- `nudge_down` `bool` (rw, listenable): Get/Set the status of the nudge down button.
+- `nudge_up` `bool` (rw, listenable): Get/Set the status of the nudge up button.
+- `overdub` `bool` (rw, listenable): Legacy hook for Live 8 overdub state. Now hooks to session record, but never starts playback.
+- `punch_in` `bool` (rw, listenable): Get/Set the flag that will enable recording as soon as the Song plays and hits the global loop start region.
+- `punch_out` `bool` (rw, listenable): Get/Set the flag that will disable recording as soon as the Song plays and hits the global loop end region.
+- `re_enable_automation_enabled` `bool` (r, listenable): Returns true if some automated parameter has been overriden
+- `record_mode` `bool` (rw, listenable): Get/Set the state of the global recording flag.
+- `return_tracks` `Base.Vector[Track.Track]` (r, listenable): Const access to the list of available Return Tracks.
+- `root_note` `int` (rw, listenable): Set and access the root (i.e. key) of the song. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
+- `scale_intervals` `Base.IntVector` (r, listenable): Reports the current scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
+- `scale_mode` `bool` (rw, listenable): Access to the Scale Mode setting in Live. When on, key tracks that belong to the currently selected scale are highlighted in Live's MIDI Note Editor, and pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones.
+- `scale_name` `str` (rw, listenable): Set and access the currently selected scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
+- `scenes` `Base.Vector[Scene.Scene]` (r, listenable): Const access to a list of all Scenes in the Live Song.
+- `select_on_launch` `bool` (r): Get if Scenes and Clips should be selected when fired.
+- `session_automation_record` `bool` (rw, listenable): Returns true if automation recording is enabled.
+- `session_record` `bool` (rw, listenable): Get/Set the session record state.
+- `session_record_status` `int` (r, listenable): Get the session slot-recording state.
+- `signature_denominator` `int` (rw, listenable): Get/Set access to the global signature denominator of the Song.
+- `signature_numerator` `int` (rw, listenable): Get/Set access to the global signature numerator of the Song.
+- `song_length` `float` (r, listenable): Return the time of the last set event in the song, plus som extra beats that are usually added for better navigation in the arrangerview.
+- `start_time` `float` (rw, listenable): Get/Set access to the songs current start time in beats. The set time may be overridden by the current loop/locator start time.
+- `swing_amount` `float` (rw, listenable): Get/Set access to the amount of swing that is applied when adding or quantizing notes to MIDI clips
+- `tempo` `float` (rw, listenable): Get/Set the global project tempo.
+- `tempo_follower_enabled` `bool` (rw, listenable): Get/Set whether the Tempo Follower is controlling the tempo. The Tempo Follower Toggle must be made visible in the preferences for this property to be effective.
+- `tracks` `Base.Vector[Track.Track]` (r, listenable): Const access to a list of all Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
+- `tuning_system` `TuningSystem.TuningSystem` (r, listenable): Access the currently active tuning system.
+- `view` `Song.Song.View` (r): Representing the view aspects of a Live document: The Session and Arrangerview.
+- `visible_tracks` `Base.Vector[Track.Track]` (r, listenable): Const access to a list of all visible Player Tracks in the Live Song, excluding the return and Main Track (see also Song.send_tracks and Song.master_track). At least one MIDI or Audio Track is always available.
 - `data` (r, listenable)
 - `scale_information` (r, listenable)
 
@@ -121,10 +119,10 @@ Represents a Time, splitted into Bars, Beats, SubDivision and Ticks.
 
 Properties (r = read-only, rw = settable):
 
-- `bars` `int`† (rw)
-- `beats` `int`† (rw)
-- `sub_division` `int`† (rw)
-- `ticks` `int`† (rw)
+- `bars` `int` (rw)
+- `beats` `int` (rw)
+- `sub_division` `int` (rw)
+- `ticks` `int` (rw)
 
 Methods:
 
@@ -138,9 +136,9 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `canonical_parent` `Song.Song`† (r): Get the canonical parent of the cue point.
-- `name` `str`† (rw, listenable): Get/Set/Listen to the name of this CuePoint, as visible in the arranger.
-- `time` `float`† (r, listenable): Get/Listen to the CuePoint's time in beats.
+- `canonical_parent` `Song.Song` (r): Get the canonical parent of the cue point.
+- `name` `str` (rw, listenable): Get/Set/Listen to the name of this CuePoint, as visible in the arranger.
+- `time` `float` (r, listenable): Get/Listen to the CuePoint's time in beats.
 
 Methods:
 
@@ -152,10 +150,10 @@ Represents a Time, split into Hours, Minutes, Seconds and Frames. The frame type
 
 Properties (r = read-only, rw = settable):
 
-- `frames` `int`† (rw)
-- `hours` `int`† (rw)
-- `minutes` `int`† (rw)
-- `seconds` `int`† (rw)
+- `frames` `int` (rw)
+- `hours` `int` (rw)
+- `minutes` `int` (rw)
+- `seconds` `int` (rw)
 
 Methods:
 
@@ -169,17 +167,17 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `canonical_parent` `Song.Song`† (r): Get the canonical parent of the song view.
-- `detail_clip` (rw, listenable): Get/Set the Clip that is currently visible in Lives Detailview.
-- `draw_mode` `bool`† (rw, listenable): Get/Set if the Envelope/Note draw mode is enabled.
-- `follow_song` `bool`† (rw, listenable): Get/Set if the Arrangerview should scroll to show the playmarker.
-- `highlighted_clip_slot` `ClipSlot.ClipSlot`† (rw): Get/Set the clip slot, defined via the selected track and scene in the Session.Will be None for Main- and Sendtracks.
-- `mod_mapping_device` (rw, listenable) *(new)*: The device that is waiting for a parameter (via mod_mapping_parameter) to modulate, or None if no device is waiting.
-- `mod_mapping_parameter` (r, listenable) *(new)*: Get the device parameter that's current selected to be mapped.
-- `selected_chain` (rw, listenable): Get the highlighted chain if available.
-- `selected_parameter` (r, listenable): Get the currently selected device parameter.
-- `selected_scene` `Scene.Scene`† (rw, listenable): Get/Set the current selected scene in Lives Sessionview.
-- `selected_track` `Track.Track`† (rw, listenable): Get/Set the current selected Track in Lives Session or Arrangerview.
+- `canonical_parent` `Song.Song` (r): Get the canonical parent of the song view.
+- `detail_clip` `Clip.Clip` (rw, listenable): Get/Set the Clip that is currently visible in Lives Detailview.
+- `draw_mode` `bool` (rw, listenable): Get/Set if the Envelope/Note draw mode is enabled.
+- `follow_song` `bool` (rw, listenable): Get/Set if the Arrangerview should scroll to show the playmarker.
+- `highlighted_clip_slot` `ClipSlot.ClipSlot` (rw): Get/Set the clip slot, defined via the selected track and scene in the Session.Will be None for Main- and Sendtracks.
+- `mod_mapping_device` `None` (rw, listenable) *(new)*: The device that is waiting for a parameter (via mod_mapping_parameter) to modulate, or None if no device is waiting.
+- `mod_mapping_parameter` `None` (r, listenable) *(new)*: Get the device parameter that's current selected to be mapped.
+- `selected_chain` `None` (rw, listenable): Get the highlighted chain if available.
+- `selected_parameter` `None` (r, listenable): Get the currently selected device parameter.
+- `selected_scene` `Scene.Scene` (rw, listenable): Get/Set the current selected scene in Lives Sessionview.
+- `selected_track` `Track.Track` (rw, listenable): Get/Set the current selected Track in Lives Session or Arrangerview.
 
 Methods:
 
@@ -187,7 +185,7 @@ Methods:
 
 ## Functions
 
-- `get_all_scales_ordered() -> tuple`: Get an ordered tuple of tuples of all available scale names to intervals.
+- `get_all_scales_ordered() -> tuple[tuple, ...]`: Get an ordered tuple of tuples of all available scale names to intervals.
 
 ## Enums
 

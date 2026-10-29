@@ -1,8 +1,6 @@
 # Live.Base
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## Base.FloatVector
 
@@ -52,14 +50,13 @@ Properties (r = read-only, rw = settable):
 
 A timer that will trigger a callback after a certain inverval. The timer can be repeated and will trigger the callback every interval. Errors in the callback will stop the timer.
 
-Not constructable from Python.
-
 Properties (r = read-only, rw = settable):
 
-- `running` `bool`† (r)
+- `running` `bool` (r)
 
 Methods:
 
+- `__init__(callback: object, interval: int, repeat: bool, start: bool) -> None`
 - `restart() -> None`
 - `start() -> None`
 - `stop() -> None`

@@ -183,6 +183,22 @@ def test_capture_types_win_over_baseline(seeds):
     assert "- `color` `bool` (rw, listenable)" in text and "†" not in text
 
 
+def test_a_member_inherited_from_a_base_is_not_missing(seeds):
+    # The seed builder drops a subclass's copy of a base property once both are probed alike
+    new, old, out = seeds
+    (new / "Clip.md").write_text(
+        NEW_SEED.replace("- Live.LomObject.LomObject", "- Live.Clip.Base\n- Live.LomObject.LomObject", 1)
+        + "\n### Base\n\n```yaml\nkind: class\npath: Live.Clip.Base\n```\n\n#### Properties\n\n"
+        "##### old_gain\n\n```yaml\nkind: property\nsettable: false\n```\n",
+        encoding="utf-8",
+    )
+    stats = gen.generate(new, out, dict(PROV, capture="probe"), old)
+    text = (out / "CHANGES.md").read_text(encoding="utf-8")
+    assert "- `Live.Clip.Clip.old_gain`" not in text and "- `Live.Clip.Removed`" in text
+    assert stats["removed"] == 1
+    assert "measured by a property probe" in (out / "INDEX.md").read_text(encoding="utf-8")
+
+
 def test_generate_replaces_stale_files(seeds):
     new, _, out = seeds
     out.mkdir()

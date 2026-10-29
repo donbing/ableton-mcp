@@ -1,8 +1,6 @@
 # Live.Groove
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## Groove.Groove
 
@@ -12,13 +10,13 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `base` `Groove.Base`† (rw): Get/set the groove's base grid.
-- `canonical_parent` `GroovePool.GroovePool`† (r): Get the canonical parent of the groove.
-- `name` `str`† (rw, listenable): Read/write/listen access to the groove's name
-- `quantization_amount` `float`† (rw, listenable): Read/write/listen access to the groove's quantization amount.
-- `random_amount` `float`† (rw, listenable): Read/write/listen access to the groove's random amount.
-- `timing_amount` `float`† (rw, listenable): Read/write/listen access to the groove's timing amount.
-- `velocity_amount` `float`† (rw, listenable): Read/write/listen access to the groove's velocity amount.
+- `base` `Groove.Base` (rw): Get/set the groove's base grid.
+- `canonical_parent` `GroovePool.GroovePool` (r): Get the canonical parent of the groove.
+- `name` `str` (rw, listenable): Read/write/listen access to the groove's name
+- `quantization_amount` `float` (rw, listenable): Read/write/listen access to the groove's quantization amount.
+- `random_amount` `float` (rw, listenable): Read/write/listen access to the groove's random amount.
+- `timing_amount` `float` (rw, listenable): Read/write/listen access to the groove's timing amount.
+- `velocity_amount` `float` (rw, listenable): Read/write/listen access to the groove's velocity amount.
 
 ## Enums
 

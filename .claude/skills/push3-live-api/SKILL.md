@@ -14,13 +14,16 @@ What the API looks like on the user's Push 3, from a capture taken on the device
 call `get_remote_script_info` or `get_live_status` and compare the Live version. If they differ, say so and treat
 the reference as a guide only: check anything important at runtime on the Push.
 
-The current capture is a **raw** capture (no property probe):
+The current capture is a **full property probe** run on the Push (2026-10-29, LiveAPI's fixture set `Set 12` open,
+every built-in device loaded once):
 
-- It has no property types of its own. Types marked † are borrowed from the Live 12.3.6 property probe (LiveAPI's
-  committed seed) for properties that exist in both versions; they are very likely right but were not measured on
-  the Push. Properties with no type are new since 12.3.6 or were never probed: check the value at runtime.
-- `references/CHANGES.md` lists what differs from Live 12.3.6. Its "Missing from this capture" list is unverified:
-  most entries are gaps in a raw capture, not real removals.
+- Property types were measured on the Push, including Clip's scale properties (`root_note` int, `scale_name` str,
+  `scale_mode` bool, `scale_intervals` `Base.IntVector` of int).
+- Types marked † were not measured: the probe could not reach the class because Intro lacks the device (EQ Eight,
+  Wavetable, Meld, Roar, Hybrid Reverb, Spectral Resonator, Shifter) or the Push has none (plugins). They are
+  borrowed from the Live 12.3.6 probe. A property with no type could not be read when probed: check it at runtime.
+- A class lists only the members it declares; inherited ones (e.g. `Device.name` on every device) are on its base.
+- `references/CHANGES.md` lists what differs from Live 12.3.6.
 - Intro is a limited edition. A class being in the API does not mean its device is available on the Push.
 
 ## Finding things

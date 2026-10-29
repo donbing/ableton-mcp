@@ -1,8 +1,6 @@
 # Live.Licensing
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## Licensing.ProgressDialog
 
@@ -67,13 +65,13 @@ Returns relevant information after unlock
 
 Properties (r = read-only, rw = settable):
 
-- `authorization_deactivated` `bool`† (r)
-- `authorization_expired` `bool`† (r)
-- `has_max_unlock_products` `bool`† (r)
-- `temp_demo_mode` `bool`† (r)
-- `time_limited` `bool`† (r)
-- `unlock_error` `bool`† (r)
-- `unlocked` `bool`† (r)
+- `authorization_deactivated` `bool` (r)
+- `authorization_expired` `bool` (r)
+- `has_max_unlock_products` `bool` (r)
+- `temp_demo_mode` `bool` (r)
+- `time_limited` `bool` (r)
+- `unlock_error` `bool` (r)
+- `unlocked` `bool` (r)
 
 Methods:
 
@@ -85,7 +83,7 @@ Methods:
 - `get_authorization_page_url(reauthorize: bool, is_trial: bool) -> str`: Retrieves the appopriate URL on ableton.com where the unser can initiate the authorization.
 - `get_purchase_live_url() -> str`: Returns the environment-aware purchase URL for purchasing Live licenses
 - `get_services_url() -> str`: Returns the URL against which service calls (e.g. for authorization) can be performed.
-- `get_unlock_dir() -> tuple`: Returns a tuple containing the unlock file directory and a flag indicating if the unlock file is in the system domain.
+- `get_unlock_dir() -> tuple[object, ...]`: Returns a tuple containing the unlock file directory and a flag indicating if the unlock file is in the system domain.
 - `launch_web_browser(url: str) -> None`: Opens a web browser at the specified URL on the user's computer.
 
 ## Enums

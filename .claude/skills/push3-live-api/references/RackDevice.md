@@ -1,8 +1,6 @@
 # Live.RackDevice
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## RackDevice.RackDevice
 
@@ -12,25 +10,25 @@ Base: Device.Device, LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `can_show_chains` `bool`† (r): return True, if this Rack contains a rack instrument device that is capable of showing its chains in session view.
-- `chain_selector` `DeviceParameter.DeviceParameter`† (r): Const access to the chain selector parameter.
-- `chains` `Base.Vector`† (r, listenable): Return const access to the list of chains in this device. Throws an exception if can_have_chains is false.
-- `drum_pads` `Base.Vector[DrumPad.DrumPad]`† (r, listenable): Return const access to the list of drum pads in this device. Throws an exception if can_have_drum_pads is false.
-- `has_drum_pads` `bool`† (r, listenable): Returns true if the device is a drum rack which has drum pads. Throws an exception if can_have_drum_pads is false.
-- `has_macro_mappings` `bool`† (r, listenable): Returns true if any of the rack's macros are mapped to a parameter.
-- `is_active` `bool`† (r): Return const access to whether this device is active. This will be false bothwhen the device is off and when it's inside a rack device which is off.
-- `is_showing_chains` `bool`† (rw, listenable): Returns True, if it is showing chains.
-- `is_using_compare_preset_b` (rw) *(new)*: Returns whether the Device has loaded the preset in compare slot B. Only relevant if can_compare_ab, otherwise errors.
-- `latency_in_ms` `float`† (r): Returns the latency of the device in ms.
-- `latency_in_samples` `int`† (r): Returns the latency of the device in samples.
-- `macros_mapped` `tuple[bool, ...]`† (r, listenable): A list of booleans, one for each macro parameter, which is True iffthat macro is mapped to something
-- `name` `str`† (rw): Return access to the name of the device.
-- `parameters` `Device.ATimeableValueVector`† (r): Const access to the list of available automatable parameters for this device.
-- `return_chains` `Base.Vector`† (r, listenable): Return const access to the list of return chains in this device. Throws an exception if can_have_chains is false.
-- `selected_variation_index` `int`† (rw): Access to the index of the currently selected macro variation.Throws an exception if the index is out of range.
-- `variation_count` `int`† (r, listenable): Access to the number of macro variations currently stored.
-- `visible_drum_pads` `Base.Vector[DrumPad.DrumPad]`† (r, listenable): Return const access to the list of visible drum pads in this device. Throws an exception if can_have_drum_pads is false.
-- `visible_macro_count` `int`† (r, listenable): Access to the number of macros that are currently visible.
+- `can_show_chains` `bool` (r): return True, if this Rack contains a rack instrument device that is capable of showing its chains in session view.
+- `chain_selector` `DeviceParameter.DeviceParameter` (r): Const access to the chain selector parameter.
+- `chains` `Base.Vector` (r, listenable): Return const access to the list of chains in this device. Throws an exception if can_have_chains is false.
+- `drum_pads` `Base.Vector[DrumPad.DrumPad]` (r, listenable): Return const access to the list of drum pads in this device. Throws an exception if can_have_drum_pads is false.
+- `has_drum_pads` `bool` (r, listenable): Returns true if the device is a drum rack which has drum pads. Throws an exception if can_have_drum_pads is false.
+- `has_macro_mappings` `bool` (r, listenable): Returns true if any of the rack's macros are mapped to a parameter.
+- `is_active` `bool` (r): Return const access to whether this device is active. This will be false bothwhen the device is off and when it's inside a rack device which is off.
+- `is_showing_chains` `bool` (rw, listenable): Returns True, if it is showing chains.
+- `latency_in_ms` `float` (r): Returns the latency of the device in ms.
+- `latency_in_samples` `int` (r): Returns the latency of the device in samples.
+- `macros_mapped` `tuple[bool, ...]` (r, listenable): A list of booleans, one for each macro parameter, which is True iffthat macro is mapped to something
+- `name` `str` (rw): Return access to the name of the device.
+- `parameters` `Device.ATimeableValueVector` (r): Const access to the list of available automatable parameters for this device.
+- `return_chains` `Base.Vector` (r, listenable): Return const access to the list of return chains in this device. Throws an exception if can_have_chains is false.
+- `selected_variation_index` `int` (rw): Access to the index of the currently selected macro variation.Throws an exception if the index is out of range.
+- `variation_count` `int` (r, listenable): Access to the number of macro variations currently stored.
+- `view` `RackDevice.RackDevice.View` (r): Representing the view aspects of a device.
+- `visible_drum_pads` `Base.Vector[DrumPad.DrumPad]` (r, listenable): Return const access to the list of visible drum pads in this device. Throws an exception if can_have_drum_pads is false.
+- `visible_macro_count` `int` (r, listenable): Access to the number of macros that are currently visible.
 
 Methods:
 
@@ -52,8 +50,9 @@ Base: Device.Device.View, LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `drum_pads_scroll_position` `int`† (rw, listenable): Access to the index of the lowest visible row of pads. Throws an exception if can_have_drum_pads is false.
-- `is_collapsed` `bool`† (rw): Get/Set/Listen if the device is shown collapsed in the device chain.
-- `is_showing_chain_devices` `bool`† (rw, listenable): Return whether the devices in the currently selected chain are visible. Throws an exception if can_have_chains is false.
-- `selected_chain` (rw, listenable): Return access to the currently selected chain.
-- `selected_drum_pad` `DrumPad.DrumPad`† (rw, listenable): Return access to the currently selected drum pad. Throws an exception if can_have_drum_pads is false.
+- `canonical_parent` `RackDevice.RackDevice` (r): Get the canonical parent of the View.
+- `drum_pads_scroll_position` `int` (rw, listenable): Access to the index of the lowest visible row of pads. Throws an exception if can_have_drum_pads is false.
+- `is_collapsed` `bool` (rw): Get/Set/Listen if the device is shown collapsed in the device chain.
+- `is_showing_chain_devices` `bool` (rw, listenable): Return whether the devices in the currently selected chain are visible. Throws an exception if can_have_chains is false.
+- `selected_chain` `None` (rw, listenable): Return access to the currently selected chain.
+- `selected_drum_pad` `DrumPad.DrumPad` (rw, listenable): Return access to the currently selected drum pad. Throws an exception if can_have_drum_pads is false.

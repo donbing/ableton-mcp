@@ -7,13 +7,13 @@
 The seed is LiveAPI's per-module Markdown (probe/<version>/seed/*.md): headings
 per class / member, each followed by a YAML block. This script turns it into
 compact references an agent can read one module at a time, plus an index and a
-diff against a baseline seed. Property types missing from a raw capture are
-borrowed from the baseline (marked †).
+diff against a baseline seed. Property types the seed lacks (a raw capture, or a
+class the probe could not reach) are borrowed from the baseline (marked †).
 
 Only files under references/ are written; SKILL.md stays hand-written.
 
     python tools/gen_live_api_skill.py \
-        --seed ../LiveAPI/probe/12.4.6/seed \
+        --seed ../LiveAPI/probe/12.4.15/seed \
         --baseline ../LiveAPI/probe/12.3.6/seed \
         --provenance .claude/skills/push3-live-api/provenance.json \
         --out .claude/skills/push3-live-api/references
@@ -125,6 +125,24 @@ def member_keys(seed):
             path = f"Live.{module}.{parent}.{name}" if parent else f"Live.{module}.{name}"
             keys[path] = f"constant {info.get('value')!r}"
     return keys
+
+
+def inherited(seed, key):
+    """True if key (`Live.M.Class.member`) is declared on one of its class's ancestors in seed.
+
+    LiveAPI's seed builder drops a subclass's redeclaration of an ancestor's property once the probe gives both the same
+    type, so a member gone from the subclass may still be there through inheritance.
+    """
+    classes = {class_path(m, c): c for m, d in seed.items() for c in d["classes"]}
+    cls_path, member = key.rsplit(".", 1)
+    cls = classes.get(cls_path)
+    if cls is None:
+        return False
+    for ancestor in cls["info"].get("ancestors") or []:
+        base = classes.get(ancestor)
+        if base and any(member in (n, f"{n}()") for n, _ in base["properties"] + base["methods"]):
+            return True
+    return False
 
 
 # --- rendering ---------------------------------------------------------------
@@ -273,6 +291,13 @@ def render_index(seed, prov, header):
             "are new or were not probed. Check the value at runtime before relying on a type.",
             "",
         ]
+    elif prov.get("capture") == "probe":
+        out += [
+            "Property types were measured by a property probe on this device. A class the probe could not reach (a",
+            "device this edition lacks, a plugin) keeps types borrowed from the older version's probe, marked †.",
+            "A property with no type could not be read when probed. Members a class inherits are listed on its base.",
+            "",
+        ]
     out += ["| Module | Classes | Members |", "|---|---|---|"]
     for module, data in seed.items():
         names = ", ".join(short_type(class_path(module, c)).split(".", 1)[-1] for c in data["classes"])
@@ -295,6 +320,8 @@ def render_changes(added, removed, changed, prov, baseline_version, header):
             "removals. Treat each one as unverified until a full probe confirms it.",
             "",
         ]
+    else:
+        out += ["Members still inherited from a base class are not counted as missing.", ""]
     out += [f"- `{k}`" for k in sorted(removed)]
     return "\n".join(out).rstrip() + "\n"
 
@@ -315,7 +342,7 @@ def generate(seed_dir, out_dir, provenance, baseline_dir=None):
         baseline = load_seed(baseline_dir)
         old, new = member_keys(baseline), member_keys(seed)
         added = set(new) - set(old)
-        removed = set(old) - set(new)
+        removed = {k for k in set(old) - set(new) if not inherited(seed, k)}
         changed = {k: (old[k], new[k]) for k in set(old) & set(new) if not same_signature(old[k], new[k])}
         borrowed = borrow_types(seed, baseline, baseline_version)
 

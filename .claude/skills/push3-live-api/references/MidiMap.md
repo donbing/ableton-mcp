@@ -1,8 +1,6 @@
 # Live.MidiMap
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## MidiMap.CCFeedbackRule
 
@@ -10,11 +8,11 @@ Structure to define feedback properties of MIDI mappings.
 
 Properties (r = read-only, rw = settable):
 
-- `cc_no` `int`† (rw)
-- `cc_value_map` `tuple`† (rw)
-- `channel` `int`† (rw)
-- `delay_in_ms` `float`† (rw)
-- `enabled` `bool`† (rw)
+- `cc_no` `int` (rw)
+- `cc_value_map` `tuple` (rw)
+- `channel` `int` (rw)
+- `delay_in_ms` `float` (rw)
+- `enabled` `bool` (rw)
 
 Methods:
 
@@ -26,11 +24,11 @@ Structure to define feedback properties of MIDI mappings.
 
 Properties (r = read-only, rw = settable):
 
-- `channel` `int`† (rw)
-- `delay_in_ms` `float`† (rw)
-- `enabled` `bool`† (rw)
-- `note_no` `int`† (rw)
-- `vel_map` `tuple`† (rw)
+- `channel` `int` (rw)
+- `delay_in_ms` `float` (rw)
+- `enabled` `bool` (rw)
+- `note_no` `int` (rw)
+- `vel_map` `tuple` (rw)
 
 Methods:
 
@@ -42,10 +40,10 @@ Structure to define feedback properties of MIDI mappings.
 
 Properties (r = read-only, rw = settable):
 
-- `channel` `int`† (rw)
-- `delay_in_ms` `float`† (rw)
-- `enabled` `bool`† (rw)
-- `value_pair_map` `tuple`† (rw)
+- `channel` `int` (rw)
+- `delay_in_ms` `float` (rw)
+- `enabled` `bool` (rw)
+- `value_pair_map` `tuple` (rw)
 
 Methods:
 

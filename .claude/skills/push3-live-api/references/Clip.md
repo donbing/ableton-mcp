@@ -1,8 +1,6 @@
 # Live.Clip
 
-> Generated from a raw capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-28. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
-
-Types marked † come from the Live 12.3.6 property probe, not this capture.
+> Generated from a probe capture: Live 12.4.15, Intro, Push 3 standalone, AbletonOS x86_64 v3.23, Python 3.11.6, captured 2026-10-29. Do not edit; regenerate with `tools/gen_live_api_skill.py`.
 
 ## Clip.Clip
 
@@ -12,58 +10,58 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `automation_envelopes` `Base.Vector[Envelope.Envelope]`† (r): Const access to a list of all automation envelopes for this clip.
-- `available_warp_modes` `Base.IntVector`† (r): Available for AudioClips only. Get/Set the available warp modes, that can be used.
-- `canonical_parent` `ClipSlot.ClipSlot`† (r): Get the canonical parent of the Clip.
-- `color` `int`† (rw, listenable): Get/set access to the color of the Clip (RGB).
-- `color_index` `int`† (rw, listenable): Get/set access to the color index of the Clip.
-- `end_marker` `float`† (rw, listenable): Get/Set the Clips end marker pos in beats/seconds (unit depends on warping).
-- `end_time` `float`† (r, listenable): Get the clip's end time.
-- `file_path` `str`† (r, listenable): Get the path of the file represented by the Audio Clip.
-- `gain` `float`† (rw, listenable): Available for AudioClips only. Read/write access to the gain setting of the Audio Clip
-- `gain_display_string` `str`† (r): Return a string with the gain as dB value
-- `groove` (rw, listenable): Get the groove associated with this clip.
-- `has_envelopes` `bool`† (r, listenable): Will notify if the clip gets his first envelope or the last envelope is removed.
-- `has_groove` `bool`† (r): Returns true if a groove is associated with this clip.
-- `is_arrangement_clip` `bool`† (r): return true if this Clip is an Arrangement Clip. A Clip can be either a Session or Arrangement Clip.
-- `is_audio_clip` `bool`† (r): Return true if this Clip is an Audio Clip. A Clip can be either an Audioclip or a MIDI Clip.
-- `is_midi_clip` `bool`† (r): return true if this Clip is a MIDI Clip. A Clip can be either an Audioclip or a MIDI Clip.
-- `is_overdubbing` `bool`† (r, listenable): returns true if the Clip is recording overdubs
-- `is_playing` `bool`† (rw): Get/Set if this Clip is currently playing. If the Clips trigger mode is set to a quantization value, the Clip will not start playing immediately. If you need to know wether the Clip was triggered, use the is_triggered property.
-- `is_recording` `bool`† (r, listenable): returns true if the Clip was triggered to record or is recording.
-- `is_session_clip` `bool`† (r): return true if this Clip is a Session Clip. A Clip can be either a Session or Arrangement Clip.
-- `is_take_lane_clip` `bool`† (r): return true if this Clip is a Take Lane Clip. A Take Lane Clip is also always an Arrangement Clip.
-- `is_triggered` `bool`† (r): returns true if the Clip was triggered or is playing.
-- `launch_mode` `int`† (rw, listenable): Get/Set access to the launch mode setting of the Clip.
-- `launch_quantization` `int`† (rw, listenable): Get/Set access to the launch quantization setting of the Clip.
-- `legato` `bool`† (rw, listenable): Get/Set access to the legato setting of the Clip
-- `length` `float`† (r): Get to the Clips length in beats/seconds (unit depends on warping).
-- `loop_end` `float`† (rw, listenable): Get/Set the loop end pos of this Clip in beats/seconds (unit depends on warping).
-- `loop_start` `float`† (rw, listenable): Get/Set the Clips loopstart pos in beats/seconds (unit depends on warping).
-- `looping` `bool`† (rw, listenable): Get/Set the Clips 'loop is enabled' flag .Only Warped Audio Clips or MIDI Clip can be looped.
-- `muted` `bool`† (rw, listenable): Read/write access to the mute state of the Clip.
-- `name` `str`† (rw, listenable): Read/write access to the name of the Clip.
-- `pitch_coarse` `int`† (rw, listenable): Available for AudioClips only. Read/write access to the pitch (in halftones) setting of the Audio Clip, ranging from -48 to 48
-- `pitch_fine` `float`† (rw, listenable): Available for AudioClips only. Read/write access to the pitch fine setting of the Audio Clip, ranging from -500 to 500
-- `playing_position` `float`† (r, listenable): Constant access to the current playing position of the clip. The returned value is the position in beats for midi and warped audio clips, or in seconds for unwarped audio clips. Stopped clips will return 0.
-- `position` `float`† (rw, listenable): Get/Set the loop position of this Clip in beats/seconds (unit depends on warping).
-- `ram_mode` `bool`† (rw, listenable): Available for AudioClips only. Read/write access to the Ram mode setting of the Audio Clip
-- `root_note` (rw, listenable) *(new)*: Set and access the root (i.e. key) of the Clip's scale. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
-- `sample_length` `int`† (r): Available for AudioClips only. Get the sample length in sample time or -1 if there is no sample available.
-- `sample_rate` `float`† (r): Available for AudioClips only. Read-only access to the Clip's sampling rate.
-- `scale_intervals` (r, listenable) *(new)*: Reports the Clip scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
-- `scale_mode` (rw, listenable) *(new)*: Access to the Scale Mode setting of the Clip. When on, pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones, and key tracks that belong to the Clip's scale are highlighted in the MIDI Note Editor.
-- `scale_name` (rw, listenable) *(new)*: Set and access the Clip's scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
-- `signature_denominator` `int`† (rw, listenable): Get/Set access to the global signature denominator of the Clip.
-- `signature_numerator` `int`† (rw, listenable): Get/Set access to the global signature numerator of the Clip.
-- `start_marker` `float`† (rw, listenable): Get/Set the Clips start marker pos in beats/seconds (unit depends on warping).
-- `start_time` `float`† (r, listenable): Get the clip's start time offset. For Session View clips, this is the time the clip was started. For Arrangement View clips, this is the offset within the arrangement.
-- `velocity_amount` `float`† (rw, listenable): Get/Set access to the velocity to volume amount of the Clip.
-- `view` `Clip.Clip.View`† (r): Get the view of the Clip.
-- `warp_markers` `Clip.WarpMarkerVector`† (r, listenable): Available for AudioClips only. Get the warp markers for this audio clip.
-- `warp_mode` `int`† (rw, listenable): Available for AudioClips only. Get/Set the warp mode for this audio clip.
-- `warping` `bool`† (rw, listenable): Available for AudioClips only. Get/Set if this Clip is timestreched.
-- `will_record_on_start` `bool`† (r): returns true if the Clip will record on being started.
+- `automation_envelopes` `Base.Vector[Envelope.Envelope]` (r): Const access to a list of all automation envelopes for this clip.
+- `available_warp_modes` `Base.IntVector` (r): Available for AudioClips only. Get/Set the available warp modes, that can be used.
+- `canonical_parent` `ClipSlot.ClipSlot` (r): Get the canonical parent of the Clip.
+- `color` `int` (rw, listenable): Get/set access to the color of the Clip (RGB).
+- `color_index` `int` (rw, listenable): Get/set access to the color index of the Clip.
+- `end_marker` `float` (rw, listenable): Get/Set the Clips end marker pos in beats/seconds (unit depends on warping).
+- `end_time` `float` (r, listenable): Get the clip's end time.
+- `file_path` `str` (r, listenable): Get the path of the file represented by the Audio Clip.
+- `gain` `float` (rw, listenable): Available for AudioClips only. Read/write access to the gain setting of the Audio Clip
+- `gain_display_string` `str` (r): Return a string with the gain as dB value
+- `groove` `None` (rw, listenable): Get the groove associated with this clip.
+- `has_envelopes` `bool` (r, listenable): Will notify if the clip gets his first envelope or the last envelope is removed.
+- `has_groove` `bool` (r): Returns true if a groove is associated with this clip.
+- `is_arrangement_clip` `bool` (r): return true if this Clip is an Arrangement Clip. A Clip can be either a Session or Arrangement Clip.
+- `is_audio_clip` `bool` (r): Return true if this Clip is an Audio Clip. A Clip can be either an Audioclip or a MIDI Clip.
+- `is_midi_clip` `bool` (r): return true if this Clip is a MIDI Clip. A Clip can be either an Audioclip or a MIDI Clip.
+- `is_overdubbing` `bool` (r, listenable): returns true if the Clip is recording overdubs
+- `is_playing` `bool` (rw): Get/Set if this Clip is currently playing. If the Clips trigger mode is set to a quantization value, the Clip will not start playing immediately. If you need to know wether the Clip was triggered, use the is_triggered property.
+- `is_recording` `bool` (r, listenable): returns true if the Clip was triggered to record or is recording.
+- `is_session_clip` `bool` (r): return true if this Clip is a Session Clip. A Clip can be either a Session or Arrangement Clip.
+- `is_take_lane_clip` `bool` (r): return true if this Clip is a Take Lane Clip. A Take Lane Clip is also always an Arrangement Clip.
+- `is_triggered` `bool` (r): returns true if the Clip was triggered or is playing.
+- `launch_mode` `int` (rw, listenable): Get/Set access to the launch mode setting of the Clip.
+- `launch_quantization` `int` (rw, listenable): Get/Set access to the launch quantization setting of the Clip.
+- `legato` `bool` (rw, listenable): Get/Set access to the legato setting of the Clip
+- `length` `float` (r): Get to the Clips length in beats/seconds (unit depends on warping).
+- `loop_end` `float` (rw, listenable): Get/Set the loop end pos of this Clip in beats/seconds (unit depends on warping).
+- `loop_start` `float` (rw, listenable): Get/Set the Clips loopstart pos in beats/seconds (unit depends on warping).
+- `looping` `bool` (rw, listenable): Get/Set the Clips 'loop is enabled' flag .Only Warped Audio Clips or MIDI Clip can be looped.
+- `muted` `bool` (rw, listenable): Read/write access to the mute state of the Clip.
+- `name` `str` (rw, listenable): Read/write access to the name of the Clip.
+- `pitch_coarse` `int` (rw, listenable): Available for AudioClips only. Read/write access to the pitch (in halftones) setting of the Audio Clip, ranging from -48 to 48
+- `pitch_fine` `float` (rw, listenable): Available for AudioClips only. Read/write access to the pitch fine setting of the Audio Clip, ranging from -500 to 500
+- `playing_position` `float` (r, listenable): Constant access to the current playing position of the clip. The returned value is the position in beats for midi and warped audio clips, or in seconds for unwarped audio clips. Stopped clips will return 0.
+- `position` `float` (rw, listenable): Get/Set the loop position of this Clip in beats/seconds (unit depends on warping).
+- `ram_mode` `bool` (rw, listenable): Available for AudioClips only. Read/write access to the Ram mode setting of the Audio Clip
+- `root_note` `int` (rw, listenable) *(new)*: Set and access the root (i.e. key) of the Clip's scale. The root can be a number between 0 and 11, with 0 corresponding to C and 11 corresponding to B.
+- `sample_length` `int` (r): Available for AudioClips only. Get the sample length in sample time or -1 if there is no sample available.
+- `sample_rate` `float` (r): Available for AudioClips only. Read-only access to the Clip's sampling rate.
+- `scale_intervals` `Base.IntVector` (r, listenable) *(new)*: Reports the Clip scale's intervals as a list of integers, starting with the root and representing the number of halfsteps (e.g. Major -> 0, 2, 4, 5, 7, 9, 11)
+- `scale_mode` `bool` (rw, listenable) *(new)*: Access to the Scale Mode setting of the Clip. When on, pitch-based parameters in MIDI Tools and Devices can be edited in scale degrees rather than semitones, and key tracks that belong to the Clip's scale are highlighted in the MIDI Note Editor.
+- `scale_name` `str` (rw, listenable) *(new)*: Set and access the Clip's scale by name. The default scale names that can be saved with a set and recalled are 'Major', 'Minor', 'Dorian', 'Mixolydian' ,'Lydian' ,'Phrygian' ,'Locrian', 'Whole Tone', 'Half-whole Dim.', 'Whole-half Dim.', 'Minor Blues', 'Minor Pentatonic', 'Major Pentatonic', 'Harmonic Minor', 'Harmonic Major', 'Dorian #4', 'Phrygian Dominant', 'Melodic Minor', 'Lydian Augmented', 'Lydian Dominant', 'Super Locrian', 'Bhairav', 'Hungarian Minor', '8-Tone Spanish', 'Hirajoshi', 'In-Sen', 'Iwato', 'Kumoi', 'Pelog Selisir', 'Pelog Tembung', 'Messiaen 3', 'Messiaen 4', 'Messiaen 5', 'Messiaen 6', 'Messiaen 7'
+- `signature_denominator` `int` (rw, listenable): Get/Set access to the global signature denominator of the Clip.
+- `signature_numerator` `int` (rw, listenable): Get/Set access to the global signature numerator of the Clip.
+- `start_marker` `float` (rw, listenable): Get/Set the Clips start marker pos in beats/seconds (unit depends on warping).
+- `start_time` `float` (r, listenable): Get the clip's start time offset. For Session View clips, this is the time the clip was started. For Arrangement View clips, this is the offset within the arrangement.
+- `velocity_amount` `float` (rw, listenable): Get/Set access to the velocity to volume amount of the Clip.
+- `view` `Clip.Clip.View` (r): Get the view of the Clip.
+- `warp_markers` `Clip.WarpMarkerVector` (r, listenable): Available for AudioClips only. Get the warp markers for this audio clip.
+- `warp_mode` `int` (rw, listenable): Available for AudioClips only. Get/Set the warp mode for this audio clip.
+- `warping` `bool` (rw, listenable): Available for AudioClips only. Get/Set if this Clip is timestreched.
+- `will_record_on_start` `bool` (r): returns true if the Clip will record on being started.
 - `loop_jump` (r, listenable)
 - `notes` (r, listenable)
 - `playing_status` (r, listenable)
@@ -118,21 +116,23 @@ Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `duration` `float`† (rw)
-- `mute` `bool`† (rw)
-- `note_id` `int`† (r): A numerical ID that's unique within the originating clip of the note. Not to be used directly, but important for other API calls, namely apply_note_modifications.
-- `pitch` `int`† (rw)
-- `probability` `float`† (rw)
-- `release_velocity` `float`† (rw)
-- `start_time` `float`† (rw)
-- `velocity` `float`† (rw)
-- `velocity_deviation` `float`† (rw)
+- `duration` `float` (rw)
+- `mute` `bool` (rw)
+- `note_id` `int` (r): A numerical ID that's unique within the originating clip of the note. Not to be used directly, but important for other API calls, namely apply_note_modifications.
+- `pitch` `int` (rw)
+- `probability` `float` (rw)
+- `release_velocity` `float` (rw)
+- `start_time` `float` (rw)
+- `velocity` `float` (rw)
+- `velocity_deviation` `float` (rw)
 
 ## Clip.MidiNoteSpecification
 
 An object specifying the data for creating a MIDI note. To be used with the add_new_notes function.
 
-Not constructable from Python.
+Methods:
+
+- `__init__(pitch: int, start_time: float, duration: float, velocity: float, mute: bool, probability: float, velocity_deviation: float, release_velocity: float) -> None`
 
 ## Clip.MidiNoteVector
 
@@ -144,12 +144,14 @@ Not constructable from Python. Iterable.
 
 This class represents a WarpMarker type.
 
-Not constructable from Python.
-
 Properties (r = read-only, rw = settable):
 
-- `beat_time` `float`† (r): A WarpMarker's beat time.
-- `sample_time` `float`† (r): A WarpMarker's sample time.
+- `beat_time` `float` (r): A WarpMarker's beat time.
+- `sample_time` `float` (r): A WarpMarker's sample time.
+
+Methods:
+
+- `__init__(sample_time: float, beat_time: float) -> None`
 
 ## Clip.WarpMarkerVector
 
@@ -165,9 +167,9 @@ Base: LomObject.LomObject. Not constructable from Python.
 
 Properties (r = read-only, rw = settable):
 
-- `canonical_parent` `Clip.Clip`† (r): Get the canonical parent of the clip view.
-- `grid_is_triplet` `bool`† (rw): Get/set wether the grid is showing in triplet mode.
-- `grid_quantization` `Clip.GridQuantization`† (rw): Get/set clip grid quantization resolution.
+- `canonical_parent` `Clip.Clip` (r): Get the canonical parent of the clip view.
+- `grid_is_triplet` `bool` (rw): Get/set wether the grid is showing in triplet mode.
+- `grid_quantization` `Clip.GridQuantization` (rw): Get/set clip grid quantization resolution.
 
 Methods:
 
