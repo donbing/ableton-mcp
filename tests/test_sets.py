@@ -367,3 +367,21 @@ def test_the_set_tools_are_registered_with_the_right_hints():
     assert tools["list_sets"].annotations.readOnlyHint and tools["which_set"].annotations.readOnlyHint
     assert not tools["load_set"].annotations.readOnlyHint and not tools["save_set"].annotations.readOnlyHint
     assert "confirm" in json.dumps(tools["load_set"].inputSchema)
+
+
+# --------------------------------------------------------------------------- closing the browser
+
+def test_a_browser_already_closed_is_left_alone(push):
+    assert P.close_set_browser([[0.1, [0xB0, 80, 14]]]) and push.sent == []
+
+
+def test_an_open_browser_is_closed_and_the_light_checked(push):
+    push.browser_open = True
+    assert P.close_set_browser([[0.1, [0xB0, 80, 127]]])
+    assert push.sent == [[0xB0, 80, 127], [0xB0, 80, 0]] and not push.browser_open
+
+
+def test_a_silent_sets_light_is_reported_not_guessed(push):
+    push.browser_open, push.sets_light = True, False
+    assert not P.close_set_browser([[0.1, [0xB0, 80, 127]]])
+    assert push.sent.count([0xB0, 80, 127]) == 2

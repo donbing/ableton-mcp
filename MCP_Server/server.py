@@ -6144,11 +6144,13 @@ def load_set(
             "once" if presses == 1 else "twice (the browser was open)", steps)]
         if _push.save_prompt_shown(lights):
             if unsaved == "ask":
-                _push.send(_push.press(_push.CC_PROMPT_CANCEL), listen=1.5, until_cc=_push.CC_SETS)
-                _push.send(_push.press(_push.CC_SETS), listen=1.5, until_cc=_push.CC_SETS)
+                cancelled = _push.send(_push.press(_push.CC_PROMPT_CANCEL), listen=1.5, until_cc=_push.CC_SETS)
+                closed = _push.close_set_browser(cancelled)
                 return ("Not loaded: %s has unsaved changes and the Push asked \"Save changes before closing?\". "
-                        "I pressed Cancel and closed the browser, so it stays open as it was. Ask the user, then "
-                        "call load_set again with unsaved=\"save\" or unsaved=\"discard\"." % _describe_open(before))
+                        "I pressed Cancel%s, so it stays open as it was. Ask the user, then call load_set again "
+                        "with unsaved=\"save\" or unsaved=\"discard\"."
+                        % (_describe_open(before), " and closed the browser" if closed else
+                           "; the Sets light did not say whether the browser closed, so it may still be showing"))
             answer = _push.CC_PROMPT_SAVE if unsaved == "save" else _push.CC_PROMPT_DONT_SAVE
             _push.send(_push.press(answer))
             did.append("answered the save-changes question with %s" % ("Save" if unsaved == "save" else "Don't Save"))

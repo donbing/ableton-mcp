@@ -104,6 +104,17 @@ def open_set_browser():
     raise PushError("the Set browser did not open after two presses of Sets; nothing more was sent")
 
 
+def close_set_browser(lights):
+    """Close the browser that `lights` (from the last press) left open: press Sets until its light no
+    longer says open. Returns True when closed, False when the light never said either way."""
+    value = last_light(lights, CC_SETS)
+    for _ in range(2):
+        if value is not None and value != SETS_LIGHT_OPEN:
+            return True
+        value = last_light(send(press(CC_SETS), listen=1.5, until_cc=CC_SETS), CC_SETS)
+    return value is not None and value != SETS_LIGHT_OPEN
+
+
 # ---------------------------------------------------------------------------- Sets on disk
 
 def list_sets(sets_dir=None):
