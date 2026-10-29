@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, List, Literal, Optional, Union
 
 from . import listen as _listen
+from . import push_ui as _push
 from .telemetry import record_startup
 from .telemetry_decorator import telemetry_tool, rich_telemetry_tool
 from .dataset import dataset_enabled, get_recorder
@@ -6029,6 +6030,161 @@ def jump_to_cue(ctx: Context, direction: str = "next", user_prompt: str = "") ->
     except Exception as e:
         logger.error(f"Error in jump_to_cue: {str(e)}")
         return f"Error in jump_to_cue: {str(e)}"
+
+
+# ------------------------------------------------------------------ Sets (the Push 3's own buttons)
+
+def _when(epoch: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
+
+
+def _describe_open(doc) -> str:
+    if doc is None:
+        return "Live's log names no Set it loaded"
+    stamp, path = doc
+    if _push.is_template(path):
+        return "a new Set from the default template (loaded %s), not saved under a name yet" % stamp[:19]
+    return "%s (loaded %s)" % (path, stamp[:19])
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@telemetry_tool("list_sets")
+def list_sets(ctx: Context, user_prompt: str = "") -> str:
+    """
+    The Sets on the Push 3 in the order its Set browser shows them (newest first, [Autosave] copies
+    included), with when each was last saved and which one Live has open. load_set takes these names.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        sets = _push.list_sets()
+        doc = _push.current_document()
+        lines = ["%d. %s (saved %s)%s" % (s["position"], s["name"], _when(s["modified"]),
+                                          "  <- open" if doc and _push.same_file(s["als"], doc[1]) else "") for s in sets]
+        return "\n".join(["Sets in %s, as the Set browser lists them:" % _push.SETS_DIR] + lines
+                         + ["Open: " + _describe_open(doc)])
+    except Exception as e:
+        logger.error(f"Error listing Sets: {str(e)}")
+        return f"Error listing Sets: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@telemetry_tool("which_set")
+def which_set(ctx: Context, user_prompt: str = "") -> str:
+    """
+    Which Set Live has open, from the last "Loading document" line in Live's log. A new Set saved
+    under a name for the first time is not logged, so it still reads as the template it came from.
+
+    Parameters:
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        return "Open: " + _describe_open(_push.current_document())
+    except Exception as e:
+        logger.error(f"Error reading the open Set: {str(e)}")
+        return f"Error reading the open Set: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("load_set")
+@trajectory_tool("load_set")
+def load_set(ctx: Context, name: str, confirm: bool = False, user_prompt: str = "") -> str:
+    """
+    Open a Set by pressing the Push 3's own buttons, as a person would: Sets (the browser opens on
+    the top entry; if it was open already, the press closes it and a second press reopens it), the
+    jog wheel down to the Set, then the jog press. It checks the Sets light before turning the jog
+    wheel and Live's log afterwards, and stops if either is not as expected. The open Set is closed:
+    if it has unsaved changes Live may ask first (see get_live_status), so save_set before loading.
+    Two steps: confirm=false (default) shows what would be opened; confirm=true presses the buttons.
+    The MCP connection to Live restarts with the new Set; the next tool call reconnects.
+
+    Parameters:
+    - name: The Set's name as list_sets shows it (the project folder without " Project")
+    - confirm: false = preview only (default), true = load it
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        sets = _push.list_sets()
+        target = _push.find_set(name, sets)
+        log = _push.live_log()
+        before = _push.current_document(log)
+        if target["als"] is None:
+            return "Error: '%s' has no .als file in %s; nothing was pressed." % (target["name"], target["folder"])
+        if before and _push.same_file(before[1], target["als"]):
+            return "'%s' is already open (%s); nothing was pressed." % (target["name"], _describe_open(before))
+        plan = ("open the Set browser, %d jog step(s) down to entry %d, then load '%s' (saved %s), closing %s"
+                % (target["position"] - 1, target["position"], target["name"], _when(target["modified"]),
+                   _describe_open(before)))
+        if not confirm:
+            return ("NOT LOADED (preview only). This would " + plan +
+                    ".\nTo load it, call load_set again with the same name and confirm=true.")
+        presses = _push.open_set_browser()
+        steps = target["position"] - 1
+        if steps:
+            _push.send(_push.jog(steps))
+        _push.sleep(0.5)
+        _push.send(_push.press(_push.CC_JOG_PRESS))
+        loaded = _push.wait_for_load(log, before)
+        opened = "pressed Sets %s, jogged %d down and pressed the jog wheel" % (
+            "once" if presses == 1 else "twice (the browser was open)", steps)
+        if loaded is None:
+            status = {}
+            try:
+                status = _live("get_live_status")
+            except Exception:
+                pass
+            if status.get("open_dialogs"):
+                return ("Live is asking before it closes the open Set: \"%s\" (%s buttons). Answer it with "
+                        "press_dialog_button (Save changes: 0 Save, 1 Don't save, 2 Cancel), or ask the user. "
+                        "(%s.)" % (status.get("dialog_message"), status.get("dialog_button_count"), opened))
+            return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: it may "
+                    "be asking something, or the browser may be on another entry." % opened)
+        if not _push.same_file(loaded[1], target["als"]):
+            return ("Error: Live loaded %s, not '%s' (%s). The browser's order may differ from the folders' "
+                    "dates; check list_sets." % (loaded[1], target["name"], opened))
+        return "Loaded '%s' (%s; Live's log: %s)." % (target["name"], opened, loaded[0][:19])
+    except Exception as e:
+        logger.error(f"Error loading a Set: {str(e)}")
+        return f"Error loading a Set: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("save_set")
+@trajectory_tool("save_set")
+def save_set(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
+    """
+    Save the open Set by pressing the Push 3's Save button, then check that a Set file was written
+    (Live keeps the previous version in the project's Backup folder). A new Set that has never been
+    saved gets the name the Push gives it. Two steps: confirm=false (default) says which Set would be
+    saved; confirm=true presses Save.
+
+    Parameters:
+    - confirm: false = preview only (default), true = press Save
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        doc = _push.current_document()
+        if not confirm:
+            return ("NOT SAVED (preview only). This would press Save on the Push, saving %s.\n"
+                    "To save, call save_set again with confirm=true." % _describe_open(doc))
+        # file times have whole-second precision on some file systems
+        pressed = int(_push.now())
+        lights = _push.send(_push.press(_push.CC_SAVE), listen=1.5, until_cc=_push.CC_SAVE)
+        written = []
+        deadline = _push.now() + 8.0
+        while not written and _push.now() < deadline:
+            _push.sleep(0.25)
+            written = _push.set_files_written_since(pressed)
+        light = _push.last_light(lights, _push.CC_SAVE)
+        if not written:
+            return ("Error: no Set file was written within 8 s of pressing Save%s. Look at the Push's screen: "
+                    "it may be asking something. Do not assume the Set is saved."
+                    % (" (the Save light went off)" if light == 0 else ""))
+        return "Saved: %s written%s." % (written[0], " (the Save light went off)" if light == 0 else "")
+    except Exception as e:
+        logger.error(f"Error saving the Set: {str(e)}")
+        return f"Error saving the Set: {str(e)}"
 
 
 # Main execution
