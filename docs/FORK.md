@@ -154,6 +154,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added on the server only (no Remote Script change) | What | Notes |
 |---|---|---|
 | Notes as text | `add_notes_to_clip` and `replace_clip_notes` take `notation` instead of `notes`; `get_clip_notes(format="text")` reads a clip back the same way (`MCP_Server/notation.py`) | events (`1.1 C3 E3 G3 1/1 v90`) and step patterns (`C1 x...x...x...x... *4`), Live's positions and octave numbering, random velocity ranges, probability, release velocity, repeats; every line stands alone; any bad line means nothing is written. Any clip round-trips exactly, except a velocity range that reaches below 0, which is written ending at 0 and sounds the same |
+| Listening | `listen(scratch_track_index, expected_name, bars)` records Live's own output on a scratch audio track and measures the take; `analyze_audio_clip(track_index, clip_index)` measures an existing audio clip's file (`MCP_Server/listen.py`) | both report integrated loudness, loudness range and true peak (ebur128), peak and RMS (astats), silent stretches (silencedetect) and a table with one row per bar: RMS, peak and low (<250 Hz) / mid / high (>4 kHz) band RMS, from one ffmpeg call on the machine the server runs on (the Push: ffmpeg 5.0.3, no Python dependencies); a spectrogram image only when asked. `listen` refuses unless the track's input is Live's output (Resampling, Main or a track) with monitoring off, and unless Live is playing; it never reroutes. It arms the track for the take, waits within launch wait + length + 3 s, stops and deletes the take's clip (`keep=true` keeps it; the WAV stays in the project) and restores every arm, including tracks Exclusive Arm disarmed. Run on Push 3, Live 12.4.15, 2026-10-29: 2 bars of "Hihat Clap House 120 bpm" resampled in 6.5 s measured −21.3 LUFS, −3.0 dBTP, RMS −27.1 dB, the same per bar as the source file (−21.4 LUFS, −3.0, −27.1). Bars count from the start of the file at the set's tempo, so they line up for takes, not for samples at another tempo |
 
 Each `feat/*` branch is also pushed on its own, so it can be reviewed or sent upstream separately.
 
@@ -186,7 +187,7 @@ Single maintainer on spare time; tested on one edition of Live (Lite, 8 tracks) 
 
 ## Roadmap (from the coverage map in upstream #142)
 
-Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133, needs BlackHole and ffmpeg so probably not).
+Brought in with 1.10.0 (mocked-LOM tests, real-Live run pending): scenes, return tracks, transport, audio-clip warp, note editing (#99), delete Arrangement clips (#110, #119), delete device (#23). Still to do from open upstream PRs: routing (#99), automation envelopes (#23), real-time audio export by resample capture (#143, needs a real-Live run first), record/analyze audio (#133 needs BlackHole; on the Push, `listen` resamples Live's output and measures it with ffmpeg instead).
 
 Not implemented anywhere we found, planned by us: return/master device parameters; device reorder; browser search and preview.
 
