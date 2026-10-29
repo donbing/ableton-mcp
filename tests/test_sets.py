@@ -74,6 +74,9 @@ class FakePush:
         self.loads = True      # False: the jog press loads nothing (a question on the Push's screen)
         self.saves = True
         self.sets_light = True  # False: the Sets light never answers
+        self.dirty = False      # the open Set has unsaved changes: the jog press asks first
+        self.prompt = False
+        self.open_file = self.sets / "Arcing the Singularity Project" / "Arcing the Singularity.als"
 
     def entries(self):
         return [s["als"] for s in P.list_sets(str(self.sets))]
@@ -92,16 +95,34 @@ class FakePush:
                     lights.append([0.03, [0xB0, P.CC_SETS, 127 if self.browser_open else 14]])
             elif number == P.CC_JOG and self.browser_open:
                 self.highlight = max(0, self.highlight + (1 if value == 1 else -1))
+            elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.dirty:
+                # as measured: the Sets and Save lights go dark, the three answers light up
+                self.prompt = True
+                lights += [[0.05, [0xB0, 80, 0]], [0.05, [0xB0, 82, 0]], [0.05, [0xB0, 24, 122]],
+                           [0.05, [0xB0, 26, 122]], [0.05, [0xB0, 27, 126]]]
             elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.loads:
-                with open(self.log, "a", encoding="utf-8") as f:
-                    f.write(LOAD_LINE.format(path=self.entries()[self.highlight]))
-                self.browser_open = False
+                self.load()
+            elif self.prompt and value == 127 and number in (24, 26, 27):
+                self.prompt = False
+                lights += [[0.05, [0xB0, 24, 0]], [0.05, [0xB0, 26, 0]], [0.05, [0xB0, 27, 0]]]
+                if number == 26:
+                    lights += [[0.05, [0xB0, 80, 127]], [0.05, [0xB0, 82, 127]]]
+                    continue
+                if number == 27:
+                    os.utime(self.open_file, (self.clock.t + 1, self.clock.t + 1))
+                self.dirty = False
+                self.load()
             elif number == P.CC_SAVE and value == 127 and self.saves:
                 lights.append([0.1, [0xB0, P.CC_SAVE, 0]])
                 path = self.sets / "Set 12-1 Project" / "Set 12-1.als"
                 os.utime(path, (self.clock.t + 1, self.clock.t + 1))
         self.clock.t += listen
         return lights
+
+    def load(self):
+        with open(self.log, "a", encoding="utf-8") as f:
+            f.write(LOAD_LINE.format(path=self.entries()[self.highlight]))
+        self.browser_open = False
 
 
 # --------------------------------------------------------------------------- MIDI
@@ -257,20 +278,52 @@ def test_the_open_set_is_not_loaded_again(push):
     assert "already open" in out and push.sent == []
 
 
-def test_a_load_that_never_shows_in_the_log_is_reported(push, monkeypatch):
+def test_a_load_that_never_shows_in_the_log_is_reported(push):
     push.loads = False
-    monkeypatch.setattr(server, "_live", lambda command, params=None: {"open_dialogs": 0})
     out = call(server.load_set, None, "Set 12", confirm=True)
     assert out.startswith("Error: Live's log shows no Set loading within 15 s")
 
 
-def test_a_save_changes_question_is_handed_back(push, monkeypatch):
-    push.loads = False
-    monkeypatch.setattr(server, "_live", lambda command, params=None: {
-        "open_dialogs": 1, "dialog_message": "Save changes to \"Arcing the Singularity\" before closing?",
-        "dialog_button_count": 3})
+def test_unsaved_changes_are_left_for_the_user_by_default(push):
+    push.dirty = True
     out = call(server.load_set, None, "Set 12", confirm=True)
-    assert out.startswith("Live is asking before it closes the open Set") and "press_dialog_button" in out
+    assert out.startswith("Not loaded:") and "unsaved changes" in out and 'unsaved="discard"' in out
+    # Cancel, then Sets to close the browser again
+    assert push.sent[-4:] == [[0xB0, 26, 127], [0xB0, 26, 0], [0xB0, 80, 127], [0xB0, 80, 0]]
+    assert not push.prompt and not push.browser_open and P.current_document()[1].endswith("Arcing the Singularity.als")
+
+
+def test_unsaved_changes_can_be_dropped(push):
+    push.dirty = True
+    out = call(server.load_set, None, "Set 12", unsaved="discard", confirm=True)
+    assert out.startswith("Loaded 'Set 12'") and "answered the save-changes question with Don't Save" in out
+    assert [0xB0, 24, 127] in push.sent and [0xB0, 27, 127] not in push.sent
+
+
+def test_unsaved_changes_can_be_saved_first(push):
+    push.dirty = True
+    out = call(server.load_set, None, "Set 12", unsaved="save", confirm=True)
+    assert out.startswith("Loaded 'Set 12'") and "with Save" in out and "WARNING" not in out
+    assert [0xB0, 27, 127] in push.sent
+
+
+def test_a_save_that_writes_nothing_is_flagged(push):
+    push.dirty = True
+    push.open_file = push.sets / "nowhere.als"
+    push.open_file.write_bytes(b"")
+    os.utime(push.open_file, (0, 0))
+    out = call(server.load_set, None, "Set 12", unsaved="save", confirm=True)
+    assert "WARNING: no new file for the Set that was open" in out
+
+
+def test_without_unsaved_changes_the_answer_is_never_pressed(push):
+    out = call(server.load_set, None, "Set 12", unsaved="discard", confirm=True)
+    assert out.startswith("Loaded") and not any(d[1] in (24, 26, 27) for d in push.sent if d[0] == 0xB0)
+
+
+def test_an_unknown_unsaved_answer_is_refused(push):
+    assert call(server.load_set, None, "Set 12", unsaved="maybe", confirm=True).startswith("Error: unsaved must be")
+    assert push.sent == []
 
 
 def test_the_wrong_set_loading_is_an_error(push):

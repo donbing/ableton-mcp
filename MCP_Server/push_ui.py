@@ -11,6 +11,9 @@ the results in Live's log and on disk. Measured on Push 3 standalone, Live 12.4.
 - The browser lists every project folder in the Sets folder, newest first ([Autosave] ones too).
 - The jog wheel CC70 moves the highlight one entry per message (1 = down, 127 = up), wrapped in its
   touch note 11; pressing it (CC94) loads the highlighted Set.
+- If the open Set has unsaved changes, the jog press puts up "Save changes before closing?" on the
+  Push's screen (not a Live dialog) and lights the buttons below it: Don't Save CC24 and Cancel CC26
+  white (122), Save CC27 green (126). Cancel goes back to the browser.
 - Live's Log.txt says `Loading document "<path>"` for every Set it opens.
 """
 
@@ -28,6 +31,10 @@ HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_midi.py"
 
 CC_SETS, CC_SAVE, CC_JOG, CC_JOG_PRESS, NOTE_JOG_TOUCH = 80, 82, 70, 94, 11
 SETS_LIGHT_OPEN = 127
+# the buttons below the screen that "Save changes before closing?" lights: Don't Save (white, 122),
+# Cancel (white, 122) and Save (green, 126)
+CC_PROMPT_DONT_SAVE, CC_PROMPT_CANCEL, CC_PROMPT_SAVE = 24, 26, 27
+PROMPT_SAVE_GREEN = 126
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
 LOADING = re.compile(r'^(\S+): info: Loading document "(.*)"\s*$')
@@ -75,6 +82,13 @@ def send(steps, listen=0.0, until_cc=None):
 def last_light(lights, cc):
     values = [d[2] for _, d in lights if len(d) == 3 and d[0] & 0xF0 == 0xB0 and d[1] == cc]
     return values[-1] if values else None
+
+
+def save_prompt_shown(lights):
+    """Whether these lights are the Push putting up "Save changes before closing?"."""
+    return (last_light(lights, CC_PROMPT_SAVE) == PROMPT_SAVE_GREEN
+            and last_light(lights, CC_PROMPT_CANCEL) not in (None, 0)
+            and last_light(lights, CC_PROMPT_DONT_SAVE) not in (None, 0))
 
 
 def open_set_browser():

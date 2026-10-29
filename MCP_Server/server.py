@@ -6089,22 +6089,34 @@ def which_set(ctx: Context, user_prompt: str = "") -> str:
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
 @telemetry_tool("load_set")
 @trajectory_tool("load_set")
-def load_set(ctx: Context, name: str, confirm: bool = False, user_prompt: str = "") -> str:
+def load_set(
+    ctx: Context,
+    name: str,
+    unsaved: Literal["ask", "save", "discard"] = "ask",
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
     """
     Open a Set by pressing the Push 3's own buttons, as a person would: Sets (the browser opens on
     the top entry; if it was open already, the press closes it and a second press reopens it), the
     jog wheel down to the Set, then the jog press. It checks the Sets light before turning the jog
-    wheel and Live's log afterwards, and stops if either is not as expected. The open Set is closed:
-    if it has unsaved changes Live may ask first (see get_live_status), so save_set before loading.
+    wheel and Live's log afterwards, and stops if either is not as expected.
+    If the open Set has unsaved changes the Push asks "Save changes before closing?" on its screen;
+    `unsaved` answers it: "ask" (default) presses Cancel, closes the browser and loads nothing, so
+    the user can choose; "save" saves the open Set first (and checks its file was written);
+    "discard" drops its changes. Only pass "save" or "discard" when the user said so.
     Two steps: confirm=false (default) shows what would be opened; confirm=true presses the buttons.
     The MCP connection to Live restarts with the new Set; the next tool call reconnects.
 
     Parameters:
     - name: The Set's name as list_sets shows it (the project folder without " Project")
+    - unsaved: What to answer if the open Set has unsaved changes: "ask" (default), "save" or "discard"
     - confirm: false = preview only (default), true = load it
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        if unsaved not in ("ask", "save", "discard"):
+            return "Error: unsaved must be \"ask\", \"save\" or \"discard\"."
         sets = _push.list_sets()
         target = _push.find_set(name, sets)
         log = _push.live_log()
@@ -6113,33 +6125,42 @@ def load_set(ctx: Context, name: str, confirm: bool = False, user_prompt: str = 
             return "Error: '%s' has no .als file in %s; nothing was pressed." % (target["name"], target["folder"])
         if before and _push.same_file(before[1], target["als"]):
             return "'%s' is already open (%s); nothing was pressed." % (target["name"], _describe_open(before))
-        plan = ("open the Set browser, %d jog step(s) down to entry %d, then load '%s' (saved %s), closing %s"
+        plan = ("open the Set browser, %d jog step(s) down to entry %d, then load '%s' (saved %s), closing %s; "
+                "if that Set has unsaved changes: %s"
                 % (target["position"] - 1, target["position"], target["name"], _when(target["modified"]),
-                   _describe_open(before)))
+                   _describe_open(before), {"ask": "press Cancel and load nothing", "save": "save them first",
+                                            "discard": "drop them"}[unsaved]))
         if not confirm:
             return ("NOT LOADED (preview only). This would " + plan +
-                    ".\nTo load it, call load_set again with the same name and confirm=true.")
+                    ".\nTo load it, call load_set again with the same arguments and confirm=true.")
         presses = _push.open_set_browser()
         steps = target["position"] - 1
         if steps:
             _push.send(_push.jog(steps))
         _push.sleep(0.5)
-        _push.send(_push.press(_push.CC_JOG_PRESS))
+        pressed = int(_push.now())
+        lights = _push.send(_push.press(_push.CC_JOG_PRESS), listen=2.5, until_cc=_push.CC_PROMPT_SAVE)
+        did = ["pressed Sets %s, jogged %d down and pressed the jog wheel" % (
+            "once" if presses == 1 else "twice (the browser was open)", steps)]
+        if _push.save_prompt_shown(lights):
+            if unsaved == "ask":
+                _push.send(_push.press(_push.CC_PROMPT_CANCEL), listen=1.5, until_cc=_push.CC_SETS)
+                _push.send(_push.press(_push.CC_SETS), listen=1.5, until_cc=_push.CC_SETS)
+                return ("Not loaded: %s has unsaved changes and the Push asked \"Save changes before closing?\". "
+                        "I pressed Cancel and closed the browser, so it stays open as it was. Ask the user, then "
+                        "call load_set again with unsaved=\"save\" or unsaved=\"discard\"." % _describe_open(before))
+            answer = _push.CC_PROMPT_SAVE if unsaved == "save" else _push.CC_PROMPT_DONT_SAVE
+            _push.send(_push.press(answer))
+            did.append("answered the save-changes question with %s" % ("Save" if unsaved == "save" else "Don't Save"))
         loaded = _push.wait_for_load(log, before)
-        opened = "pressed Sets %s, jogged %d down and pressed the jog wheel" % (
-            "once" if presses == 1 else "twice (the browser was open)", steps)
+        opened = ", ".join(did)
+        if unsaved == "save" and len(did) > 1:
+            written = _push.set_files_written_since(pressed)
+            if not any(before and _push.same_file(f, before[1]) for f in written):
+                opened += "; WARNING: no new file for the Set that was open, so its changes may not be saved"
         if loaded is None:
-            status = {}
-            try:
-                status = _live("get_live_status")
-            except Exception:
-                pass
-            if status.get("open_dialogs"):
-                return ("Live is asking before it closes the open Set: \"%s\" (%s buttons). Answer it with "
-                        "press_dialog_button (Save changes: 0 Save, 1 Don't save, 2 Cancel), or ask the user. "
-                        "(%s.)" % (status.get("dialog_message"), status.get("dialog_button_count"), opened))
-            return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: it may "
-                    "be asking something, or the browser may be on another entry." % opened)
+            return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: the "
+                    "browser may be on another entry, or the Push may be asking something." % opened)
         if not _push.same_file(loaded[1], target["als"]):
             return ("Error: Live loaded %s, not '%s' (%s). The browser's order may differ from the folders' "
                     "dates; check list_sets." % (loaded[1], target["name"], opened))
