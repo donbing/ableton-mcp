@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -4809,14 +4810,59 @@ def _seconds_per_bar(tempo: float, time_signature: str) -> float:
     return _listen.bar_seconds(float(tempo), numerator, denominator)
 
 
-def _with_spectrogram(text: str, path: str, spectrogram: bool, duration: Optional[float] = None):
-    if not spectrogram:
+def _span(text: str, what: str) -> tuple:
+    """'5-8' or '5' as (5.0, 8.0) or (5.0, 5.0); raises ListenError naming `what` otherwise."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(?:-\s*(\d+(?:\.\d+)?)\s*)?", str(text))
+    if not m:
+        raise _listen.ListenError("%s must look like '5-8' or '5', not '%s'" % (what, text))
+    first = float(m.group(1))
+    last = float(m.group(2)) if m.group(2) is not None else first
+    if last < first:
+        raise _listen.ListenError("%s '%s' runs backwards" % (what, text))
+    return first, last
+
+
+SPECTROGRAM_MIN_HZ, SPECTROGRAM_MAX_HZ = 200, 20000
+
+
+def _spectrogram_options(spectrogram_bars: Optional[str], spectrogram_max_hz: Optional[float], spb: float,
+                         total_bars: Optional[float] = None) -> tuple:
+    """(window, max_hz) for _with_spectrogram: window is (start, length) in seconds for bars 'first-last'
+    (counted from 1). Either is None when not given. Raises ListenError."""
+    window = None
+    if spectrogram_bars is not None:
+        first, last = _span(spectrogram_bars, "spectrogram_bars")
+        if first < 1 or first != int(first) or last != int(last):
+            raise _listen.ListenError("spectrogram_bars counts whole bars from 1, not '%s'" % spectrogram_bars)
+        if total_bars is not None and last > total_bars:
+            raise _listen.ListenError("spectrogram_bars '%s' runs past the %g bars recorded"
+                                      % (spectrogram_bars, total_bars))
+        window = ((first - 1) * spb, (last - first + 1) * spb)
+    if spectrogram_max_hz is not None and not SPECTROGRAM_MIN_HZ <= spectrogram_max_hz <= SPECTROGRAM_MAX_HZ:
+        raise _listen.ListenError("spectrogram_max_hz must be %d-%d, not %s"
+                                  % (SPECTROGRAM_MIN_HZ, SPECTROGRAM_MAX_HZ, spectrogram_max_hz))
+    return window, spectrogram_max_hz
+
+
+def _with_spectrogram(text: str, path: str, spectrogram: bool, duration: Optional[float] = None,
+                      window: Optional[tuple] = None, max_hz: Optional[float] = None):
+    if not (spectrogram or window or max_hz):
         return text
+    start, length = window if window else (None, duration)
+    if window and duration is not None and start >= duration:
+        return text + ("\nNo spectrogram: the bars asked for start at %.1f s, and the file is %.1f s long."
+                       % (start, duration))
     # half a second of slack: a take of exactly 30 s can come out a few samples longer
-    if duration is not None and duration > LISTEN_SPECTROGRAM_MAX_SECONDS + 0.5:
-        return text + ("\nNo spectrogram: the file is %.0f s long, and it is only drawn up to %.0f s."
-                       % (duration, LISTEN_SPECTROGRAM_MAX_SECONDS))
-    return [text, Image(data=_listen.spectrogram_png(path, duration=duration), format="png")]
+    if length is not None and length > LISTEN_SPECTROGRAM_MAX_SECONDS + 0.5:
+        return text + ("\nNo spectrogram: the %s is %.0f s long, and it is only drawn up to %.0f s%s."
+                       % ("window" if window else "file", length, LISTEN_SPECTROGRAM_MAX_SECONDS,
+                          "" if window else "; draw part of it with spectrogram_bars"))
+    try:
+        png = _listen.spectrogram_png(path, duration=length, start=start, max_hz=max_hz)
+    except _listen.ListenError as e:
+        # the measurement stands on its own
+        return text + "\nNo spectrogram: %s." % e
+    return [text, Image(data=png, format="png")]
 
 
 def _wait_for_file(path: str, timeout: float = 3.0) -> None:
@@ -4841,6 +4887,8 @@ def analyze_audio_clip(
     bars_per_row: Optional[int] = None,
     spectrogram: bool = False,
     silence_db: float = -50.0,
+    spectrogram_bars: Optional[str] = None,
+    spectrogram_max_hz: Optional[float] = None,
     user_prompt: str = "",
 ):
     """
@@ -4856,9 +4904,12 @@ def analyze_audio_clip(
       track's Arrangement clips, as get_arrangement_clips lists them)
     - arrangement: False (default) Session slot, True Arrangement clip
     - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of
-      audio; files up to 30 s)
+    - spectrogram: Also return a spectrogram image (about 600 tokens, and about a second per second
+      of audio drawn; at most 30 s, so pick bars of a longer file with spectrogram_bars)
     - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - spectrogram_bars: Draw only these bars, e.g. "5-8" or "3" (implies spectrogram)
+    - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
+      or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -4869,18 +4920,24 @@ def analyze_audio_clip(
             return "Error: Live reports no file for this clip, so there is nothing to measure."
         overview = _live("get_tracks_overview")
         spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        window, max_hz = _spectrogram_options(spectrogram_bars, spectrogram_max_hz, spb)
         result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
         text = ("Clip '%s' (track %d, %s %d), file %s, bars at %s bpm %s\n"
                 % (clip.get("name", ""), track_index, "arrangement clip" if arrangement else "slot", clip_index,
                    path, overview["tempo"], overview["time_signature"]) + _listen.format_report(result))
-        return _with_spectrogram(text, path, spectrogram, result.get("duration"))
+        return _with_spectrogram(text, path, spectrogram, result.get("duration"), window, max_hz)
     except Exception as e:
         logger.error(f"Error analyzing audio clip: {str(e)}")
         return f"Error analyzing audio clip: {str(e)}"
 
 
-def _listen_refusal(overview: dict, index: int, expected_name: str) -> Optional[str]:
-    """Why listen must not record on this track, or None. Nothing is changed either way."""
+_NOT_LIVES_OUTPUT = (None, "No Input", "Ext. In")
+# the tap that includes a track's fader and pan (not its sends), as the part is heard in the mix
+_LISTEN_SOURCE_CHANNEL = "Post Mixer"
+
+
+def _listen_refusal(overview: dict, index: int, expected_name: str, source: Optional[str] = None) -> Optional[str]:
+    """Why listen must not record on this track (from `source`, when given), or None. Nothing is changed."""
     tracks = overview.get("tracks", [])
     if not 0 <= index < len(tracks):
         return "Error: track index %d out of range (the set has %d tracks)." % (index, len(tracks))
@@ -4893,8 +4950,14 @@ def _listen_refusal(overview: dict, index: int, expected_name: str) -> Optional[
     setup = ("Set it up once: set_track_routing(track_index=%d, expected_name='%s', direction='input', "
              "routing_type='Resampling') and set_track_monitoring(track_index=%d, state='off')."
              % (index, expected_name, index))
-    input_type = (_live("get_track_routing", {"track_index": index}).get("input") or {}).get("type")
-    if input_type in (None, "No Input", "Ext. In"):
+    routing = _live("get_track_routing", {"track_index": index}).get("input") or {}
+    input_type = routing.get("type")
+    if source is not None:
+        offered = [t for t in routing.get("available_types") or [] if t not in _NOT_LIVES_OUTPUT]
+        if source not in offered:
+            return ("Error: '%s' cannot take its input from '%s'. Nothing was recorded. It can listen to: %s."
+                    % (expected_name, source, ", ".join(offered) or "nothing"))
+    elif input_type in _NOT_LIVES_OUTPUT:
         return ("Error: '%s' records from %s, not from Live's output. Nothing was recorded. %s"
                 % (expected_name, "'%s'" % input_type if input_type else "no input", setup))
     if row.get("monitoring") != "off":
@@ -4907,8 +4970,9 @@ def _listen_refusal(overview: dict, index: int, expected_name: str) -> Optional[
 
 
 def _listen_refusal_for_length(quantization: Optional[str], bars: float, spb: float, overview: dict,
-                               spectrogram: bool) -> Optional[str]:
-    """Why a pass of `bars` must not run at this launch quantization and tempo, or None."""
+                               spectrogram: bool, window: Optional[tuple] = None) -> Optional[str]:
+    """Why a pass of `bars` must not run at this launch quantization and tempo, or None. window: the
+    (start, length) in seconds a spectrogram is drawn for, when only part of the take is."""
     if quantization not in _LAUNCH_WAIT_BARS:
         return ("Error: the launch quantization is '%s', so the take would not start on a bar and every row "
                 "of the per-bar table would be shifted. Nothing was recorded. Set it to a bar first: "
@@ -4922,14 +4986,36 @@ def _listen_refusal_for_length(quantization: Optional[str], bars: float, spb: fl
                 % (bars, tempo, bars * spb, wait * spb, quantization, LISTEN_MAX_SECONDS,
                    "At this tempo at most %d bars fit; listen in several passes for more." % fit if fit >= 1
                    else "Not one bar fits at this tempo; set the launch quantization to 'bar'."))
-    if spectrogram and bars * spb > LISTEN_SPECTROGRAM_MAX_SECONDS + 1e-9:
+    drawn = window[1] if window else bars * spb
+    if (spectrogram or window) and drawn > LISTEN_SPECTROGRAM_MAX_SECONDS + 1e-9:
         most = int(math.floor(LISTEN_SPECTROGRAM_MAX_SECONDS / spb + 1e-9))
-        return ("Error: %g bars at %s is %.0f s; a spectrogram is only drawn for takes up to %.0f s (it takes "
+        return ("Error: %s at %s is %.0f s; a spectrogram is only drawn for up to %.0f s (it takes "
                 "about as long as the audio to draw, while Live plays). Nothing was recorded. %s"
-                % (bars, tempo, bars * spb, LISTEN_SPECTROGRAM_MAX_SECONDS,
-                   "Listen to at most %d bars with spectrogram=True, or without it." % most if most >= 1
-                   else "Listen without spectrogram=True."))
+                % ("spectrogram_bars %g bars" % (window[1] / spb) if window else "%g bars" % bars, tempo, drawn,
+                   LISTEN_SPECTROGRAM_MAX_SECONDS,
+                   "Listen to at most %d bars with spectrogram=True, or draw at most %d of them with "
+                   "spectrogram_bars." % (most, most) if most >= 1 else "Listen without spectrogram=True."))
     return None
+
+
+def _route_scratch(index: int, expected_name: str, source: str) -> tuple:
+    """Point the scratch track's input at `source`, on its Post Mixer tap when Live offers one.
+    Returns (the input before, the input now)."""
+    before = _live("get_track_routing", {"track_index": index})["input"]
+    params = {"track_index": index, "track_type": "track", "expected_name": expected_name, "direction": "input"}
+    after = _live("set_track_routing", dict(params, routing_type=source))["after"]
+    if (_LISTEN_SOURCE_CHANNEL in (after.get("available_channels") or [])
+            and after.get("channel") != _LISTEN_SOURCE_CHANNEL):
+        after = _live("set_track_routing", dict(params, routing_channel=_LISTEN_SOURCE_CHANNEL))["after"]
+    return before, after
+
+
+def _unroute_scratch(index: int, expected_name: str, before: dict) -> None:
+    params = {"track_index": index, "track_type": "track", "expected_name": expected_name, "direction": "input",
+              "routing_type": before["type"]}
+    if before.get("channel"):
+        params["routing_channel"] = before["channel"]
+    _live("set_track_routing", params)
 
 
 def _slot_state(index: int, slot: int) -> dict:
@@ -5002,6 +5088,9 @@ def listen(
     bars_per_row: Optional[int] = None,
     spectrogram: bool = False,
     silence_db: float = -50.0,
+    source: Optional[str] = None,
+    spectrogram_bars: Optional[str] = None,
+    spectrogram_max_hz: Optional[float] = None,
     user_prompt: str = "",
 ):
     """
@@ -5016,10 +5105,15 @@ def listen(
     for takes up to 30 s. ffmpeg runs at low priority on one core.
     The scratch track must already take its input from Live (input "Resampling", "Main" or another
     track's output) with monitoring "off", so the take cannot feed back into Main; this tool refuses
-    otherwise and never reroutes. Set one up once: create_audio_track, set_track_routing
+    otherwise, and only reroutes for `source` (below). Set one up once: create_audio_track, set_track_routing
     (direction "input", routing_type "Resampling") and set_track_monitoring "off". It arms the track
     for the take and leaves every arm as it was (re-arming tracks Live's Exclusive Arm disarmed).
     The WAV stays in the project's Samples/Recorded folder (Live keeps track of project files).
+    One part at a time: source names a track (or a return, or "Main") as the scratch track's input
+    list shows it, e.g. "2-Ac Strings Pizz Basic". For the take the scratch track listens to that
+    track's Post Mixer output (its fader and pan; not its sends, so no reverb or delay return) and
+    afterwards its input is put back as it was. Nothing changes in what the user hears. Is the hook
+    masked? Is the low end the kick or the bass? Compare a part with the whole mix.
 
     Parameters:
     - scratch_track_index: The scratch audio track
@@ -5028,9 +5122,13 @@ def listen(
     - clip_index: The empty slot to record into (default: the track's first empty slot)
     - keep: True keeps the take's clip in its slot (default false: deleted after measuring)
     - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - spectrogram: Also return a spectrogram image (costs tokens, and about a second per second of
-      audio; takes up to 30 s)
+    - spectrogram: Also return a spectrogram image (about 600 tokens, and about a second per second
+      of audio drawn; at most 30 s, so pick bars of a longer take with spectrogram_bars)
     - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - source: Record only this track's output instead of the scratch track's own input (see above)
+    - spectrogram_bars: Draw only these bars of the take, e.g. "13-16" or "4" (implies spectrogram)
+    - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
+      or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -5040,7 +5138,7 @@ def listen(
             return "Error: bars must be above 0 and at most %d." % LISTEN_MAX_BARS
         bars, index = float(bars), scratch_track_index
         overview = _live("get_tracks_overview")
-        refusal = _listen_refusal(overview, index, expected_name)
+        refusal = _listen_refusal(overview, index, expected_name, source)
         if refusal:
             return refusal
         slots = _live("get_track_info", {"track_index": index}).get("clip_slots", [])
@@ -5057,31 +5155,50 @@ def listen(
         else:
             slot = clip_index
         spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        try:
+            window, max_hz = _spectrogram_options(spectrogram_bars, spectrogram_max_hz, spb, bars)
+        except _listen.ListenError as e:
+            return "Error: %s. Nothing was recorded." % e
         # set_transport_options with no arguments only reads
         quantization = (_live("set_transport_options").get("after") or {}).get("clip_trigger_quantization")
-        refusal = _listen_refusal_for_length(quantization, bars, spb, overview, spectrogram)
+        refusal = _listen_refusal_for_length(quantization, bars, spb, overview, spectrogram or bool(max_hz),
+                                             window)
         if refusal:
             return refusal
         armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
 
-        did, notes, take = [], [], None
+        did, notes, take, routed = [], [], None, None
         try:
+            if source is not None:
+                routed, now = _route_scratch(index, expected_name, source)
+                did.append("took its input from '%s'%s"
+                           % (now.get("type"), " (%s)" % now["channel"] if now.get("channel") else ""))
             if index not in armed_before:
                 _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
                                         "expected_name": expected_name})
                 did.append("armed it for the take")
             take = _record_take(index, slot, expected_name, bars, spb, did, notes)
         finally:
-            restore = [(index, False)] if index not in armed_before else []
-            now_armed = {t["index"] for t in _live("get_tracks_overview").get("tracks", []) if t.get("arm")}
-            # Live's Exclusive Arm disarms the others when one track is armed
-            rearm = sorted(armed_before - now_armed - {index})
-            for i, arm in restore + [(i, True) for i in rearm]:
-                _live("set_track_arm", {"track_index": i, "enabled": arm, "track_type": "track"})
-            if restore:
-                did.append("disarmed it again")
-            if rearm:
-                did.append("re-armed track(s) %s, which Exclusive Arm had disarmed" % ", ".join(map(str, rearm)))
+            try:
+                restore = [(index, False)] if index not in armed_before else []
+                now_armed = {t["index"] for t in _live("get_tracks_overview").get("tracks", []) if t.get("arm")}
+                # Live's Exclusive Arm disarms the others when one track is armed
+                rearm = sorted(armed_before - now_armed - {index})
+                for i, arm in restore + [(i, True) for i in rearm]:
+                    _live("set_track_arm", {"track_index": i, "enabled": arm, "track_type": "track"})
+                if restore:
+                    did.append("disarmed it again")
+                if rearm:
+                    did.append("re-armed track(s) %s, which Exclusive Arm had disarmed"
+                               % ", ".join(map(str, rearm)))
+            finally:
+                if routed is not None:
+                    try:
+                        _unroute_scratch(index, expected_name, routed)
+                        did.append("put its input back to '%s'" % routed["type"])
+                    except Exception as e:
+                        notes.append("its input could not be put back to '%s' (%s); set it with set_track_routing"
+                                     % (routed["type"], e))
         if take is None:
             return ("Error: no take was recorded on '%s' (%s). Is the transport still playing?"
                     % (expected_name, "; ".join(did + notes) or "nothing changed"))
@@ -5106,7 +5223,7 @@ def listen(
         if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
             lines.append("The take is silent: check that the clips play, nothing is muted and Main is up.")
         # the WAV outlives the clip, so the picture can be drawn after the clip is gone
-        return _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"))
+        return _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"), window, max_hz)
     except Exception as e:
         logger.error(f"Error in listen: {str(e)}")
         return f"Error in listen: {str(e)}"

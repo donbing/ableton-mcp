@@ -404,9 +404,13 @@ def conn(script_module, song, monkeypatch):
     return fake
 
 
+class Seen(list):
+    drawn = None
+
+
 @pytest.fixture
 def measured(monkeypatch):
-    seen = []
+    seen, drawn = Seen(), []
 
     def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0):
         seen.append((path, seconds_per_bar, bars_per_row, silence_db))
@@ -415,7 +419,10 @@ def measured(monkeypatch):
 
     monkeypatch.setattr(L, "find_ffmpeg", lambda: "/usr/bin/ffmpeg")
     monkeypatch.setattr(L, "analyze_file", analyze_file)
-    monkeypatch.setattr(L, "spectrogram_png", lambda path, duration=None: b"\x89PNG fake")
+    monkeypatch.setattr(L, "spectrogram_png",
+                        lambda path, duration=None, start=None, max_hz=None: drawn.append((duration, start, max_hz))
+                        or b"\x89PNG fake")
+    seen.drawn = drawn
     return seen
 
 
@@ -566,9 +573,11 @@ def test_a_spectrogram_is_refused_for_takes_over_30_s(conn, song, measured):
 
 def test_a_long_file_gets_no_spectrogram(monkeypatch):
     drawn = []
-    monkeypatch.setattr(L, "spectrogram_png", lambda path, duration=None: drawn.append(duration) or b"png")
+    monkeypatch.setattr(L, "spectrogram_png",
+                        lambda path, duration=None, start=None, max_hz=None: drawn.append(duration) or b"png")
     out = server._with_spectrogram("text", "/x.wav", True, 95.0)
-    assert out == "text\nNo spectrogram: the file is 95 s long, and it is only drawn up to 30 s." and drawn == []
+    assert out == ("text\nNo spectrogram: the file is 95 s long, and it is only drawn up to 30 s; draw part of "
+                   "it with spectrogram_bars.") and drawn == []
     assert server._with_spectrogram("text", "/x.wav", True, 30.2)[1].data == b"png" and drawn == [30.2]
 
 
@@ -612,3 +621,142 @@ def test_analyze_audio_clip_reads_the_clips_file_at_the_set_tempo(conn, song, me
 
 def test_listen_is_a_modifying_tool_and_analyze_is_read_only():
     assert "listen" in MODIFYING_TOOLS and "analyze_audio_clip" not in MODIFYING_TOOLS
+
+
+# ---------------------------------------------------------------- one part at a time (source)
+
+def offer_drums(song):
+    """The scratch track can also listen to Drums, whose channels include a Post Mixer tap."""
+    listen = song.tracks[2]
+    listen.available_input_routing_types.append(routing("Drums"))
+    listen.available_input_routing_channels = [routing("Post FX"), routing("Post Mixer")]
+
+
+def routings_sent(conn):
+    return [{k: p[k] for k in ("routing_type", "routing_channel") if k in p}
+            for c, p in conn.sent if c == "set_track_routing"]
+
+
+def test_source_listens_to_one_track_and_puts_the_input_back(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, source="Drums", **LISTEN)
+    assert routings_sent(conn) == [{"routing_type": "Drums"}, {"routing_channel": "Post Mixer"},
+                                   {"routing_type": "Resampling", "routing_channel": "Post FX"}]
+    # the take was fired while the input pointed at Drums
+    fired = [c for c, _ in conn.sent].index("record_into_slot")
+    assert fired > [c for c, _ in conn.sent].index("set_track_routing")
+    listen = song.tracks[2]
+    assert listen.input_routing_type.display_name == "Resampling" and listen.arm is False
+    assert out.startswith("Listened on 'Listen' (track 2) at 120.0 bpm 4/4: took its input from 'Drums' "
+                          "(Post Mixer); armed it for the take; recorded 2 bars")
+    assert "put its input back to 'Resampling'" in out and "Note:" not in out
+
+
+def test_source_works_from_a_scratch_track_on_ext_in_and_puts_ext_in_back(conn, song, measured):
+    offer_drums(song)
+    song.tracks[2].input_routing_type = routing("Ext. In")
+    out = call(server.listen, None, source="Drums", **LISTEN)
+    assert out.startswith("Listened") and song.tracks[2].input_routing_type.display_name == "Ext. In"
+
+
+@pytest.mark.parametrize("source", ["Ext. In", "No Input", "Bass", "Listen"])
+def test_a_source_that_is_not_lives_own_sound_is_refused(conn, song, measured, source):
+    offer_drums(song)
+    out = call(server.listen, None, source=source, **LISTEN)
+    assert out.startswith("Error: 'Listen' cannot take its input from '%s'" % source)
+    assert "It can listen to: Resampling, Drums." in out
+    assert "set_track_routing" not in conn.commands() and not CHANGES & set(conn.commands())
+
+
+def test_the_input_is_put_back_when_no_take_comes(conn, song, measured):
+    offer_drums(song)
+    song.wait = 10 ** 6
+    out = call(server.listen, None, source="Drums", **LISTEN)
+    assert out.startswith("Error: no take was recorded") and "put its input back to 'Resampling'" in out
+    assert song.tracks[2].input_routing_type.display_name == "Resampling"
+
+
+def test_monitoring_must_still_be_off_with_a_source(conn, song, measured):
+    offer_drums(song)
+    song.tracks[2].current_monitoring_state = 0
+    out = call(server.listen, None, source="Drums", **LISTEN)
+    assert "monitoring on 'Listen' is 'in'" in out and "set_track_routing" not in conn.commands()
+
+
+# ---------------------------------------------------------------- spectrogram windows
+
+def test_spectrogram_bars_draws_only_those_bars(conn, song, measured):
+    # 120 bpm 4/4: 2 s a bar, so bars 2-3 start 2 s in and last 4 s (the fake take is 6 s long);
+    # a spectrogram of all 16 bars would be refused
+    out = call(server.listen, None, bars=16, spectrogram_bars="2-3", **LISTEN)
+    assert isinstance(out, list) and measured.drawn == [(4.0, 2.0, None)]
+    assert isinstance(call(server.listen, None, bars=16, spectrogram_bars="3", spectrogram_max_hz=2000,
+                           **LISTEN), list)
+    assert measured.drawn[-1] == (2.0, 4.0, 2000)
+
+
+def test_spectrogram_max_hz_alone_draws_the_whole_take_up_to_it(conn, song, measured):
+    out = call(server.listen, None, spectrogram_max_hz=4000, **LISTEN)
+    assert isinstance(out, list) and measured.drawn == [(6.0, None, 4000)]
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    (dict(bars=16, spectrogram_bars="1-16"), "spectrogram_bars 16 bars at 120.0 bpm 4/4 is 32 s"),
+    (dict(bars=4, spectrogram_bars="3-5"), "runs past the 4 bars recorded"),
+    (dict(bars=4, spectrogram_bars="0-2"), "whole bars from 1"),
+    (dict(bars=4, spectrogram_bars="4-2"), "runs backwards"),
+    (dict(bars=4, spectrogram_bars="two"), "must look like '5-8' or '5'"),
+    (dict(bars=4, spectrogram_max_hz=100), "spectrogram_max_hz must be 200-20000"),
+])
+def test_bad_spectrogram_windows_are_refused_before_recording(conn, song, measured, kwargs, expected):
+    out = call(server.listen, None, **dict(LISTEN, **kwargs))
+    assert out.startswith("Error") and expected in out and "Nothing was recorded" in out
+    assert not CHANGES & set(conn.commands()) and measured == []
+
+
+def test_a_window_past_the_end_of_a_file_is_not_drawn(monkeypatch):
+    monkeypatch.setattr(L, "spectrogram_png", lambda *a, **k: b"png")
+    out = server._with_spectrogram("text", "/x.wav", False, 10.0, window=(12.0, 4.0))
+    assert out == "text\nNo spectrogram: the bars asked for start at 12.0 s, and the file is 10.0 s long."
+
+
+def test_analyze_audio_clip_draws_a_window_of_a_long_file(conn, song, measured):
+    clip = Clip("Take")
+    clip.file_path = "/data/Music/Ableton/Sets/Test Project/Samples/Recorded/0002 Take.wav"
+    song.tracks[2].clip_slots[1].clip = clip
+    out = call(server.analyze_audio_clip, None, 2, 1, spectrogram_bars="2-3")
+    assert isinstance(out, list) and measured.drawn == [(4.0, 2.0, None)]
+    assert "must look like" in call(server.analyze_audio_clip, None, 2, 1, spectrogram_bars="x")
+
+
+def test_ffmpeg_seeks_to_the_window_and_resamples_for_max_hz(tmp_path, monkeypatch):
+    sent = []
+
+    def fake_run(args, cwd, timeout, allow_fail=False):
+        sent.append(args)
+        Path(cwd, "spectrum.png").write_bytes(b"png")
+        return ""
+
+    monkeypatch.setattr(L, "_run", fake_run)
+    assert L.spectrogram_png("/x.wav", ffmpeg="ffmpeg", duration=8.0, start=24.0, max_hz=2000) == b"png"
+    args = sent[0]
+    assert args[args.index("-ss") + 1] == "24.000" and args[args.index("-t") + 1] == "8.000"
+    assert args.index("-ss") < args.index("-i")
+    # resampled, not showspectrumpic's start/stop, which ran 12 times slower on the Push
+    assert args[args.index("-lavfi") + 1] == ("aformat=channel_layouts=mono,aresample=4000,"
+                                              "showspectrumpic=s=800x300:legend=1:fscale=log")
+    L.spectrogram_png("/x.wav", ffmpeg="ffmpeg", duration=8.0)
+    assert "-ss" not in sent[1] and "-t" not in sent[1]
+    # bar 1 starts at 0 s, which still needs the window's length
+    L.spectrogram_png("/x.wav", ffmpeg="ffmpeg", duration=4.0, start=0.0)
+    assert sent[2][sent[2].index("-ss") + 1] == "0.000" and "-t" in sent[2]
+
+
+def test_a_failed_spectrogram_keeps_the_measurement(conn, song, measured, monkeypatch):
+    def slow(*a, **k):
+        raise L.ListenError("ffmpeg took longer than 28 s")
+
+    monkeypatch.setattr(L, "spectrogram_png", slow)
+    out = call(server.listen, None, spectrogram=True, **LISTEN)
+    assert isinstance(out, str) and out.startswith("Listened") and "Loudness -4.6 LUFS" in out
+    assert out.endswith("No spectrogram: ffmpeg took longer than 28 s.")

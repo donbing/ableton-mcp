@@ -211,18 +211,29 @@ def analyze_file(path, seconds_per_bar=None, bars_per_row=None, silence_db=-50.0
     return result
 
 
-def spectrogram_png(path, width=800, height=300, ffmpeg=None, timeout=None, duration=None):
+def spectrogram_png(path, width=800, height=300, ffmpeg=None, timeout=None, duration=None, start=None,
+                    max_hz=None):
     """A mono spectrogram (log frequency axis, legend) as PNG bytes. timeout: seconds ffmpeg may take
-    (default: timeout_for duration, the audio's length in seconds; 120 s when that is not given)."""
+    (default: timeout_for duration, the audio's length in seconds; 120 s when that is not given).
+    start: draw from this many seconds in, for `duration` seconds (default the whole file).
+    max_hz: the highest frequency drawn, by resampling to twice it first. showspectrumpic's own
+    start/stop options took over 85 s for 9 s of audio on the Push (ffmpeg 5.0.3), against 7 s
+    without them, so they are not used."""
     ffmpeg = ffmpeg or find_ffmpeg()
     if not ffmpeg:
         raise ListenError("ffmpeg was not found on this machine (set ABLETON_MCP_FFMPEG to its path)")
     with tempfile.TemporaryDirectory(prefix="ableton-mcp-spectrum-") as tmp:
         if timeout is None:
             timeout = timeout_for(duration) if duration else 120
-        _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner", "-loglevel", "error"] + ONE_THREAD
+        # seeking before -i is exact for PCM and decodes only the window
+        window = []
+        if start is not None:
+            window = ["-ss", "%.3f" % start] + (["-t", "%.3f" % duration] if duration else [])
+        resample = "aresample=%d," % int(2 * max_hz) if max_hz else ""
+        _run([ffmpeg, "-nostdin", "-nostats", "-hide_banner", "-loglevel", "error"] + ONE_THREAD + window
              + ["-i", os.path.abspath(path),
-                "-lavfi", "aformat=channel_layouts=mono,showspectrumpic=s=%dx%d:legend=1:fscale=log" % (width, height),
+                "-lavfi", "aformat=channel_layouts=mono,%sshowspectrumpic=s=%dx%d:legend=1:fscale=log"
+                % (resample, width, height),
                 "-y", "spectrum.png"], tmp, timeout)
         with open(os.path.join(tmp, "spectrum.png"), "rb") as f:
             return f.read()
