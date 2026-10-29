@@ -10,6 +10,7 @@ the Set files the way Live did.
 import json
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -271,6 +272,75 @@ def test_list_sets_marks_the_open_one(push):
 
 def test_which_set_reads_the_log(push):
     assert "Arcing the Singularity.als (loaded 2026-10-29T00:27:01)" in call(server.which_set, None)
+
+
+def start_new_set(push, minutes_ago=30):
+    """Live's log line for the template loading, `minutes_ago` before the fake clock's now."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000000", time.localtime(push.clock.t - 60 * minutes_ago))
+    with open(push.log, "a", encoding="utf-8") as f:
+        f.write('%s: info: Loading document "%s"\n' % (stamp, TEMPLATE))
+    return stamp
+
+
+def save_new_project(push, name, minutes_ago):
+    """A project folder as the Push's first save of a new Set leaves it (as on 2026-10-29: the Set,
+    Ableton Project Info, Samples/Recorded, and after a second save a Backup copy), all written
+    `minutes_ago` before now."""
+    folder = push.sets / (name + " Project")
+    paths = [folder / (name + ".als"), folder / "Backup" / (name + " [2026-10-29 193353].als"),
+             folder / "Ableton Project Info" / "Project8_1.cfg", folder / "Samples" / "Recorded" / "Vox 0005.wav"]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    t = push.clock.t - 60 * minutes_ago
+    for root, dirs, files in os.walk(folder):
+        for entry in dirs + files:
+            os.utime(os.path.join(root, entry), (t, t))
+    os.utime(folder, (t, t))
+    return str(paths[0])
+
+
+def test_a_new_set_not_saved_yet_reads_as_new(push):
+    start_new_set(push)
+    assert "not saved under a name yet" in call(server.which_set, None)
+
+
+def test_a_new_sets_first_save_is_found_on_disk(push):
+    stamp = start_new_set(push, minutes_ago=30)
+    als = save_new_project(push, "Collection of Meditation", minutes_ago=10)
+    out = call(server.which_set, None)
+    assert "Collection of Meditation.als (a new Set from the default template, started %s" % stamp[:19] in out
+    assert "not saved" not in out
+    assert P.first_saved_as(P.current_document()) == als
+    listed = call(server.list_sets, None)
+    assert listed.count("<- open") == 1
+    assert "Collection of Meditation (saved" in [line for line in listed.splitlines() if "<- open" in line][0]
+    assert "is already open" in call(server.load_set, None, "Collection of Meditation")
+
+
+def test_a_project_older_than_the_new_set_is_not_its_save(push):
+    # Arcing the Singularity was saved an hour or more before the template loaded
+    start_new_set(push, minutes_ago=30)
+    assert P.first_saved_as(P.current_document()) is None
+
+
+def test_the_pushs_autosave_copies_are_not_a_save(push):
+    start_new_set(push, minutes_ago=30)
+    save_new_project(push, "Hazy Facade [Autosave]", minutes_ago=5)
+    assert "not saved under a name yet" in call(server.which_set, None)
+
+
+def test_two_new_projects_are_not_guessed_between(push):
+    start_new_set(push, minutes_ago=30)
+    save_new_project(push, "One", minutes_ago=10)
+    save_new_project(push, "Two", minutes_ago=5)
+    assert "not saved under a name yet" in call(server.which_set, None)
+
+
+def test_a_set_loaded_by_name_is_not_looked_up_on_disk(push):
+    save_new_project(push, "Newer", minutes_ago=1)
+    assert P.first_saved_as(P.current_document()) is None
+    assert "Arcing the Singularity.als (loaded" in call(server.which_set, None)
 
 
 # --------------------------------------------------------------------------- load_set

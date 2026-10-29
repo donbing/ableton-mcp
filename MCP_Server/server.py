@@ -6261,11 +6261,20 @@ def _when(epoch: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
 
 
+def _open_file(doc):
+    """The open Set's file: the one Live logged loading, or for a new Set the file it was saved as."""
+    return _push.first_saved_as(doc) or (doc[1] if doc else None)
+
+
 def _describe_open(doc) -> str:
     if doc is None:
         return "Live's log names no Set it loaded"
     stamp, path = doc
     if _push.is_template(path):
+        saved = _push.first_saved_as(doc)
+        if saved:
+            return "%s (a new Set from the default template, started %s, saved under this name since)" % (
+                saved, stamp[:19])
         return "a new Set from the default template (loaded %s), not saved under a name yet" % stamp[:19]
     return "%s (loaded %s)" % (path, stamp[:19])
 
@@ -6283,8 +6292,9 @@ def list_sets(ctx: Context, user_prompt: str = "") -> str:
     try:
         sets = _push.list_sets()
         doc = _push.current_document()
+        open_file = _open_file(doc)
         lines = ["%d. %s (saved %s)%s" % (s["position"], s["name"], _when(s["modified"]),
-                                          "  <- open" if doc and _push.same_file(s["als"], doc[1]) else "") for s in sets]
+                                          "  <- open" if _push.same_file(s["als"], open_file) else "") for s in sets]
         return "\n".join(["Sets in %s, as the Set browser lists them:" % _push.SETS_DIR] + lines
                          + ["Open: " + _describe_open(doc)])
     except Exception as e:
@@ -6296,8 +6306,9 @@ def list_sets(ctx: Context, user_prompt: str = "") -> str:
 @telemetry_tool("which_set")
 def which_set(ctx: Context, user_prompt: str = "") -> str:
     """
-    Which Set Live has open, from the last "Loading document" line in Live's log. A new Set saved
-    under a name for the first time is not logged, so it still reads as the template it came from.
+    Which Set Live has open, from the last "Loading document" line in Live's log. A new Set's first
+    save under a name is not logged; it is found on disk as the one project folder made since the
+    template loaded.
 
     Parameters:
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
@@ -6336,7 +6347,7 @@ def _finish_set_change(button, did, log, before, unsaved, missing_media, expecte
     opened = ", ".join(did)
     if unsaved == "save" and len(did) > 1:
         written = _push.set_files_written_since(pressed)
-        if not any(before and _push.same_file(f, before[1]) for f in written):
+        if not any(_push.same_file(f, _open_file(before)) for f in written):
             opened += "; WARNING: no new file for the Set that was open, so its changes may not be saved"
     if loaded is None:
         return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: the "
@@ -6408,7 +6419,7 @@ def load_set(
         before = _push.current_document(log)
         if target["als"] is None:
             return "Error: '%s' has no .als file in %s; nothing was pressed." % (target["name"], target["folder"])
-        if before and _push.same_file(before[1], target["als"]):
+        if _push.same_file(_open_file(before), target["als"]):
             return "'%s' is already open (%s); nothing was pressed." % (target["name"], _describe_open(before))
         plan = ("open the Set browser, %d jog step(s) down to entry %d, then load '%s' (saved %s), closing %s; "
                 "if that Set has unsaved changes: %s"

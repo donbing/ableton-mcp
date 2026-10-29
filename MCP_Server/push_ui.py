@@ -22,7 +22,8 @@ the results in Live's log and on disk. Measured on Push 3 standalone, Live 12.4.
 - "+ New Set" is the second button above the screen (CC103) while the browser is open; it asks the
   same save question first, then Live loads its default template.
 - Live's Log.txt says `Loading document "<path>"` for every Set it opens (and for the default track
-  a new track is built from, under Defaults/, which is skipped).
+  a new track is built from, under Defaults/, which is skipped). It logs nothing when a new Set is
+  first saved under a name; first_saved_as finds that save on disk instead.
 """
 
 import glob
@@ -232,6 +233,36 @@ def same_file(a, b):
 
 def is_template(path):
     return "/Templates/" in path or path.endswith("/DefaultLiveSet.als")
+
+
+def log_time(stamp):
+    """A log timestamp ("2026-10-29T13:58:01.123") as epoch seconds; Live writes it in local time."""
+    return time.mktime(time.strptime(stamp[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+def first_saved_as(doc, sets_dir=None):
+    """The Set file a new Set (`doc` is the template's load) was first saved as, or None.
+
+    Live logs no line when a new Set gets a name, but that first save makes a new project folder,
+    and nothing in it is older than the load (Live keeps a Backup copy's own time, so later saves
+    do not change that). Only one Set is open at a time, so one such project is this Set; with
+    none, or more than one, say nothing. [Autosave] copies are the Push's, not saves."""
+    if doc is None or not is_template(doc[1]):
+        return None
+    loaded = log_time(doc[0])
+    try:
+        sets = list_sets(sets_dir)
+    except PushError:
+        return None
+    found = []
+    for s in sets:
+        if s["als"] is None or "[Autosave]" in s["name"]:
+            continue
+        times = [os.path.getmtime(os.path.join(root, f)) for root, dirs, files in os.walk(s["folder"])
+                 for f in files + dirs]
+        if times and min(times) >= loaded:
+            found.append(s["als"])
+    return found[0] if len(found) == 1 else None
 
 
 def wait_for_load(log_path, after, timeout=15.0):
