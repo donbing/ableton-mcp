@@ -4934,6 +4934,9 @@ def analyze_audio_clip(
 _NOT_LIVES_OUTPUT = (None, "No Input", "Ext. In")
 # the tap that includes a track's fader and pan (not its sends), as the part is heard in the mix
 _LISTEN_SOURCE_CHANNEL = "Post Mixer"
+# Main after its devices but before its fader: the whole mix at full level, even with Main down
+_LISTEN_MAIN = "Main"
+_LISTEN_MAIN_CHANNEL = "Post FX"
 
 
 def _listen_refusal(overview: dict, index: int, expected_name: str, source: Optional[str] = None) -> Optional[str]:
@@ -4999,15 +5002,26 @@ def _listen_refusal_for_length(quantization: Optional[str], bars: float, spb: fl
 
 
 def _route_scratch(index: int, expected_name: str, source: str) -> tuple:
-    """Point the scratch track's input at `source`, on its Post Mixer tap when Live offers one.
-    Returns (the input before, the input now)."""
+    """Point the scratch track's input at `source`: Main on its pre-fader tap, a track on its Post Mixer
+    tap, when Live offers them. Returns (the input before, the input now)."""
+    channel = _LISTEN_MAIN_CHANNEL if source == _LISTEN_MAIN else _LISTEN_SOURCE_CHANNEL
     before = _live("get_track_routing", {"track_index": index})["input"]
     params = {"track_index": index, "track_type": "track", "expected_name": expected_name, "direction": "input"}
     after = _live("set_track_routing", dict(params, routing_type=source))["after"]
-    if (_LISTEN_SOURCE_CHANNEL in (after.get("available_channels") or [])
-            and after.get("channel") != _LISTEN_SOURCE_CHANNEL):
-        after = _live("set_track_routing", dict(params, routing_channel=_LISTEN_SOURCE_CHANNEL))["after"]
+    if channel in (after.get("available_channels") or []) and after.get("channel") != channel:
+        after = _live("set_track_routing", dict(params, routing_channel=channel))["after"]
     return before, after
+
+
+def _mix_source(index: int, source: Optional[str]) -> Optional[str]:
+    """The source to record the whole mix from: Main before its fader when the scratch track listens to
+    Resampling (after the fader, so silent with Main down) and Live offers Main as an input."""
+    if source is not None:
+        return source
+    routing = _live("get_track_routing", {"track_index": index}).get("input") or {}
+    if routing.get("type") == "Resampling" and _LISTEN_MAIN in (routing.get("available_types") or []):
+        return _LISTEN_MAIN
+    return None
 
 
 def _unroute_scratch(index: int, expected_name: str, before: dict) -> None:
@@ -5091,6 +5105,7 @@ def listen(
     source: Optional[str] = None,
     spectrogram_bars: Optional[str] = None,
     spectrogram_max_hz: Optional[float] = None,
+    quiet: bool = False,
     user_prompt: str = "",
 ):
     """
@@ -5114,6 +5129,10 @@ def listen(
     track's Post Mixer output (its fader and pan; not its sends, so no reverb or delay return) and
     afterwards its input is put back as it was. Nothing changes in what the user hears. Is the hook
     masked? Is the low end the kick or the bass? Compare a part with the whole mix.
+    The whole mix is taken before the Main fader: a scratch track on "Resampling" (after the fader, so
+    silent with Main down) listens to Main's "Post FX" tap for the take, so the level does not depend
+    on where the user left Main. quiet=True also turns Main all the way down for the take and puts it
+    back afterwards: nothing reaches the speakers while Claude listens.
 
     Parameters:
     - scratch_track_index: The scratch audio track
@@ -5129,6 +5148,7 @@ def listen(
     - spectrogram_bars: Draw only these bars of the take, e.g. "13-16" or "4" (implies spectrogram)
     - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
       or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
+    - quiet: True = Main is turned all the way down during the take and put back after (silent room)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -5165,14 +5185,27 @@ def listen(
                                              window)
         if refusal:
             return refusal
+        tap = _mix_source(index, source)
+        if quiet and tap is None and (_live("get_track_routing", {"track_index": index}).get("input") or {}).get(
+                "type") == "Resampling":
+            return ("Error: '%s' records Resampling, which comes after the Main fader, and Live offers no Main "
+                    "input to take instead, so with quiet=True the take would be silent. Nothing was recorded."
+                    % expected_name)
         armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
 
-        did, notes, take, routed = [], [], None, None
+        did, notes, take, routed, main_before = [], [], None, None, None
         try:
-            if source is not None:
-                routed, now = _route_scratch(index, expected_name, source)
+            if tap is not None:
+                routed, now = _route_scratch(index, expected_name, tap)
                 did.append("took its input from '%s'%s"
                            % (now.get("type"), " (%s)" % now["channel"] if now.get("channel") else ""))
+            if quiet:
+                main_before = _live("get_track_info", {"track_index": 0, "track_type": "master"}).get("volume")
+                if main_before:
+                    _live("set_track_volume", {"track_index": 0, "value": 0.0, "track_type": "master"})
+                    did.append("turned Main all the way down")
+                else:
+                    main_before = None
             if index not in armed_before:
                 _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
                                         "expected_name": expected_name})
@@ -5192,6 +5225,14 @@ def listen(
                     did.append("re-armed track(s) %s, which Exclusive Arm had disarmed"
                                % ", ".join(map(str, rearm)))
             finally:
+                if main_before is not None:
+                    try:
+                        put = _live("set_track_volume", {"track_index": 0, "value": main_before,
+                                                         "track_type": "master"})
+                        did.append("put Main back to %s" % put.get("display", main_before))
+                    except Exception as e:
+                        notes.append("Main could not be put back to %s (%s); set it with set_track_volume"
+                                     % (main_before, e))
                 if routed is not None:
                     try:
                         _unroute_scratch(index, expected_name, routed)
@@ -5221,7 +5262,9 @@ def listen(
         lines += ["Note: %s." % n for n in notes]
         lines += ["File: %s" % path, _listen.format_report(result)]
         if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
-            lines.append("The take is silent: check that the clips play, nothing is muted and Main is up.")
+            lines.append("The take is silent: check that the clips play and nothing is muted%s."
+                         % ("" if tap == _LISTEN_MAIN or source is not None else
+                            " and Main is up (the take was recorded after the Main fader)"))
         # the WAV outlives the clip, so the picture can be drawn after the clip is gone
         return _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"), window, max_hz)
     except Exception as e:

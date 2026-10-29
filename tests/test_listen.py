@@ -231,7 +231,7 @@ def live(monkeypatch):
 
 class Param(object):
     def __init__(self, value):
-        self.value = value
+        self.value, self.min, self.max = value, 0.0, 1.0
 
     def str_for_value(self, value):
         return "%.1f" % value
@@ -760,3 +760,81 @@ def test_a_failed_spectrogram_keeps_the_measurement(conn, song, measured, monkey
     out = call(server.listen, None, spectrogram=True, **LISTEN)
     assert isinstance(out, str) and out.startswith("Listened") and "Loudness -4.6 LUFS" in out
     assert out.endswith("No spectrogram: ffmpeg took longer than 28 s.")
+
+
+# ------------------------------------------------- the whole mix before the Main fader (quiet)
+
+def offer_main(song):
+    """Live offers Main as an input, with a pre-fader (Post FX) and a post-fader (Post Mixer) tap."""
+    listen = song.tracks[2]
+    listen.available_input_routing_types.append(routing("Main"))
+    listen.available_input_routing_channels = [routing("Pre FX"), routing("Post FX"), routing("Post Mixer")]
+
+
+def master_volumes(conn):
+    return [p.get("value") for c, p in conn.sent if c == "set_track_volume" and p.get("track_type") == "master"]
+
+
+def test_the_whole_mix_is_taken_before_the_main_fader(conn, song, measured):
+    offer_main(song)
+    out = call(server.listen, None, **LISTEN)
+    assert routings_sent(conn)[0] == {"routing_type": "Main"}
+    fired = conn.commands().index("record_into_slot")
+    assert fired > conn.commands().index("set_track_routing")
+    listen = song.tracks[2]
+    assert listen.input_routing_type.display_name == "Resampling" and listen.input_routing_channel.display_name \
+        == "Post FX"
+    assert out.startswith("Listened on 'Listen' (track 2) at 120.0 bpm 4/4: took its input from 'Main' (Post FX);")
+    assert "put its input back to 'Resampling'" in out and master_volumes(conn) == []
+
+
+def test_main_as_a_source_is_tapped_before_its_fader(conn, song, measured):
+    offer_main(song)
+    song.tracks[2].input_routing_type = routing("Ext. In")
+    out = call(server.listen, None, source="Main", **LISTEN)
+    assert "took its input from 'Main' (Post FX)" in out
+    assert song.tracks[2].input_routing_type.display_name == "Ext. In"
+
+
+def test_without_a_main_input_the_mix_is_still_taken_from_resampling(conn, song, measured):
+    out = call(server.listen, None, **LISTEN)
+    assert "set_track_routing" not in conn.commands() and out.startswith("Listened")
+
+
+def test_quiet_turns_main_down_for_the_take_and_puts_it_back(conn, song, measured):
+    offer_main(song)
+    song.master_track.mixer_device.volume.value = 0.7
+    out = call(server.listen, None, quiet=True, **LISTEN)
+    assert master_volumes(conn) == [0.0, 0.7] and song.master_track.mixer_device.volume.value == pytest.approx(0.7)
+    commands = conn.commands()
+    down = commands.index("set_track_volume")
+    up = len(commands) - 1 - commands[::-1].index("set_track_volume")
+    assert down < commands.index("record_into_slot") < up
+    assert "turned Main all the way down" in out and "put Main back to" in out
+
+
+def test_quiet_with_main_already_down_changes_nothing_there(conn, song, measured):
+    offer_main(song)
+    song.master_track.mixer_device.volume.value = 0.0
+    out = call(server.listen, None, quiet=True, **LISTEN)
+    assert master_volumes(conn) == [] and out.startswith("Listened") and "Main all the way down" not in out
+
+
+def test_quiet_puts_main_back_when_no_take_comes(conn, song, measured):
+    offer_main(song)
+    song.wait = 10 ** 6
+    out = call(server.listen, None, quiet=True, **LISTEN)
+    assert out.startswith("Error: no take was recorded") and "put Main back to" in out
+    assert song.master_track.mixer_device.volume.value == pytest.approx(0.85)
+
+
+def test_quiet_is_refused_when_the_take_would_come_after_the_fader(conn, song, measured):
+    out = call(server.listen, None, quiet=True, **LISTEN)
+    assert out.startswith("Error: 'Listen' records Resampling, which comes after the Main fader")
+    assert not CHANGES & set(conn.commands()) and master_volumes(conn) == []
+
+
+def test_quiet_with_a_source_needs_no_main_input(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, source="Drums", quiet=True, **LISTEN)
+    assert out.startswith("Listened") and master_volumes(conn) == [0.0, 0.85]
