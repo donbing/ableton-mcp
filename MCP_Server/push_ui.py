@@ -14,6 +14,10 @@ the results in Live's log and on disk. Measured on Push 3 standalone, Live 12.4.
 - If the open Set has unsaved changes, the jog press puts up "Save changes before closing?" on the
   Push's screen (not a Live dialog) and lights the buttons below it: Don't Save CC24 and Cancel CC26
   white (122), Save CC27 green (126). Cancel goes back to the browser.
+- If the loaded Set refers to files Live cannot find, the Push says "some referenced media files are
+  missing" (fix them with the File Manager): about 2 s after the load turns every light off, only the
+  OK button below the screen, CC27, lights green (126), and nothing answers the Sets button until OK
+  is pressed. Live's log has a line `Exception: The file "<name>" could not be opened.` for each.
 - Live's Log.txt says `Loading document "<path>"` for every Set it opens.
 """
 
@@ -38,6 +42,9 @@ PROMPT_SAVE_GREEN = 126
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
 LOADING = re.compile(r'^(\S+): info: Loading document "(.*)"\s*$')
+NOT_OPENED = re.compile(r'^(\S+): info: Exception: The file "(.*)" could not be opened\.\s*$')
+# the light the missing-media warning puts on its OK button, the same green as the save question's Save
+CC_MEDIA_OK = CC_PROMPT_SAVE
 PROJECT_SUFFIX = " Project"
 
 # the clock and sleep, replaceable in tests
@@ -62,12 +69,12 @@ def jog(steps):
     return [[0.0, [0x90, NOTE_JOG_TOUCH, 127]]] + clicks + [[0.2, [0x80, NOTE_JOG_TOUCH, 0]]]
 
 
-def send(steps, listen=0.0, until_cc=None):
+def send(steps, listen=0.0, until_cc=None, until_value=None):
     """Run push_midi.py under the Push's system Python; returns the light messages it saw."""
     if not os.path.isfile(PUSH_PYTHON):
         raise PushError("no %s here: Set loading and saving only work where the server runs on the Push 3"
                         % PUSH_PYTHON)
-    request = json.dumps({"steps": steps, "listen": listen, "until_cc": until_cc})
+    request = json.dumps({"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value})
     timeout = 10.0 + listen + sum(delay for delay, _ in steps)
     done = subprocess.run([PUSH_PYTHON, "-I", HELPER, request], capture_output=True, text=True, timeout=timeout)
     try:
@@ -91,6 +98,14 @@ def save_prompt_shown(lights):
             and last_light(lights, CC_PROMPT_DONT_SAVE) not in (None, 0))
 
 
+def media_warning_shown(lights):
+    """Whether these lights are the Push saying "some referenced media files are missing": OK green
+    on its own, without the save question's other two answers."""
+    return (last_light(lights, CC_MEDIA_OK) == PROMPT_SAVE_GREEN
+            and last_light(lights, CC_PROMPT_CANCEL) in (None, 0)
+            and last_light(lights, CC_PROMPT_DONT_SAVE) in (None, 0))
+
+
 def open_set_browser():
     """Press Sets until its light says the browser has just opened (so the top entry is highlighted)."""
     for attempt in range(2):
@@ -99,7 +114,8 @@ def open_set_browser():
             return attempt + 1
         if value is None:
             raise PushError("the Sets button's light did not change after pressing it, so the Push's mode is "
-                            "unknown; nothing more was sent")
+                            "unknown; nothing more was sent. The Push may be showing a message (\"some "
+                            "referenced media files are missing\" waits for OK): ask the user to look at its screen")
         # it was open already and has closed: one more press opens it on the top entry
     raise PushError("the Set browser did not open after two presses of Sets; nothing more was sent")
 
@@ -182,6 +198,18 @@ def current_document(log_path=None):
     """(timestamp text, path) of the Set Live loaded last, or None."""
     docs = loaded_documents(log_path or live_log())
     return docs[-1] if docs else None
+
+
+def files_not_opened(log_path, after):
+    """The file names Live logged it could not open after the `after` (timestamp, path) entry."""
+    with open(log_path, "rb") as f:
+        f.seek(max(0, os.path.getsize(log_path) - LOG_TAIL_BYTES))
+        text = f.read().decode("utf-8", "replace")
+    names = []
+    for m in map(NOT_OPENED.match, text.splitlines()):
+        if m and m.group(1) > after[0] and m.group(2) not in names:
+            names.append(m.group(2))
+    return names
 
 
 def same_file(a, b):

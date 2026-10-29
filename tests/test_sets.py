@@ -25,6 +25,7 @@ LOG_HEAD = (
     "2026-10-29T01:04:19.429591: info: Default App: End ExchangeDocument\n"
 )
 LOAD_LINE = '2026-10-29T01:04:19.429789: info: Loading document "{path}"\n'
+NOT_OPENED_LINE = '2026-10-29T01:04:19.456859: info: Exception: The file "{name}" could not be opened.\n'
 
 
 class Clock:
@@ -76,12 +77,13 @@ class FakePush:
         self.sets_light = True  # False: the Sets light never answers
         self.dirty = False      # the open Set has unsaved changes: the jog press asks first
         self.prompt = False
+        self.missing = []       # files the loaded Set refers to that Live cannot open
         self.open_file = self.sets / "Arcing the Singularity Project" / "Arcing the Singularity.als"
 
     def entries(self):
         return [s["als"] for s in P.list_sets(str(self.sets))]
 
-    def send(self, steps, listen=0.0, until_cc=None):
+    def send(self, steps, listen=0.0, until_cc=None, until_value=None):
         lights = []
         for _, data in steps:
             self.sent.append(data)
@@ -101,7 +103,7 @@ class FakePush:
                 lights += [[0.05, [0xB0, 80, 0]], [0.05, [0xB0, 82, 0]], [0.05, [0xB0, 24, 122]],
                            [0.05, [0xB0, 26, 122]], [0.05, [0xB0, 27, 126]]]
             elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.loads:
-                self.load()
+                lights += self.load()
             elif self.prompt and value == 127 and number in (24, 26, 27):
                 self.prompt = False
                 lights += [[0.05, [0xB0, 24, 0]], [0.05, [0xB0, 26, 0]], [0.05, [0xB0, 27, 0]]]
@@ -111,7 +113,7 @@ class FakePush:
                 if number == 27:
                     os.utime(self.open_file, (self.clock.t + 1, self.clock.t + 1))
                 self.dirty = False
-                self.load()
+                lights += self.load()
             elif number == P.CC_SAVE and value == 127 and self.saves:
                 lights.append([0.1, [0xB0, P.CC_SAVE, 0]])
                 path = self.sets / "Set 12-1 Project" / "Set 12-1.als"
@@ -122,7 +124,11 @@ class FakePush:
     def load(self):
         with open(self.log, "a", encoding="utf-8") as f:
             f.write(LOAD_LINE.format(path=self.entries()[self.highlight]))
+            for name in self.missing:
+                f.write(NOT_OPENED_LINE.format(name=name))
         self.browser_open = False
+        # as measured: the load turns every light off, then the warning lights only OK, green
+        return [[2.1, [0xB0, 49, 0]], [2.1, [0xB0, 27, 126]]] if self.missing else []
 
 
 # --------------------------------------------------------------------------- MIDI
@@ -191,6 +197,15 @@ def test_the_helper_opens_the_ui_ports_by_name_and_stops_at_the_awaited_light(mo
     assert FakeOut.sent == [[0xB0, 80, 127], [0xB0, 80, 0]]
     # it returned at once instead of listening for 30 s
     assert [d for _, d in result["lights"]] == [[0xB0, 80, 127], [0xB0, 107, 122]]
+
+
+def test_the_helper_can_wait_for_one_value_of_a_light(monkeypatch):
+    monkeypatch.setitem(sys.modules, "rtmidi", types.SimpleNamespace(MidiOut=FakeOut, MidiIn=FakeIn))
+    FakeOut.sent, FakeIn.queue = [], []
+    FakePorts.replies = [[[0xB0, 27, 0], [0xB0, 82, 0], [0xB0, 27, 126]], []]
+    result = M.run({"steps": P.press(94), "listen": 30, "until_cc": 27, "until_value": 126})
+    # it did not stop at the first CC27 message, and returned at once instead of listening for 30 s
+    assert [d for _, d in result["lights"]] == [[0xB0, 27, 0], [0xB0, 82, 0], [0xB0, 27, 126]]
 
 
 def test_the_helper_says_which_port_is_missing(monkeypatch):
@@ -271,6 +286,42 @@ def test_no_sets_light_means_nothing_more_is_sent(push):
     out = call(server.load_set, None, "Set 12", confirm=True)
     assert "light did not change" in out and "nothing more was sent" in out
     assert push.sent == [[0xB0, 80, 127], [0xB0, 80, 0]]
+
+
+def test_a_silent_sets_light_says_to_look_at_the_screen(push):
+    push.sets_light = False
+    assert "media files are missing" in call(server.load_set, None, "Set 12", confirm=True)
+
+
+def test_missing_media_is_named_and_left_for_the_user(push):
+    push.missing = ["silence.wav"]
+    out = call(server.load_set, None, "Set 12", confirm=True)
+    assert out.startswith("Loaded 'Set 12'") and "Live could not open: silence.wav." in out
+    assert 'is showing "some referenced media files are missing"' in out and "press OK" in out
+    # OK is the user's to press
+    assert [0xB0, 27, 127] not in push.sent
+
+
+def test_missing_media_after_saving_first_is_reported(push):
+    push.dirty, push.missing = True, ["silence.wav"]
+    out = call(server.load_set, None, "Set 12", unsaved="save", confirm=True)
+    assert "with Save" in out and 'is showing "some referenced media files are missing"' in out
+
+
+def test_files_the_log_could_not_open_are_named_even_without_the_light(push, monkeypatch):
+    push.missing = ["silence.wav", "silence.wav", "kick.aif"]
+    original = push.load
+    monkeypatch.setattr(push, "load", lambda: original() and [])
+    out = call(server.load_set, None, "Set 12", confirm=True)
+    assert "Live could not open: silence.wav, kick.aif." in out and "may be showing" in out
+
+
+def test_only_files_logged_after_the_load_count(push):
+    with open(push.log, "a", encoding="utf-8") as f:
+        # from the Set loaded before
+        f.write(NOT_OPENED_LINE.format(name="old.wav").replace("T01:04:19.456859", "T00:27:01.200000"))
+    out = call(server.load_set, None, "Set 12", confirm=True)
+    assert out.startswith("Loaded 'Set 12'") and "could not open" not in out
 
 
 def test_the_open_set_is_not_loaded_again(push):

@@ -8,10 +8,12 @@ hardware sends to that input is the same as pressing the button. Measured on the
 This file runs under the Push's system Python (/usr/bin/python3, which ships python-rtmidi); the MCP
 server's own environment has no rtmidi, so push_ui.py runs it as a subprocess:
 
-    python3 -I push_midi.py '{"steps": [[delay, [byte, ...]], ...], "listen": seconds, "until_cc": cc}'
+    python3 -I push_midi.py '{"steps": [[delay, [byte, ...]], ...], "listen": seconds, "until_cc": cc,
+                              "until_value": value}'
 
 Each step waits `delay` seconds, then sends its message. After the last step it keeps listening for
-`listen` seconds, or until a light message for controller `until_cc` arrives. It prints
+`listen` seconds, or until a light message for controller `until_cc` arrives (with `until_value`, one
+with that value). It prints
 {"lights": [[seconds, [byte, ...]], ...]}: every message the UI sent to the lights from just before the
 first step, with seconds since then. It imports nothing outside the standard library and rtmidi.
 """
@@ -41,16 +43,17 @@ def run(request):
             return {"error": "no MIDI port named '%s' (is Live running on this Push?)" % name}
         midi.open_port(index)
     got, start = [], time.monotonic()
-    until = request.get("until_cc")
+    until, until_value = request.get("until_cc"), request.get("until_value")
 
     def drain():
-        """Collect what has arrived; True once the light for until_cc has changed."""
+        """Collect what has arrived; True once the light for until_cc has changed (to until_value)."""
         while True:
             message = lights.get_message()
             if not message:
                 break
             got.append([round(time.monotonic() - start, 3), message[0]])
-        return until is not None and any(len(d) == 3 and d[0] & 0xF0 == 0xB0 and d[1] == until for _, d in got)
+        return until is not None and any(len(d) == 3 and d[0] & 0xF0 == 0xB0 and d[1] == until
+                                         and until_value in (None, d[2]) for _, d in got)
 
     try:
         for delay, data in request.get("steps", []):

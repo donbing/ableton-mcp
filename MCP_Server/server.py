@@ -6105,6 +6105,8 @@ def load_set(
     `unsaved` answers it: "ask" (default) presses Cancel, closes the browser and loads nothing, so
     the user can choose; "save" saves the open Set first (and checks its file was written);
     "discard" drops its changes. Only pass "save" or "discard" when the user said so.
+    If the loaded Set refers to files Live cannot find, the Push says "some referenced media files are
+    missing" and waits for OK; load_set names the files and leaves the message for the user.
     Two steps: confirm=false (default) shows what would be opened; confirm=true presses the buttons.
     The MCP connection to Live restarts with the new Set; the next tool call reconnects.
 
@@ -6139,7 +6141,10 @@ def load_set(
             _push.send(_push.jog(steps))
         _push.sleep(0.5)
         pressed = int(_push.now())
-        lights = _push.send(_push.press(_push.CC_JOG_PRESS), listen=2.5, until_cc=_push.CC_PROMPT_SAVE)
+        # until the save question or the missing-media warning lights its green button (both measured
+        # within about 2.5 s of the press); a clean load runs out the time
+        lights = _push.send(_push.press(_push.CC_JOG_PRESS), listen=6.0, until_cc=_push.CC_PROMPT_SAVE,
+                            until_value=_push.PROMPT_SAVE_GREEN)
         did = ["pressed Sets %s, jogged %d down and pressed the jog wheel" % (
             "once" if presses == 1 else "twice (the browser was open)", steps)]
         if _push.save_prompt_shown(lights):
@@ -6152,7 +6157,9 @@ def load_set(
                         % (_describe_open(before), " and closed the browser" if closed else
                            "; the Sets light did not say whether the browser closed, so it may still be showing"))
             answer = _push.CC_PROMPT_SAVE if unsaved == "save" else _push.CC_PROMPT_DONT_SAVE
-            _push.send(_push.press(answer))
+            # saving first takes about 3 s more
+            lights = _push.send(_push.press(answer), listen=10.0, until_cc=_push.CC_MEDIA_OK,
+                                until_value=_push.PROMPT_SAVE_GREEN)
             did.append("answered the save-changes question with %s" % ("Save" if unsaved == "save" else "Don't Save"))
         loaded = _push.wait_for_load(log, before)
         opened = ", ".join(did)
@@ -6166,7 +6173,17 @@ def load_set(
         if not _push.same_file(loaded[1], target["als"]):
             return ("Error: Live loaded %s, not '%s' (%s). The browser's order may differ from the folders' "
                     "dates; check list_sets." % (loaded[1], target["name"], opened))
-        return "Loaded '%s' (%s; Live's log: %s)." % (target["name"], opened, loaded[0][:19])
+        done = "Loaded '%s' (%s; Live's log: %s)." % (target["name"], opened, loaded[0][:19])
+        missing = _push.files_not_opened(log, loaded)
+        named = " Live could not open: %s." % ", ".join(missing) if missing else ""
+        if _push.media_warning_shown(lights):
+            return (done + named + " The Push is showing \"some referenced media files are missing\" and "
+                    "ignores its other buttons until OK is pressed: ask the user to press OK, or to find the "
+                    "files with the File Manager.")
+        if missing:
+            return (done + named + " The Push may be showing \"some referenced media files are missing\": "
+                    "ask the user to look at its screen.")
+        return done
     except Exception as e:
         logger.error(f"Error loading a Set: {str(e)}")
         return f"Error loading a Set: {str(e)}"
