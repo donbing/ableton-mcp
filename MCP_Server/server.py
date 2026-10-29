@@ -6093,6 +6093,7 @@ def load_set(
     ctx: Context,
     name: str,
     unsaved: Literal["ask", "save", "discard"] = "ask",
+    missing_media: Literal["leave", "ok"] = "leave",
     confirm: bool = False,
     user_prompt: str = "",
 ) -> str:
@@ -6106,19 +6107,24 @@ def load_set(
     the user can choose; "save" saves the open Set first (and checks its file was written);
     "discard" drops its changes. Only pass "save" or "discard" when the user said so.
     If the loaded Set refers to files Live cannot find, the Push says "some referenced media files are
-    missing" and waits for OK; load_set names the files and leaves the message for the user.
+    missing" and waits for OK; load_set names the files, and `missing_media` says what to do with the
+    message: "leave" (default) leaves it for the user, who can find the files with the File Manager;
+    "ok" presses OK, so the Set stays open without them.
     Two steps: confirm=false (default) shows what would be opened; confirm=true presses the buttons.
     The MCP connection to Live restarts with the new Set; the next tool call reconnects.
 
     Parameters:
     - name: The Set's name as list_sets shows it (the project folder without " Project")
     - unsaved: What to answer if the open Set has unsaved changes: "ask" (default), "save" or "discard"
+    - missing_media: What to do if the Push says media files are missing: "leave" (default) or "ok"
     - confirm: false = preview only (default), true = load it
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
         if unsaved not in ("ask", "save", "discard"):
             return "Error: unsaved must be \"ask\", \"save\" or \"discard\"."
+        if missing_media not in ("leave", "ok"):
+            return "Error: missing_media must be \"leave\" or \"ok\"."
         sets = _push.list_sets()
         target = _push.find_set(name, sets)
         log = _push.live_log()
@@ -6176,6 +6182,12 @@ def load_set(
         done = "Loaded '%s' (%s; Live's log: %s)." % (target["name"], opened, loaded[0][:19])
         missing = _push.files_not_opened(log, loaded)
         named = " Live could not open: %s." % ", ".join(missing) if missing else ""
+        if _push.media_warning_shown(lights) and missing_media == "ok":
+            if _push.dismiss_media_warning():
+                return done + named + " The Push said \"some referenced media files are missing\"; I pressed OK."
+            return (done + named + " The Push said \"some referenced media files are missing\"; I pressed OK "
+                    "but its lights did not come back, so the message may still be showing: ask the user to "
+                    "look at its screen.")
         if _push.media_warning_shown(lights):
             return (done + named + " The Push is showing \"some referenced media files are missing\" and "
                     "ignores its other buttons until OK is pressed: ask the user to press OK, or to find the "

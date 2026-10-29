@@ -18,6 +18,7 @@ the results in Live's log and on disk. Measured on Push 3 standalone, Live 12.4.
   missing" (fix them with the File Manager): about 2 s after the load turns every light off, only the
   OK button below the screen, CC27, lights green (126), and nothing answers the Sets button until OK
   is pressed. Live's log has a line `Exception: The file "<name>" could not be opened.` for each.
+  Pressing OK closes it: the Push relights every button, the Sets light back at 14.
 - Live's Log.txt says `Loading document "<path>"` for every Set it opens.
 """
 
@@ -104,6 +105,12 @@ def media_warning_shown(lights):
     return (last_light(lights, CC_MEDIA_OK) == PROMPT_SAVE_GREEN
             and last_light(lights, CC_PROMPT_CANCEL) in (None, 0)
             and last_light(lights, CC_PROMPT_DONT_SAVE) in (None, 0))
+
+
+def dismiss_media_warning():
+    """Press OK on the missing-media warning; True when the Push went back to its mode (the Sets
+    light came back)."""
+    return last_light(send(press(CC_MEDIA_OK), listen=3.0, until_cc=CC_SETS), CC_SETS) is not None
 
 
 def open_set_browser():

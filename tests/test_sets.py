@@ -78,6 +78,8 @@ class FakePush:
         self.dirty = False      # the open Set has unsaved changes: the jog press asks first
         self.prompt = False
         self.missing = []       # files the loaded Set refers to that Live cannot open
+        self.warning = False    # the Push is showing "some referenced media files are missing"
+        self.ok_works = True    # False: OK does not close the warning
         self.open_file = self.sets / "Arcing the Singularity Project" / "Arcing the Singularity.als"
 
     def entries(self):
@@ -104,6 +106,10 @@ class FakePush:
                            [0.05, [0xB0, 26, 122]], [0.05, [0xB0, 27, 126]]]
             elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.loads:
                 lights += self.load()
+            elif self.warning and number == 27 and value == 127 and self.ok_works:
+                # as measured: OK relights every button, the Sets light at 14
+                self.warning = False
+                lights += [[0.04, [0x90, 80, 122]], [0.04, [0xB0, 80, 14]], [0.04, [0xB0, 27, 67]]]
             elif self.prompt and value == 127 and number in (24, 26, 27):
                 self.prompt = False
                 lights += [[0.05, [0xB0, 24, 0]], [0.05, [0xB0, 26, 0]], [0.05, [0xB0, 27, 0]]]
@@ -127,6 +133,7 @@ class FakePush:
             for name in self.missing:
                 f.write(NOT_OPENED_LINE.format(name=name))
         self.browser_open = False
+        self.warning = bool(self.missing)
         # as measured: the load turns every light off, then the warning lights only OK, green
         return [[2.1, [0xB0, 49, 0]], [2.1, [0xB0, 27, 126]]] if self.missing else []
 
@@ -300,6 +307,29 @@ def test_missing_media_is_named_and_left_for_the_user(push):
     assert 'is showing "some referenced media files are missing"' in out and "press OK" in out
     # OK is the user's to press
     assert [0xB0, 27, 127] not in push.sent
+
+
+def test_missing_media_can_be_answered_with_ok(push):
+    push.missing = ["silence.wav"]
+    out = call(server.load_set, None, "Set 12", missing_media="ok", confirm=True)
+    assert out.startswith("Loaded 'Set 12'") and "silence.wav" in out and out.endswith("I pressed OK.")
+    assert push.sent[-2:] == [[0xB0, 27, 127], [0xB0, 27, 0]] and not push.warning
+
+
+def test_an_ok_that_changes_nothing_is_reported(push):
+    push.missing, push.ok_works = ["silence.wav"], False
+    out = call(server.load_set, None, "Set 12", missing_media="ok", confirm=True)
+    assert "I pressed OK but its lights did not come back" in out
+
+
+def test_ok_is_never_pressed_without_the_warning(push):
+    out = call(server.load_set, None, "Set 12", missing_media="ok", confirm=True)
+    assert out.startswith("Loaded") and [0xB0, 27, 127] not in push.sent
+
+
+def test_an_unknown_missing_media_answer_is_refused(push):
+    out = call(server.load_set, None, "Set 12", missing_media="maybe", confirm=True)
+    assert out.startswith("Error: missing_media must be") and push.sent == []
 
 
 def test_missing_media_after_saving_first_is_reported(push):
