@@ -6,7 +6,7 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 
 ## What is in `main` of this fork
 
-`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.23**, **135 MCP tools** (upstream: 37), 1369 tests (all pass, all against a mocked Live Object Model).
+`main` = upstream `main` (`9dddc7b`) + the pieces below. Remote Script **1.10.24**, **137 MCP tools** (upstream: 37), 1400 tests (all pass, all against a mocked Live Object Model).
 
 | Added | Tools / change | Origin |
 |---|---|---|
@@ -150,6 +150,10 @@ Maintainer: [@vittorfp](https://github.com/vittorfp). One person, hobby time, te
 | Added in 1.10.23 (Live 12.4.15+; run on Push 3 standalone, Live 12.4.15, 2026-10-28) | What | Notes |
 |---|---|---|
 | Clip scales | `set_clip_scale` (a MIDI clip's own `root_note`, `scale_name`, `scale_mode`; Session or Arrangement); `get_clip_info` returns the clip's `scale`; notation writes scale degrees (`^1 ^3 ^5`, `^b7`, `^1:1` for octave 1) in the clip's scale, else the Set's; `get_clip_notes(format="text")` names the clip's scale | Clip.root_note / scale_name / scale_mode (settable) and scale_intervals (read-only) are new in Live 12.4.15, captured on the Push; an older Live gets a clear refusal. Song and clip share one validated writer, so an unknown scale name is put back as for `set_song_scale`. Measured: a new clip starts with the Set's scale; setting the clip's leaves the Set's alone; an unknown name makes Live answer Major, as for Song; `^1:1 ^1 ^3 ^5` in A minor wrote A1 A3 C4 E4 |
+
+| Fixed in 1.10.24 (run on Push 3 standalone, Live 12.4.15, 2026-10-29) | What | Notes |
+|---|---|---|
+| Commands after loading another Set | `disconnect()` shuts down the open client sockets and a stopped instance closes a connection without answering, so the MCP server reconnects to the new instance | the old client thread sat in `recv()` across the Set load and served the next command with the destroyed Song: `get_tracks_overview` failed on the Push with `None.None(Song) did not match C++ signature: None(TPyHandle<ASong>)` (Live log: "Client thread still alive during disconnect"). Measured: with 1.10.23 the first `get_tracks_overview` after a Set load failed every time; with 1.10.24 the old connection closes during the load, the server reconnects and the first call works. A new Remote Script needs Live restarted; loading a Set keeps the old module |
 
 | Added on the server only (no Remote Script change) | What | Notes |
 |---|---|---|

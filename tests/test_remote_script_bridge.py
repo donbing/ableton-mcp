@@ -187,6 +187,68 @@ def test_oversized_request_is_refused_instead_of_buffered_forever(
     assert replies[0]["status"] == "error"
 
 
+# ------------------------------------------------------- loading another Set
+
+def test_stopped_instance_drops_a_command_instead_of_serving_it(script_module):
+    """Regression (Push 3, 2026-10-29): loading another Set disconnects the
+    instance and creates a new one, but the old client thread was still in
+    recv(). It served the next get_tracks_overview with the old, destroyed
+    Song ("None.None(Song) did not match C++ signature"). A stopped instance
+    must close the connection unanswered so the server reconnects."""
+    inst = make_instance(script_module)
+    inst.running = False
+    received = []
+    inst._process_command = lambda command: received.append(command) or {}
+    client = FakeClient([json.dumps({"type": "get_tracks_overview"}).encode("utf-8")])
+
+    inst._handle_client(client)
+
+    assert received == []
+    assert client.sent == []
+    assert client.closed
+
+
+def test_disconnect_closes_open_client_sockets(script_module, monkeypatch):
+    """A blocked recv() only returns when its socket is shut down."""
+    import threading
+
+    class BlockingClient(FakeClient):
+        def __init__(self):
+            FakeClient.__init__(self, [])
+            self.woken = threading.Event()
+            self.shut = False
+
+        def recv(self, _size):
+            self.woken.wait(5.0)
+            return b""
+
+        def shutdown(self, _how):
+            self.shut = True
+            self.woken.set()
+
+    inst = make_instance(script_module)
+    inst.running = True
+    inst.server = None
+    inst.server_thread = None
+    inst._client_sockets = []
+    inst._client_sockets_lock = threading.Lock()
+    inst._teardown_passive_listeners = lambda: None
+    monkeypatch.setattr(script_module.ControlSurface, "disconnect",
+                        lambda self: None, raising=False)
+    client = BlockingClient()
+    inst._client_sockets.append(client)
+    thread = threading.Thread(target=inst._handle_client, args=(client,))
+    thread.daemon = True
+    thread.start()
+    inst.client_threads = [thread]
+
+    inst.disconnect()
+
+    assert client.shut and client.closed
+    assert not thread.is_alive()
+    assert inst._client_sockets == []
+
+
 # ------------------------------------------------------------- browser tree
 
 class FakeBrowserItem(object):

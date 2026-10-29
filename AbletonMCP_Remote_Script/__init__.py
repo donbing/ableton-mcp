@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.23"
+SCRIPT_VERSION = "1.10.24"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -303,7 +303,10 @@ class AbletonMCP(ControlSurface):
         self.client_threads = []
         self.server_thread = None
         self.running = False
-        
+        # Open client sockets, closed on disconnect (see _close_client_sockets)
+        self._client_sockets = []
+        self._client_sockets_lock = threading.Lock()
+
         # Cache the song reference for easier access
         self._song = self.song()
 
@@ -351,14 +354,34 @@ class AbletonMCP(ControlSurface):
         if self.server_thread and self.server_thread.is_alive():
             self.server_thread.join(1.0)
             
-        # Clean up any client threads
+        # A client thread sits in a blocking recv(), so running = False alone
+        # does not stop it: loading another Set disconnects this instance and
+        # creates a new one, and the old thread would serve the next command
+        # with this instance's Song, which Live has destroyed ("None.None(Song)
+        # did not match C++ signature"). Closing the sockets wakes the threads;
+        # the MCP server sees the closed connection and reconnects to the new
+        # instance.
+        self._close_client_sockets()
         for client_thread in self.client_threads[:]:
+            client_thread.join(1.0)
             if client_thread.is_alive():
-                # We don't join them as they might be stuck
                 self.log_message("Client thread still alive during disconnect")
-        
+
         ControlSurface.disconnect(self)
         self.log_message("AbletonMCP disconnected")
+
+    def _close_client_sockets(self):
+        with self._client_sockets_lock:
+            clients, self._client_sockets = self._client_sockets, []
+        for client in clients:
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                client.close()
+            except Exception:
+                pass
     
     def start_server(self):
         """Start the socket server in a separate thread"""
@@ -391,7 +414,9 @@ class AbletonMCP(ControlSurface):
                     client, address = self.server.accept()
                     self.log_message("Connection accepted from " + str(address))
                     self.show_message("AbletonMCP: Client connected")
-                    
+                    with self._client_sockets_lock:
+                        self._client_sockets.append(client)
+
                     # Handle client in a separate thread
                     client_thread = threading.Thread(
                         target=self._handle_client,
@@ -458,6 +483,14 @@ class AbletonMCP(ControlSurface):
 
                     buffer = b''  # Clear buffer after successful parse
 
+                    if not self.running:
+                        # This instance was disconnected while recv() waited
+                        # (another Set was loaded): its Song is gone. Close
+                        # unanswered so the client reconnects to the new one.
+                        self.log_message("Dropping command on a stopped instance: "
+                                         + str(command.get("type", "unknown")))
+                        break
+
                     self.log_message("Received command: " + str(command.get("type", "unknown")))
 
                     # Process the command and get response
@@ -489,6 +522,11 @@ class AbletonMCP(ControlSurface):
                 client.close()
             except:
                 pass
+            lock = getattr(self, "_client_sockets_lock", None)
+            if lock is not None:
+                with lock:
+                    if client in self._client_sockets:
+                        self._client_sockets.remove(client)
             self.log_message("Client handler stopped")
     
     def _log_command_error(self, context, error):
