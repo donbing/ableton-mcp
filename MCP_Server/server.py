@@ -6177,6 +6177,10 @@ def save_set(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
             _push.sleep(0.25)
             written = _push.set_files_written_since(pressed)
         light = _push.last_light(lights, _push.CC_SAVE)
+        if not written and light is None:
+            # measured: pressing Save on a Set with nothing to save changes no light and writes nothing
+            return ("Not saved: the Save light did not change and no Set file was written, so the Set most likely "
+                    "had no unsaved changes (Save is dark then and does nothing). The file on disk is as it was.")
         if not written:
             return ("Error: no Set file was written within 8 s of pressing Save%s. Look at the Push's screen: "
                     "it may be asking something. Do not assume the Set is saved."

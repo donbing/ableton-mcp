@@ -294,8 +294,16 @@ def test_save_set_presses_save_and_finds_the_written_file(push):
     assert out.startswith("Saved: ") and "Set 12-1.als written (the Save light went off)" in out
 
 
-def test_no_file_written_is_never_reported_as_saved(push):
+def test_save_with_nothing_to_save_says_so(push):
+    # measured on the Push: a clean Set's Save press changes no light and writes nothing
     push.saves = False
+    out = call(server.save_set, None, confirm=True)
+    assert out.startswith("Not saved: the Save light did not change") and "no unsaved changes" in out
+
+
+def test_no_file_written_is_never_reported_as_saved(push, monkeypatch):
+    # the light went off but no file appeared (a question on the Push's screen, say)
+    monkeypatch.setattr(P, "send", lambda steps, listen=0.0, until_cc=None: [[0.1, [0xB0, P.CC_SAVE, 0]]])
     out = call(server.save_set, None, confirm=True)
     assert out.startswith("Error: no Set file was written") and "Do not assume the Set is saved" in out
 
