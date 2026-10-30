@@ -88,8 +88,8 @@ def test_pad_lesson_plays_the_demo_then_scores_what_came_after(monkeypatch):
     assert out["all_right"] and out["chords_played"] == 1 and out["started_after"] == 1.0
     assert out["chords"][0]["held"] == 1.6 and out["demo_hold"] == 2.5
     steps, release, wait, quiet, max_seconds = calls[0]
-    assert [d for _, d in steps if d[0] == ON] == [[ON, 36, 90], [ON, 38, 90], [ON, 40, 90]]
-    assert release == [[OFF, 36, 0], [OFF, 38, 0], [OFF, 40, 0]]
+    assert [d[1:] for _, d in steps if d[0] & 0xF0 == ON] == [[36, 90], [38, 90], [40, 90]]
+    assert [d[1] for d in release] == [36, 38, 40]
     assert (wait, quiet) == (5, 2.0) and max_seconds == 5 + 3 * 3.0 + 2.0
 
 

@@ -49,6 +49,8 @@ PROMPT_SAVE_GREEN = 126
 # the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; seen on this Push 2026-10-30:
 # [1,1] and [8,8] lit and sounded where expected
 PAD_FIRST_NOTE, PAD_ROWS = 36, 8
+# our presses use MIDI channels 2-16 in turn (status nibble 1-15), as the pads do
+PAD_FIRST_CHANNEL, PAD_CHANNELS = 1, 15
 # presses this close together are one chord even if the first is already up (a quick stab)
 CHORD_WINDOW = 0.15
 # the log is read from its end; a load is far less than this far back
@@ -91,16 +93,25 @@ def pad_note(row, column):
 
 def pad_steps(chords, hold, gap, velocity):
     """Press each chord's pads together, hold them `hold` seconds, let go, wait `gap`, then the next.
-    Returns (steps, release): release lets go of every pad, for push_midi to send whatever happens."""
-    steps, notes = [], []
+    Each press goes as the hardware sends one: on its own channel (2-16 in turn: the pads are MPE),
+    pitch bend centred first (the user's last press may have left a bend on it), note-off with release
+    velocity 64. The UI ignores note-offs on channel 1, so a note there rang until the pad was pressed
+    again (heard on the Push 2026-10-30: a demo's chords piled up). Returns (steps, release): release
+    lets go of every press, for push_midi to send whatever happens."""
+    steps, release, press = [], [], 0
     for i, chord in enumerate(chords):
         chord_notes = sorted({pad_note(row, column) for row, column in chord})
-        notes += chord_notes
+        held = []
         for j, note in enumerate(chord_notes):
-            steps.append([gap if i and not j else 0.0, [0x90, note, velocity]])
-        for j, note in enumerate(chord_notes):
-            steps.append([hold if not j else 0.0, [0x80, note, 0]])
-    return steps, [[0x80, note, 0] for note in sorted(set(notes))]
+            channel = PAD_FIRST_CHANNEL + press % PAD_CHANNELS
+            press += 1
+            steps.append([gap if i and not j else 0.0, [0xE0 | channel, 0, 64]])
+            steps.append([0.0, [0x90 | channel, note, velocity]])
+            held.append([0x80 | channel, note, 64])
+        for j, off in enumerate(held):
+            steps.append([hold if not j else 0.0, off])
+        release += held
+    return steps, release
 
 
 def pad_lights(lights):

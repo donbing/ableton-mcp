@@ -14,13 +14,20 @@ def test_pad_notes_run_from_bottom_left_to_top_right():
 
 def test_pad_steps_press_a_chord_together_hold_it_then_the_next():
     steps, release = P.pad_steps([[(1, 1), (1, 3)], [(2, 1)]], hold=1.5, gap=0.5, velocity=90)
+    # a channel per press from channel 2, bend centred first, released with velocity 64
     assert steps == [
-        [0.0, [0x90, 36, 90]], [0.0, [0x90, 38, 90]],
-        [1.5, [0x80, 36, 0]], [0.0, [0x80, 38, 0]],
-        [0.5, [0x90, 44, 90]],
-        [1.5, [0x80, 44, 0]],
+        [0.0, [0xE1, 0, 64]], [0.0, [0x91, 36, 90]], [0.0, [0xE2, 0, 64]], [0.0, [0x92, 38, 90]],
+        [1.5, [0x81, 36, 64]], [0.0, [0x82, 38, 64]],
+        [0.5, [0xE3, 0, 64]], [0.0, [0x93, 44, 90]],
+        [1.5, [0x83, 44, 64]],
     ]
-    assert release == [[0x80, 36, 0], [0x80, 38, 0], [0x80, 44, 0]]
+    assert release == [[0x81, 36, 64], [0x82, 38, 64], [0x83, 44, 64]]
+
+
+def test_pad_steps_never_use_channel_1_and_wrap_after_16():
+    steps, release = P.pad_steps([[(1, c)] for c in range(1, 9)] * 2, hold=0.1, gap=0.0, velocity=90)
+    channels = [d[0] & 0x0F for _, d in steps if d[0] & 0xF0 == 0x90]
+    assert 0 not in channels and channels[:16] == list(range(1, 16)) + [1]
 
 
 def test_pad_lights_names_the_pads_the_push_relit():
@@ -39,8 +46,8 @@ def test_play_pads_sends_the_steps_and_lets_go_of_every_pad(monkeypatch):
     out = call(server.play_pads, None, [[[1, 1], [1, 3], [1, 5]]], hold=1.0)
     assert "Pressed [1,1] + [1,3] + [1,5]" in out and "lit 1 pad" in out
     steps, release = sent[0]
-    assert [d for _, d in steps if d[0] == 0x90] == [[0x90, 36, 90], [0x90, 38, 90], [0x90, 40, 90]]
-    assert release == [[0x80, 36, 0], [0x80, 38, 0], [0x80, 40, 0]]
+    assert [d[1:] for _, d in steps if d[0] & 0xF0 == 0x90] == [[36, 90], [38, 90], [40, 90]]
+    assert [d[1] for d in release if d[0] & 0xF0 == 0x80] == [36, 38, 40]
 
 
 def test_play_pads_says_when_no_pad_lit(monkeypatch):
