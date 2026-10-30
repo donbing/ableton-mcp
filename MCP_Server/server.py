@@ -7327,6 +7327,75 @@ def play_pads(
         return f"Error playing pads: {str(e)}"
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("pad_lesson")
+@trajectory_tool("pad_lesson")
+def pad_lesson(
+    ctx: Context,
+    chords: List[List[List[int]]],
+    hold: float = 1.5,
+    gap: float = 0.5,
+    velocity: int = 90,
+    wait: float = 10.0,
+    quiet: float = 2.0,
+    user_prompt: str = "",
+) -> str:
+    """
+    Teach a chord shape on the Push 3's pads: play the chords as play_pads does (lit and sounding),
+    then watch the user copy them on the real pads and say how it went. It reads the pads' own MIDI
+    port, so it knows the exact pad pressed (not just the note) and when it went down and up.
+
+    Listening ends when the user has not pressed a pad `wait` seconds after the demo, or every pad is
+    up and nothing happened for `quiet` seconds. Presses landing within 0.15 s of each other are one
+    chord. Each chord in the reply has: demo and played pads ([row, column], row 1 at the bottom),
+    missed and extra pads, right, spread (seconds between its first and last pad going down), held
+    (first pad down to last pad up, null if still held) and gap_after (to the next chord), to compare
+    with the demo's hold and gap. all_right is true when every chord matched, in order, and no more.
+
+    Same rules as play_pads: only after checking the Push is in Note mode on the track the user wants
+    and not recording. The user's playing sounds on that track as usual.
+
+    Parameters:
+    - chords: The chords to teach, as play_pads takes them, e.g. [[[1,1],[1,3],[1,5]]] (at most 16)
+    - hold: Seconds each demo chord is held (0.05-10, default 1.5)
+    - gap: Seconds between demo chords (0-10, default 0.5)
+    - velocity: Demo velocity, 1-127 (default 90)
+    - wait: Seconds to wait for the user's first press after the demo (1-30, default 10)
+    - quiet: Seconds of no pads after the user lets go that mean they are done (0.5-5, default 2)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if not chords or len(chords) > 16 or not all(chords):
+            return "Error: give 1 to 16 chords, each with at least one pad."
+        if not (0.05 <= hold <= 10 and 0 <= gap <= 10):
+            return "Error: hold must be 0.05-10 s and gap 0-10 s."
+        if not 1 <= velocity <= 127:
+            return "Error: velocity must be 1-127."
+        if not (1 <= wait <= 30 and 0.5 <= quiet <= 5):
+            return "Error: wait must be 1-30 s and quiet 0.5-5 s."
+        try:
+            pads = [[tuple(p) for p in chord] for chord in chords]
+            steps, release = _push.pad_steps(pads, hold, gap, velocity)
+        except (TypeError, ValueError) as e:
+            return "Error: %s." % e
+        # time for the user to play it back: three times the demo, at most a minute
+        demo = len(chords) * (hold + gap)
+        events, steps_end = _push.send_and_watch(steps, release, wait, quiet, min(60.0, wait + 3 * demo + quiet))
+        presses = _push.pad_presses(events, after=steps_end)
+        groups = _push.chord_groups(presses)
+        scored, all_right = _push.score_lesson([[list(p) for p in chord] for chord in pads], groups)
+        reply = {"demo_hold": hold, "demo_gap": gap, "chords_played": len(groups), "all_right": all_right,
+                 "chords": scored}
+        if groups:
+            reply["started_after"] = round(groups[0][0]["down"] - steps_end, 2)
+        else:
+            reply["note"] = "no pad was pressed within %g s of the demo" % wait
+        return json.dumps(reply, separators=(",", ":"))
+    except Exception as e:
+        logger.error(f"Error in pad lesson: {str(e)}")
+        return f"Error in pad lesson: {str(e)}"
+
+
 # Main execution
 def main():
     """Run the MCP server"""

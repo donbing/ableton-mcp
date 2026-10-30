@@ -17,6 +17,14 @@ with that value). The messages in "release" are sent last whatever happens, so a
 go even if a step fails. It prints
 {"lights": [[seconds, [byte, ...]], ...]}: every message the UI sent to the lights from just before the
 first step, with seconds since then. It imports nothing outside the standard library and rtmidi.
+
+With "pads": {"wait": s, "quiet": s, "max": s} it also reads the hardware's own pad port ("Ableton
+Push 3 Live Port", 16:0, which the UI reads too: ALSA gives every reader a copy) and, after the steps,
+keeps listening for the user to play: until no pad has gone down `wait` seconds after the steps, or
+every pad is up and nothing happened for `quiet` seconds, or `max` seconds. The reply then also has
+"pads": the pad note-ons and note-offs (36-99, any channel: the pads are MPE, a channel per press) and
+"steps_end": when the last step was sent. Our own presses go to the UI's input, so they never show up
+here. Measured on the Push (2026-10-30): the pads send 36 bottom left to 99 top right.
 """
 
 import json
@@ -25,6 +33,8 @@ import time
 
 INPUT_PORT = "Ableton Internal Input"
 LIGHTS_PORT = "Ableton Internal Output"
+PADS_PORT = "Ableton Push 3 Live Port"
+FIRST_PAD, LAST_PAD = 36, 99
 
 
 def _port(midi, name):
@@ -37,13 +47,19 @@ def _port(midi, name):
 def run(request):
     import rtmidi
 
+    watch = request.get("pads")
     out, lights = rtmidi.MidiOut(), rtmidi.MidiIn()
-    for midi, name in ((out, INPUT_PORT), (lights, LIGHTS_PORT)):
+    ports = [(out, INPUT_PORT), (lights, LIGHTS_PORT)]
+    if watch:
+        pad_in = rtmidi.MidiIn()
+        pad_in.ignore_types(sysex=True, timing=True, active_sense=True)
+        ports.append((pad_in, PADS_PORT))
+    for midi, name in ports:
         index = _port(midi, name)
         if index is None:
             return {"error": "no MIDI port named '%s' (is Live running on this Push?)" % name}
         midi.open_port(index)
-    got, start = [], time.monotonic()
+    got, pads, start = [], [], time.monotonic()
     until, until_value = request.get("until_cc"), request.get("until_value")
 
     def drain():
@@ -53,9 +69,28 @@ def run(request):
             if not message:
                 break
             got.append([round(time.monotonic() - start, 3), message[0]])
+        while watch:
+            message = pad_in.get_message()
+            if not message:
+                break
+            d = message[0]
+            if len(d) == 3 and d[0] & 0xF0 in (0x80, 0x90) and FIRST_PAD <= d[1] <= LAST_PAD:
+                pads.append([round(time.monotonic() - start, 3), d])
         return until is not None and any(len(d) == 3 and d[0] & 0xF0 == 0xB0 and d[1] == until
                                          and until_value in (None, d[2]) for _, d in got)
 
+    def played(after):
+        """Whether the user is done: (pressed anything since `after`, every pad up again)."""
+        down = set()
+        for t, d in pads:
+            if t >= after:
+                if d[0] & 0xF0 == 0x90 and d[2]:
+                    down.add(d[1])
+                else:
+                    down.discard(d[1])
+        return any(t >= after for t, _ in pads), not down
+
+    steps_end = 0.0
     try:
         for delay, data in request.get("steps", []):
             end = time.monotonic() + float(delay)
@@ -63,17 +98,33 @@ def run(request):
                 drain()
                 time.sleep(0.005)
             out.send_message(data)
+        steps_end = time.monotonic() - start
         end = time.monotonic() + float(request.get("listen", 0))
         while time.monotonic() < end:
             if drain():
                 break
             time.sleep(0.01)
         drain()
+        if watch:
+            began = time.monotonic()
+            while time.monotonic() - began < float(watch["max"]):
+                drain()
+                any_played, all_up = played(steps_end)
+                quiet_since = (pads[-1][0] + start) if pads and any_played else began
+                if not any_played and time.monotonic() - began >= float(watch["wait"]):
+                    break
+                if any_played and all_up and time.monotonic() - quiet_since >= float(watch["quiet"]):
+                    break
+                time.sleep(0.005)
     finally:
         for data in request.get("release", []):
             out.send_message(data)
         out.close_port()
         lights.close_port()
+        if watch:
+            pad_in.close_port()
+    if watch:
+        return {"lights": got, "pads": pads, "steps_end": round(steps_end, 3)}
     return {"lights": got}
 
 

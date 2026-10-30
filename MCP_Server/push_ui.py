@@ -49,6 +49,8 @@ PROMPT_SAVE_GREEN = 126
 # the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; seen on this Push 2026-10-30:
 # [1,1] and [8,8] lit and sounded where expected
 PAD_FIRST_NOTE, PAD_ROWS = 36, 8
+# presses this close together count as one chord (a guess, not yet measured on a real hand)
+CHORD_WINDOW = 0.15
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
 LOADING = re.compile(r'^(\S+): info: Loading document "(.*)"\s*$')
@@ -114,22 +116,89 @@ def pad_lights(lights):
     return seen
 
 
-def send(steps, listen=0.0, until_cc=None, until_value=None, release=()):
-    """Run push_midi.py under the Push's system Python; returns the light messages it saw."""
+def _run(request, seconds):
+    """Run push_midi.py under the Push's system Python with this request; returns its reply."""
     if not os.path.isfile(PUSH_PYTHON):
         raise PushError("no %s here: Set loading and saving only work where the server runs on the Push 3"
                         % PUSH_PYTHON)
-    request = json.dumps({"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value,
-                          "release": list(release)})
-    timeout = 10.0 + listen + sum(delay for delay, _ in steps)
-    done = subprocess.run([PUSH_PYTHON, "-I", HELPER, request], capture_output=True, text=True, timeout=timeout)
+    done = subprocess.run([PUSH_PYTHON, "-I", HELPER, json.dumps(request)], capture_output=True, text=True,
+                          timeout=10.0 + seconds)
     try:
         result = json.loads(done.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         raise PushError("the MIDI helper failed: %s" % (done.stderr.strip() or done.stdout.strip() or done.returncode))
     if "error" in result:
         raise PushError(result["error"])
-    return result["lights"]
+    return result
+
+
+def send(steps, listen=0.0, until_cc=None, until_value=None, release=()):
+    """Run push_midi.py under the Push's system Python; returns the light messages it saw."""
+    request = {"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value,
+               "release": list(release)}
+    return _run(request, listen + sum(delay for delay, _ in steps))["lights"]
+
+
+def send_and_watch(steps, release, wait, quiet, max_seconds):
+    """Send the steps, then read the user's own pad presses until they stop (see push_midi.py).
+    Returns (pad events, when the steps ended), times in seconds from the start."""
+    request = {"steps": steps, "release": list(release),
+               "pads": {"wait": wait, "quiet": quiet, "max": max_seconds}}
+    result = _run(request, max_seconds + sum(delay for delay, _ in steps))
+    return result["pads"], result["steps_end"]
+
+
+def pad_of(note):
+    return [(note - PAD_FIRST_NOTE) // PAD_ROWS + 1, (note - PAD_FIRST_NOTE) % PAD_ROWS + 1]
+
+
+def pad_presses(events, after=0.0):
+    """Pair each pad's note-on with its note-off, for the presses that began at `after` or later:
+    [{"pad": [row, column], "down": s, "up": s or None while still held, "velocity": v}], in order."""
+    presses, held = [], {}
+    for t, d in events:
+        note = d[1]
+        if d[0] & 0xF0 == 0x90 and d[2]:
+            if t >= after:
+                held[note] = {"pad": pad_of(note), "down": t, "up": None, "velocity": d[2]}
+                presses.append(held[note])
+        elif note in held:
+            held.pop(note)["up"] = t
+    return presses
+
+
+def chord_groups(presses, window=CHORD_WINDOW):
+    """Presses that went down within `window` seconds of a chord's first press are one chord."""
+    groups = []
+    for press in sorted(presses, key=lambda p: p["down"]):
+        if groups and press["down"] - groups[-1][0]["down"] <= window:
+            groups[-1].append(press)
+        else:
+            groups.append([press])
+    return groups
+
+
+def score_lesson(chords, groups):
+    """Compare what the user played (chord_groups) with the demo, chord by chord: the pads right,
+    missed and extra, how long it was held (first pad down to last pad up) and the gap before the
+    next chord, each next to the demo's. Returns (per-chord list, all chords right)."""
+    out = []
+    for i in range(max(len(chords), len(groups))):
+        want = [list(p) for p in chords[i]] if i < len(chords) else []
+        group = groups[i] if i < len(groups) else []
+        got = [p["pad"] for p in group]
+        entry = {"chord": i + 1, "demo": want, "played": got,
+                 "missed": [p for p in want if p not in got], "extra": [p for p in got if p not in want]}
+        if group:
+            downs = [p["down"] for p in group]
+            ups = [p["up"] for p in group]
+            entry["spread"] = round(max(downs) - min(downs), 2)
+            entry["held"] = round(max(ups) - min(downs), 2) if None not in ups else None
+            if i + 1 < len(groups) and None not in ups:
+                entry["gap_after"] = round(min(p["down"] for p in groups[i + 1]) - max(ups), 2)
+        entry["right"] = bool(want) and not entry["missed"] and not entry["extra"]
+        out.append(entry)
+    return out, len(groups) == len(chords) and all(e["right"] for e in out)
 
 
 def last_light(lights, cc):
