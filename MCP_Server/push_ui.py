@@ -46,6 +46,8 @@ CC_PROMPT_DONT_SAVE, CC_PROMPT_CANCEL, CC_PROMPT_SAVE = 24, 26, 27
 # the second button above the screen is "+ New Set" while the Set browser is open (lit 122)
 CC_NEW_SET = 103
 PROMPT_SAVE_GREEN = 126
+# the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; not yet measured on this Push
+PAD_FIRST_NOTE, PAD_ROWS = 36, 8
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
 LOADING = re.compile(r'^(\S+): info: Loading document "(.*)"\s*$')
@@ -76,12 +78,46 @@ def jog(steps):
     return [[0.0, [0x90, NOTE_JOG_TOUCH, 127]]] + clicks + [[0.2, [0x80, NOTE_JOG_TOUCH, 0]]]
 
 
-def send(steps, listen=0.0, until_cc=None, until_value=None):
+def pad_note(row, column):
+    """The note a pad sends: rows 1-8 from the bottom, columns 1-8 from the left (36 bottom left, 99 top
+    right, as Push 2 and Push 3 send them)."""
+    if not (1 <= row <= PAD_ROWS and 1 <= column <= PAD_ROWS):
+        raise ValueError("pads are row 1-8 (from the bottom) and column 1-8 (from the left), not %r" % ([row, column],))
+    return PAD_FIRST_NOTE + (row - 1) * PAD_ROWS + (column - 1)
+
+
+def pad_steps(chords, hold, gap, velocity):
+    """Press each chord's pads together, hold them `hold` seconds, let go, wait `gap`, then the next.
+    Returns (steps, release): release lets go of every pad, for push_midi to send whatever happens."""
+    steps, notes = [], []
+    for i, chord in enumerate(chords):
+        chord_notes = sorted({pad_note(row, column) for row, column in chord})
+        notes += chord_notes
+        for j, note in enumerate(chord_notes):
+            steps.append([gap if i and not j else 0.0, [0x90, note, velocity]])
+        for j, note in enumerate(chord_notes):
+            steps.append([hold if not j else 0.0, [0x80, note, 0]])
+    return steps, [[0x80, note, 0] for note in sorted(set(notes))]
+
+
+def pad_lights(lights):
+    """The pads the UI relit while we played, as [row, column]: the sign that the presses arrived."""
+    seen = []
+    for _, d in lights:
+        if len(d) == 3 and d[0] & 0xF0 == 0x90 and PAD_FIRST_NOTE <= d[1] < PAD_FIRST_NOTE + PAD_ROWS * PAD_ROWS:
+            pad = [(d[1] - PAD_FIRST_NOTE) // PAD_ROWS + 1, (d[1] - PAD_FIRST_NOTE) % PAD_ROWS + 1]
+            if pad not in seen:
+                seen.append(pad)
+    return seen
+
+
+def send(steps, listen=0.0, until_cc=None, until_value=None, release=()):
     """Run push_midi.py under the Push's system Python; returns the light messages it saw."""
     if not os.path.isfile(PUSH_PYTHON):
         raise PushError("no %s here: Set loading and saving only work where the server runs on the Push 3"
                         % PUSH_PYTHON)
-    request = json.dumps({"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value})
+    request = json.dumps({"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value,
+                          "release": list(release)})
     timeout = 10.0 + listen + sum(delay for delay, _ in steps)
     done = subprocess.run([PUSH_PYTHON, "-I", HELPER, request], capture_output=True, text=True, timeout=timeout)
     try:

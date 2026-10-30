@@ -7087,6 +7087,60 @@ def save_set(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
         return f"Error saving the Set: {str(e)}"
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False))
+@telemetry_tool("play_pads")
+@trajectory_tool("play_pads")
+def play_pads(
+    ctx: Context,
+    chords: List[List[List[int]]],
+    hold: float = 1.5,
+    gap: float = 0.5,
+    velocity: int = 90,
+    user_prompt: str = "",
+) -> str:
+    """
+    Press the Push 3's own pads, as if a finger did: each chord's pads go down together, are held
+    `hold` seconds (lit on the Push, so the user can see and copy the shape), let go, then `gap`
+    seconds before the next chord. Use it to show the user which pads to play.
+
+    A pad is [row, column]: row 1-8 from the bottom, column 1-8 from the left. What a pad does is the
+    Push's current mode: in Note mode it plays the selected track's instrument (pitch depends on the
+    layout: in the default In Key 4ths layout the bottom-left pad is the root, each pad to the right
+    is the next note of the scale and each row up is a 4th higher, so three scale steps); in Session
+    mode pads LAUNCH CLIPS. Only play pads after checking with the user that the Push is in Note mode
+    on the track they want, and not recording, unless they want the notes recorded.
+
+    Parameters:
+    - chords: The pads to press, one list per chord, e.g. [[[1,1],[1,3],[1,5]]] for one three-pad
+      chord, or [[[1,1]],[[1,2]],[[1,3]]] for three single pads one after another (at most 32 chords)
+    - hold: Seconds each chord is held (0.05-10, default 1.5)
+    - gap: Seconds between letting go and the next chord (0-10, default 0.5)
+    - velocity: How hard, 1-127 (default 90)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if not chords or len(chords) > 32 or not all(chords):
+            return "Error: give 1 to 32 chords, each with at least one pad."
+        if not (0.05 <= hold <= 10 and 0 <= gap <= 10):
+            return "Error: hold must be 0.05-10 s and gap 0-10 s."
+        if not 1 <= velocity <= 127:
+            return "Error: velocity must be 1-127."
+        try:
+            steps, release = _push.pad_steps([[tuple(p) for p in chord] for chord in chords], hold, gap, velocity)
+        except (TypeError, ValueError) as e:
+            return "Error: %s." % e
+        lights = _push.send(steps, listen=0.5, release=release)
+        lit = _push.pad_lights(lights)
+        played = "; ".join(" + ".join("[%d,%d]" % tuple(p) for p in chord) for chord in chords)
+        if not lit:
+            return ("Pressed %s, but the Push relit no pads, so the presses may not have reached it. Ask the user "
+                    "what they saw and heard." % played)
+        return "Pressed %s; the Push lit %d pad(s) in answer." % (played, len(lit))
+    except Exception as e:
+        logger.error(f"Error playing pads: {str(e)}")
+        return f"Error playing pads: {str(e)}"
+
+
 # Main execution
 def main():
     """Run the MCP server"""

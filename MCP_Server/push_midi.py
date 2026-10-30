@@ -13,7 +13,8 @@ server's own environment has no rtmidi, so push_ui.py runs it as a subprocess:
 
 Each step waits `delay` seconds, then sends its message. After the last step it keeps listening for
 `listen` seconds, or until a light message for controller `until_cc` arrives (with `until_value`, one
-with that value). It prints
+with that value). The messages in "release" are sent last whatever happens, so a pad held down is let
+go even if a step fails. It prints
 {"lights": [[seconds, [byte, ...]], ...]}: every message the UI sent to the lights from just before the
 first step, with seconds since then. It imports nothing outside the standard library and rtmidi.
 """
@@ -69,6 +70,8 @@ def run(request):
             time.sleep(0.01)
         drain()
     finally:
+        for data in request.get("release", []):
+            out.send_message(data)
         out.close_port()
         lights.close_port()
     return {"lights": got}
