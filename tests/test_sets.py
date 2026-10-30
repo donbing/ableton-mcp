@@ -252,6 +252,32 @@ def test_the_order_and_date_are_the_set_files_not_the_folders(push):
     assert sets[2]["modified"] == os.path.getmtime(folder / "Arcing the Singularity.als")
 
 
+def test_copies_in_a_projects_backup_folder_are_entries_too_and_ties_go_by_path(tmp_path):
+    # the Push 3's Set browser on 2026-10-30, top to bottom: Remix, its two hand-named Backup copies (each
+    # copied with its time kept, so tied with a Set), Original, Arcing; Live's stamped backups hidden
+    sets = tmp_path / "Sets"
+
+    def als(path, t):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"als")
+        os.utime(path, ns=(t, t))
+
+    remix, original = sets / "Play With Me (Remix) Project", sets / "Play With Me (Original) Project"
+    als(remix / "Play With Me (Remix).als", 1793318289310454097)
+    als(remix / "Backup" / "Collection of Meditation [Autosave] [2026-10-30 at rename].als", 1793318289310454097)
+    als(remix / "Backup" / "Collection of Meditation [Autosave] [2026-10-29 235808].als", 1793310548310492349)
+    als(remix / "Backup" / "Collection of Meditation [2026-10-29 before vocal edit].als", 1793302434229152757)
+    als(original / "Play With Me (Original).als", 1793302434229152757)
+    als(sets / "Arcing the Singularity Project" / "Arcing the Singularity.als", 1793243738000000000)
+    rows = P.list_sets(str(sets))
+    assert [(r["name"], r["copy"]) for r in rows] == [
+        ("Play With Me (Remix)", False), ("Collection of Meditation [Autosave] [2026-10-30 at rename]", True),
+        ("Collection of Meditation [2026-10-29 before vocal edit]", True), ("Play With Me (Original)", False),
+        ("Arcing the Singularity", False)]
+    assert P.find_set("Arcing the Singularity", rows)["position"] == 5
+    assert "Collection" not in str(pytest.raises(P.PushError, P.find_set, "Nope", rows).value)
+
+
 def test_a_project_without_a_set_file_goes_by_its_folder(push):
     folder = push.sets / "Empty Project"
     folder.mkdir()

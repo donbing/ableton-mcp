@@ -146,11 +146,17 @@ def close_set_browser(lights):
 
 # ---------------------------------------------------------------------------- Sets on disk
 
+# Live's own Backup copies end in a time stamp, "Name [2026-10-29 235808].als"; the Set browser hides them.
+_LIVE_BACKUP = re.compile(r" \[\d{4}-\d{2}-\d{2} \d{6}\]\.als$")
+
+
 def list_sets(sets_dir=None):
-    """The Sets folder's projects in the browser's order (newest first): dicts with position (1 = top),
-    name, folder, als (the Set file, or None), modified (epoch seconds). The browser goes by the Set
-    file's date, not the project folder's: Live touches the folder without saving (a new Samples
-    folder made "Merit and Moss" the newest folder on 2026-10-30, and load_set opened the wrong Set)."""
+    """The entries of the Push's Set browser in its order (newest first): dicts with position (1 = top),
+    name, folder, als (the Set file, or None), modified (epoch seconds) and copy (True for a Set file
+    other than a project's own). As read off the Push 3 on 2026-10-30: the browser lists every Set file
+    by its own date (not the project folder's, which Live touches without saving), including other
+    files in a project and in its Backup folder, except Live's own stamped backups; files with the
+    same date (a copy made with its time kept) go by their path, Z to A."""
     sets_dir = sets_dir or SETS_DIR
     try:
         names = os.listdir(sets_dir)
@@ -162,14 +168,21 @@ def list_sets(sets_dir=None):
         if entry.startswith(".") or not os.path.isdir(folder):
             continue
         name = entry[:-len(PROJECT_SUFFIX)] if entry.endswith(PROJECT_SUFFIX) else entry
+        found = sorted(glob.glob(os.path.join(glob.escape(folder), "*.als")))
         als = os.path.join(folder, name + ".als")
         if not os.path.isfile(als):
-            found = sorted(glob.glob(os.path.join(glob.escape(folder), "*.als")))
             als = found[0] if found else None
-        rows.append({"name": name, "folder": folder, "als": als,
-                     "modified": os.path.getmtime(als if als else folder)})
-    rows.sort(key=lambda r: r["modified"], reverse=True)
+        rows.append({"name": name, "folder": folder, "als": als, "copy": False,
+                     "_key": (os.stat(als if als else folder).st_mtime_ns, als or folder)})
+        others = [f for f in found if f != als]
+        others += [f for f in sorted(glob.glob(os.path.join(glob.escape(folder), "Backup", "*.als")))
+                   if not _LIVE_BACKUP.search(f)]
+        for f in others:
+            rows.append({"name": os.path.basename(f)[:-len(".als")], "folder": folder, "als": f, "copy": True,
+                         "_key": (os.stat(f).st_mtime_ns, f)})
+    rows.sort(key=lambda r: r["_key"], reverse=True)
     for i, row in enumerate(rows):
+        row["modified"] = row.pop("_key")[0] / 1e9
         row["position"] = i + 1
     return rows
 
@@ -177,10 +190,14 @@ def list_sets(sets_dir=None):
 def find_set(name, sets):
     exact = [s for s in sets if s["name"] == name]
     matches = exact or [s for s in sets if s["name"].lower() == name.strip().lower()]
+    if len(matches) > 1:
+        # a project and a copy of the same name: the project
+        matches = [s for s in matches if not s.get("copy")] or matches
     if len(matches) == 1:
         return matches[0]
     raise PushError("no Set named '%s'%s. The Sets are: %s"
-                    % (name, " (more than one matches)" if matches else "", ", ".join(s["name"] for s in sets)))
+                    % (name, " (more than one matches)" if matches else "",
+                       ", ".join(s["name"] for s in sets if not s.get("copy"))))
 
 
 def set_files_written_since(since, sets_dir=None):
@@ -259,7 +276,7 @@ def first_saved_as(doc, sets_dir=None):
         return None
     found = []
     for s in sets:
-        if s["als"] is None or "[Autosave]" in s["name"]:
+        if s["als"] is None or s.get("copy") or "[Autosave]" in s["name"]:
             continue
         times = [os.path.getmtime(os.path.join(root, f)) for root, dirs, files in os.walk(s["folder"])
                  for f in files + dirs]

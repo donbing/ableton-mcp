@@ -6839,7 +6839,8 @@ def _describe_open(doc) -> str:
 def list_sets(ctx: Context, user_prompt: str = "") -> str:
     """
     The Sets on the Push 3 in the order its Set browser shows them (newest first, [Autosave] copies
-    included), with when each was last saved and which one Live has open. load_set takes these names.
+    included, and other Set files in a project or its Backup folder, marked as copies), with when each
+    was last saved and which one Live has open. load_set takes these names.
 
     Parameters:
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
@@ -6848,8 +6849,10 @@ def list_sets(ctx: Context, user_prompt: str = "") -> str:
         sets = _push.list_sets()
         doc = _push.current_document()
         open_file = _open_file(doc)
-        lines = ["%d. %s (saved %s)%s" % (s["position"], s["name"], _when(s["modified"]),
-                                          "  <- open" if _push.same_file(s["als"], open_file) else "") for s in sets]
+        lines = ["%d. %s (saved %s)%s%s" % (s["position"], s["name"], _when(s["modified"]),
+                                            " (a copy in %s)" % os.path.relpath(os.path.dirname(s["als"]),
+                                                                                _push.SETS_DIR) if s.get("copy") else "",
+                                            "  <- open" if _push.same_file(s["als"], open_file) else "") for s in sets]
         return "\n".join(["Sets in %s, as the Set browser lists them:" % _push.SETS_DIR] + lines
                          + ["Open: " + _describe_open(doc)])
     except Exception as e:
