@@ -7278,7 +7278,7 @@ def play_pads(
     chords: List[List[List[int]]],
     hold: float = 1.5,
     gap: float = 0.5,
-    velocity: int = 90,
+    velocity: int = 64,
     user_prompt: str = "",
 ) -> str:
     """
@@ -7298,7 +7298,7 @@ def play_pads(
       chord, or [[[1,1]],[[1,2]],[[1,3]]] for three single pads one after another (at most 32 chords)
     - hold: Seconds each chord is held (0.05-10, default 1.5)
     - gap: Seconds between letting go and the next chord (0-10, default 0.5)
-    - velocity: How hard, 1-127 (default 90)
+    - velocity: How hard, 1-127 (default 64, the user's usual touch: 90 sounded loud and rumbly)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
@@ -7335,7 +7335,7 @@ def pad_lesson(
     chords: List[List[List[int]]],
     hold: float = 1.5,
     gap: float = 0.5,
-    velocity: int = 90,
+    velocity: int = 64,
     wait: float = 10.0,
     quiet: float = 2.0,
     user_prompt: str = "",
@@ -7350,7 +7350,8 @@ def pad_lesson(
     joins it while any of its pads is still down, or within 0.15 s of its first), so a learner
     placing fingers one at a time still plays one chord. Presses during the demo don't count. Each chord in the reply has: demo and played pads ([row, column], row 1 at the bottom),
     missed and extra pads, right, spread (seconds between its first and last pad going down), held
-    (first pad down to last pad up, null if still held) and gap_after (to the next chord), to compare
+    (first pad down to last pad up, null if still held), velocity (the presses' average) and gap_after
+    (to the next chord), to compare
     with the demo's hold and gap. all_right is true when every chord matched, in order, and no more.
 
     Same rules as play_pads: only after checking the Push is in Note mode on the track the user wants
@@ -7364,7 +7365,7 @@ def pad_lesson(
     - chords: The chords to teach, as play_pads takes them, e.g. [[[1,1],[1,3],[1,5]]] (at most 16)
     - hold: Seconds each demo chord is held (0.05-10, default 1.5)
     - gap: Seconds between demo chords (0-10, default 0.5)
-    - velocity: Demo velocity, 1-127 (default 90)
+    - velocity: Demo velocity, 1-127 (default 64; pass the last lesson's played velocity to match the user)
     - wait: Seconds to wait for the user's first press after the demo (1-30, default 10)
     - quiet: Seconds of no pads after the user lets go that mean they are done (0.5-5, default 2)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
@@ -7393,6 +7394,8 @@ def pad_lesson(
                  "chords": scored}
         if groups:
             reply["started_after"] = round(groups[0][0]["down"] - steps_end, 2)
+            # how hard the user played, to pass as the next demo's velocity
+            reply["played_velocity"] = round(sum(p["velocity"] for p in presses) / len(presses))
         else:
             reply["note"] = "no pad was pressed within %g s of the demo" % wait
         return json.dumps(reply, separators=(",", ":"))

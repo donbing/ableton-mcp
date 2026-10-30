@@ -208,6 +208,7 @@ def score_lesson(chords, groups):
             ups = [p["up"] for p in group]
             entry["spread"] = round(max(downs) - min(downs), 2)
             entry["held"] = round(max(ups) - min(downs), 2) if None not in ups else None
+            entry["velocity"] = round(sum(p["velocity"] for p in group) / len(group))
             if i + 1 < len(groups) and None not in ups:
                 entry["gap_after"] = round(min(p["down"] for p in groups[i + 1]) - max(ups), 2)
         entry["right"] = bool(want) and not entry["missed"] and not entry["extra"]

@@ -46,7 +46,7 @@ def test_play_pads_sends_the_steps_and_lets_go_of_every_pad(monkeypatch):
     out = call(server.play_pads, None, [[[1, 1], [1, 3], [1, 5]]], hold=1.0)
     assert "Pressed [1,1] + [1,3] + [1,5]" in out and "lit 1 pad" in out
     steps, release = sent[0]
-    assert [d[1:] for _, d in steps if d[0] & 0xF0 == 0x90] == [[36, 90], [38, 90], [40, 90]]
+    assert [d[1:] for _, d in steps if d[0] & 0xF0 == 0x90] == [[36, 64], [38, 64], [40, 64]]
     assert [d[1] for d in release if d[0] & 0xF0 == 0x80] == [36, 38, 40]
 
 

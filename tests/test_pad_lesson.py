@@ -87,8 +87,9 @@ def test_pad_lesson_plays_the_demo_then_scores_what_came_after(monkeypatch):
     out = json.loads(call(server.pad_lesson, None, [[[1, 1], [1, 3], [1, 5]]], hold=2.5, wait=5))
     assert out["all_right"] and out["chords_played"] == 1 and out["started_after"] == 1.0
     assert out["chords"][0]["held"] == 1.6 and out["demo_hold"] == 2.5
+    assert out["chords"][0]["velocity"] == 70 and out["played_velocity"] == 70
     steps, release, wait, quiet, max_seconds = calls[0]
-    assert [d[1:] for _, d in steps if d[0] & 0xF0 == ON] == [[36, 90], [38, 90], [40, 90]]
+    assert [d[1:] for _, d in steps if d[0] & 0xF0 == ON] == [[36, 64], [38, 64], [40, 64]]
     assert [d[1] for d in release] == [36, 38, 40]
     assert (wait, quiet) == (5, 2.0) and max_seconds == 5 + 3 * 3.0 + 2.0
 
