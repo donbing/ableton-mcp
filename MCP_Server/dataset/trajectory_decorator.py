@@ -101,6 +101,7 @@ MODIFYING_TOOLS = {
     "load_drum_kit",
     "duplicate_to_arrangement",
     "arrange_sections",
+    "render_song",
     "set_track_volume",
     "set_track_panning",
     "set_send",

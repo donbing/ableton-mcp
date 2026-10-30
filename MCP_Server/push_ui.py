@@ -148,7 +148,9 @@ def close_set_browser(lights):
 
 def list_sets(sets_dir=None):
     """The Sets folder's projects in the browser's order (newest first): dicts with position (1 = top),
-    name, folder, als (the Set file, or None), modified (epoch seconds)."""
+    name, folder, als (the Set file, or None), modified (epoch seconds). The browser goes by the Set
+    file's date, not the project folder's: Live touches the folder without saving (a new Samples
+    folder made "Merit and Moss" the newest folder on 2026-10-30, and load_set opened the wrong Set)."""
     sets_dir = sets_dir or SETS_DIR
     try:
         names = os.listdir(sets_dir)
@@ -164,7 +166,8 @@ def list_sets(sets_dir=None):
         if not os.path.isfile(als):
             found = sorted(glob.glob(os.path.join(glob.escape(folder), "*.als")))
             als = found[0] if found else None
-        rows.append({"name": name, "folder": folder, "als": als, "modified": os.path.getmtime(folder)})
+        rows.append({"name": name, "folder": folder, "als": als,
+                     "modified": os.path.getmtime(als if als else folder)})
     rows.sort(key=lambda r: r["modified"], reverse=True)
     for i, row in enumerate(rows):
         row["position"] = i + 1

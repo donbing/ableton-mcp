@@ -653,3 +653,14 @@ def test_missing_capability_message_is_returned(monkeypatch, conn):
     monkeypatch.setattr(sh, "require_capability", lambda name: "Remote Script too old")
     assert call(server.fire_scene, None, 0) == "Remote Script too old"
     assert conn.sent == []
+
+
+def test_a_rename_or_a_launch_leaves_the_scene_list_out_and_create_keeps_it(conn):
+    scenes = [{"index": i, "name": "S%d" % i} for i in range(3)]
+    conn.response = {"index": 1, "previous_name": "", "name": "Drop", "scenes": scenes}
+    assert json.loads(call(server.set_scene_name, None, 1, "Drop")) == {"index": 1, "previous_name": "",
+                                                                       "name": "Drop"}
+    conn.response = {"fired": True, "index": 1, "name": "Drop", "clip_count": 2, "scenes": scenes}
+    assert "scenes" not in json.loads(call(server.fire_scene, None, 1))
+    conn.response = {"index": 3, "scenes": scenes}
+    assert json.loads(call(server.create_scene, None))["scenes"] == scenes

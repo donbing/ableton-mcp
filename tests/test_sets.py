@@ -108,7 +108,8 @@ class FakePush:
             elif number in (P.CC_JOG_PRESS, P.CC_NEW_SET) and value == 127 and self.browser_open and self.dirty:
                 # as measured: the Sets and Save lights go dark, the three answers light up
                 self.prompt = True
-                self.pending = TEMPLATE if number == P.CC_NEW_SET else None
+                # the highlighted Set, as pressed: saving first can reorder the list under it
+                self.pending = TEMPLATE if number == P.CC_NEW_SET else self.entries()[self.highlight]
                 lights += [[0.05, [0xB0, 80, 0]], [0.05, [0xB0, 82, 0]], [0.05, [0xB0, 24, 122]],
                            [0.05, [0xB0, 26, 122]], [0.05, [0xB0, 27, 126]]]
             elif number == P.CC_JOG_PRESS and value == 127 and self.browser_open and self.loads:
@@ -238,6 +239,24 @@ def test_sets_are_listed_newest_first_like_the_browser(push):
     assert [(s["position"], s["name"]) for s in sets] == [
         (1, "Set 12-1"), (2, "Set 12"), (3, "Arcing the Singularity"), (4, "Diamond of Specter [Autosave]")]
     assert sets[1]["als"].endswith(os.path.join("Set 12 Project", "Set 12.als"))
+
+
+def test_the_order_and_date_are_the_set_files_not_the_folders(push):
+    # Push 3, 2026-10-30: Live made a Samples folder in an older project (its folder became the newest)
+    # without saving it; the browser still listed it by its Set file's date
+    folder = push.sets / "Arcing the Singularity Project"
+    (folder / "Samples").mkdir()
+    os.utime(folder, (push.clock.t, push.clock.t))
+    sets = P.list_sets()
+    assert [s["name"] for s in sets][:3] == ["Set 12-1", "Set 12", "Arcing the Singularity"]
+    assert sets[2]["modified"] == os.path.getmtime(folder / "Arcing the Singularity.als")
+
+
+def test_a_project_without_a_set_file_goes_by_its_folder(push):
+    folder = push.sets / "Empty Project"
+    folder.mkdir()
+    os.utime(folder, (push.clock.t, push.clock.t))
+    assert P.list_sets()[0]["name"] == "Empty" and P.list_sets()[0]["als"] is None
 
 
 def test_a_project_whose_set_has_another_name_still_has_its_file(push):

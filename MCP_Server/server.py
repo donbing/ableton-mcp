@@ -1912,8 +1912,9 @@ def delete_track(
 # Adapted from ahujasid/ableton-mcp#99 (Zachary May). Scene indices shift after
 # every create, duplicate and delete, so each reply carries the re-indexed list.
 
-def _scene_command(command: str, params: Dict[str, Any], doing: str) -> str:
-    """Shared body of the scene tools: capability check, send, JSON reply."""
+def _scene_command(command: str, params: Dict[str, Any], doing: str, with_list: bool = True) -> str:
+    """Shared body of the scene tools: capability check, send, JSON reply. with_list=False leaves out the
+    whole scene list, where nothing moved (a rename, a launch): 63 renames on 2026-10-29 sent it 63 times."""
     try:
         from .script_handshake import require_capability
 
@@ -1921,6 +1922,8 @@ def _scene_command(command: str, params: Dict[str, Any], doing: str) -> str:
         if missing:
             return missing
         result = get_ableton_connection().send_command(command, params)
+        if not with_list and isinstance(result, dict):
+            result.pop("scenes", None)
         return _dumps(result)
     except Exception as e:
         logger.error(f"Error {doing}: {str(e)}")
@@ -2057,7 +2060,7 @@ def fire_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     return _scene_command("fire_scene", {"scene_index": scene_index},
-                          "firing scene")
+                          "firing scene", with_list=False)
 
 
 @mcp.tool()
@@ -2066,7 +2069,7 @@ def fire_scene(ctx: Context, scene_index: int, user_prompt: str = "") -> str:
 def set_scene_name(ctx: Context, scene_index: int, name: str,
                    user_prompt: str = "") -> str:
     """
-    Rename a scene. Returns the previous name and the scene list.
+    Rename a scene. Returns the previous and the new name (get_scenes lists them all).
 
     Parameters:
     - scene_index: Index of the scene
@@ -2075,7 +2078,7 @@ def set_scene_name(ctx: Context, scene_index: int, name: str,
     """
     return _scene_command("set_scene_name",
                           {"scene_index": scene_index, "name": name},
-                          "setting scene name")
+                          "setting scene name", with_list=False)
 
 
 @mcp.tool()
@@ -5616,6 +5619,214 @@ def listen(
         return f"Error in listen: {str(e)}"
 
 
+# A render plays in real time; a cap so a wrong end_bar cannot keep Live recording for an hour.
+RENDER_MAX_SECONDS = 600.0
+_RENDER_POLL_SECONDS = 1.0
+
+
+def _render_take(index: int, start: float, end: float) -> Optional[tuple]:
+    """The Arrangement clip the take made on the scratch track: (its position in get_arrangement_clips,
+    the clip), or None."""
+    clips = _live("get_arrangement_clips", {"track_index": index}).get("clips", [])
+    for i, clip in enumerate(clips):
+        if start - 0.01 <= float(clip["start_time"]) < end:
+            return i, clip
+    return None
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
+@telemetry_tool("render_song")
+@trajectory_tool("render_song")
+def render_song(
+    ctx: Context,
+    scratch_track_index: int,
+    expected_name: str,
+    start_bar: float = 1.0,
+    end_bar: Optional[float] = None,
+    quiet: bool = True,
+    bars_per_row: Optional[int] = None,
+    silence_db: float = -50.0,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Render the Arrangement (or bars of it) to a WAV in real time and measure it: Arrangement-record the
+    whole mix (Main before its fader, as listen takes it) onto the scratch track from start_bar to the
+    end of end_bar, then measure it with ffmpeg (loudness, peak, a per-bar table folded into at most
+    32 rows) and delete the take's Arrangement clip, so it cannot double the song. The WAV stays in the
+    project's Samples/Recorded folder. Live must be stopped and the Arrangement loop off; it plays from
+    start_bar (count-in bars play first as pre-roll) and is stopped and the playhead put back after.
+    Other armed tracks are disarmed for the take and re-armed after, so only the scratch track records.
+    Stopping Live on the Push ends the render early; what was recorded is measured. Session clips that
+    play override the Arrangement on their tracks (back_to_arrangement first). The scratch track is set
+    up as for listen (input Resampling or Main, monitoring off). At most 10 minutes.
+    Two steps: confirm=false (default) shows the bars, the length and what is set up; confirm=true runs it.
+
+    Parameters:
+    - scratch_track_index: The scratch audio track
+    - expected_name: Its exact current name (safety check)
+    - start_bar: First bar (default 1)
+    - end_bar: Last bar, included (default: the last bar with anything in the Arrangement)
+    - quiet: True (default) = Main all the way down during the render and put back after (silent room)
+    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
+    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - confirm: false = preview only (default), true = render
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if not _listen.find_ffmpeg():
+            return "Error: ffmpeg was not found where the MCP server runs, so nothing can be measured."
+        index = scratch_track_index
+        overview = _live("get_tracks_overview")
+        refusal = _listen_refusal(overview, index, expected_name, None, needs_playing=False)
+        if refusal:
+            return refusal
+        info = _live("get_session_info")
+        if info.get("is_playing"):
+            return "Error: Live is playing; stop it first (the render plays from start_bar). Nothing was recorded."
+        if info.get("loop"):
+            return ("Error: the Arrangement loop is on, so the playhead would jump back before the end. Turn it "
+                    "off first (set_arrangement_loop). Nothing was recorded.")
+        numerator, denominator = (int(n) for n in str(overview["time_signature"]).split("/"))
+        bar_beats = numerator * 4.0 / denominator
+        spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
+        last_bar = max(1, int(math.ceil(float(info.get("song_length") or 0.0) / bar_beats - 1e-6)))
+        end_bar = last_bar if end_bar is None else end_bar
+        if isinstance(start_bar, bool) or start_bar < 1 or start_bar != int(start_bar):
+            return "Error: start_bar must be a whole bar, 1 or later. Nothing was recorded."
+        if isinstance(end_bar, bool) or end_bar != int(end_bar) or end_bar < start_bar:
+            return "Error: end_bar must be a whole bar, at or after start_bar (%g). Nothing was recorded." % start_bar
+        start, end = (start_bar - 1) * bar_beats, end_bar * bar_beats
+        bars = end_bar - start_bar + 1
+        seconds = bars * spb
+        if seconds > RENDER_MAX_SECONDS:
+            return ("Error: bars %g-%g at %s bpm are %.0f s; a render is at most %.0f s. Render it in parts. "
+                    "Nothing was recorded." % (start_bar, end_bar, overview["tempo"], seconds, RENDER_MAX_SECONDS))
+        if _render_take(index, start, end) is not None:
+            return ("Error: '%s' already has an Arrangement clip between bars %g and %g, which the render would "
+                    "record over. Clear it first (delete_arrangement_clips). Nothing was recorded."
+                    % (expected_name, start_bar, end_bar))
+        tap = _mix_source(index, None)
+        if quiet and tap is None and (_live("get_track_routing", {"track_index": index}).get("input") or {}).get(
+                "type") == "Resampling":
+            return ("Error: '%s' records Resampling, which comes after the Main fader, and Live offers no Main "
+                    "input to take instead, so with quiet=True the render would be silent. Nothing was recorded."
+                    % expected_name)
+        armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
+        others = sorted(armed_before - {index})
+        what = ("bars %g-%g (beats %g-%g, %.0f s at %s bpm %s) of the Arrangement onto '%s'"
+                % (start_bar, end_bar, start, end, seconds, overview["tempo"], overview["time_signature"],
+                   expected_name))
+        if not confirm:
+            notes = ["takes the mix from %s" % ("Main before its fader" if tap == _LISTEN_MAIN else
+                                                 "its input as it is")]
+            if quiet:
+                notes.append("turns Main all the way down for the render")
+            if others:
+                notes.append("disarms track(s) %s for the take" % ", ".join(map(str, others)))
+            return ("NOT RECORDED (preview only). This would record %s; it %s, then deletes the take's clip and "
+                    "measures the WAV. To render, call render_song again with the same arguments and confirm=true."
+                    % (what, "; ".join(notes)))
+
+        did, notes, routed, main_before, take = [], [], None, None, None
+        playhead_before = info.get("current_song_time")
+        started = _listen_now()
+        try:
+            if tap is not None:
+                routed, now = _route_scratch(index, expected_name, tap)
+                did.append("took its input from '%s'%s"
+                           % (now.get("type"), " (%s)" % now["channel"] if now.get("channel") else ""))
+            if quiet:
+                main_before = _live("get_track_info", {"track_index": 0, "track_type": "master"}).get("volume")
+                if main_before:
+                    _live("set_track_volume", {"track_index": 0, "value": 0.0, "track_type": "master"})
+                    did.append("turned Main all the way down")
+                else:
+                    main_before = None
+            for i in others:
+                _live("set_track_arm", {"track_index": i, "enabled": False, "track_type": "track"})
+            if index not in armed_before:
+                _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
+                                        "expected_name": expected_name})
+            rec = _live("start_arrangement_record", {"start_time": start, "end_time": end, "confirm": True})
+            names = [t["name"] for t in rec.get("armed_tracks", [])]
+            if names != [expected_name]:
+                notes.append("the take recorded on %s" % ", ".join(names))
+            notes += rec.get("warnings", [])
+            deadline = started + seconds + float(rec.get("pre_roll_beats") or 0.0) / bar_beats * spb + 10.0
+            while True:
+                _listen_sleep(_RENDER_POLL_SECONDS)
+                state = _live("get_session_info")
+                if float(state.get("current_song_time") or 0.0) >= end:
+                    break
+                if not state.get("is_playing"):
+                    notes.append("Live was stopped at beat %.1f, before the end; the render is shorter"
+                                 % float(state.get("current_song_time") or 0.0))
+                    break
+                if _listen_now() > deadline:
+                    notes.append("the playhead had not reached beat %g after %.0f s, so the render was stopped"
+                                 % (end, _listen_now() - started))
+                    break
+        finally:
+            try:
+                _live("stop_recording", {"stop_transport": True})
+                did.append("recorded and stopped Live (%.0f s)" % (_listen_now() - started))
+            finally:
+                try:
+                    if index not in armed_before:
+                        _live("set_track_arm", {"track_index": index, "enabled": False, "track_type": "track"})
+                    for i in sorted(armed_before):
+                        _live("set_track_arm", {"track_index": i, "enabled": True, "track_type": "track"})
+                    if others:
+                        did.append("re-armed track(s) %s" % ", ".join(map(str, others)))
+                finally:
+                    if main_before is not None:
+                        try:
+                            put = _live("set_track_volume", {"track_index": 0, "value": main_before,
+                                                             "track_type": "master"})
+                            did.append("put Main back to %s" % put.get("display", main_before))
+                        except Exception as e:
+                            notes.append("Main could not be put back to %s (%s); set it with set_track_volume"
+                                         % (main_before, e))
+                    if routed is not None:
+                        try:
+                            _unroute_scratch(index, expected_name, routed)
+                            did.append("put its input back to '%s'" % routed["type"])
+                        except Exception as e:
+                            notes.append("its input could not be put back to '%s' (%s); set it with "
+                                         "set_track_routing" % (routed["type"], e))
+                    if playhead_before is not None:
+                        _live("set_current_song_time", {"time": playhead_before})
+        take = _render_take(index, start, end)
+        if take is None:
+            return ("Error: no take was recorded on '%s' (%s)."
+                    % (expected_name, "; ".join(did + notes) or "nothing changed"))
+        position, clip = take
+        path = None
+        try:
+            path = _live("get_audio_clip_info", {"track_index": index, "clip_index": position,
+                                                 "arrangement": True}).get("file_path")
+            if not path:
+                raise _listen.ListenError("Live reports no file for the take")
+            _wait_for_file(path, timeout=10.0)
+            result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
+        finally:
+            _live("delete_arrangement_clips", {"track_index": index, "expected_name": expected_name,
+                                               "start_time": max(0.0, start - 0.01), "end_time": end, "confirm": True})
+            did.append("deleted the take's Arrangement clip (the WAV stays)")
+        lines = ["Rendered %s: %s." % (what, "; ".join(did))]
+        lines += ["Note: %s." % n for n in notes]
+        if start_bar != 1:
+            lines.append("The table's bar 1 is bar %g of the song." % start_bar)
+        lines += ["File: %s" % path, _listen.format_report(result)]
+        if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
+            lines.append("The render is silent: check that the Arrangement has clips there and nothing is muted.")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error in render_song: {str(e)}")
+        return f"Error in render_song: {str(e)}"
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
 @telemetry_tool("delete_return_track")
 @trajectory_tool("delete_return_track")
@@ -6697,8 +6908,8 @@ def _finish_set_change(button, did, log, before, unsaved, missing_media, expecte
         return ("Error: Live's log shows no Set loading within 15 s (%s). Look at the Push's screen: the "
                 "browser may be on another entry, or the Push may be asking something." % opened)
     if not expected(loaded[1]):
-        return ("Error: Live loaded %s, not %s (%s). The browser's order may differ from the folders' "
-                "dates; check list_sets." % (loaded[1], label, opened))
+        return ("Error: Live loaded %s, not %s (%s). The browser's order may differ from the Set files' "
+                "dates; check list_sets against the Push's Set browser." % (loaded[1], label, opened))
     done = "Loaded %s (%s; Live's log: %s)." % (label, opened, loaded[0][:19])
     missing = _push.files_not_opened(log, loaded)
     named = " Live could not open: %s." % ", ".join(missing) if missing else ""
