@@ -7356,6 +7356,10 @@ def pad_lesson(
     Same rules as play_pads: only after checking the Push is in Note mode on the track the user wants
     and not recording. The user's playing sounds on that track as usual.
 
+    BEFORE calling it, tell the user what is coming: each chord's name and its pads in words ("F:
+    bottom row, pads 1, 3, 5"), ideally as a small grid of the bottom rows. The Push lights every pad
+    that plays a held note, so the shape is hard to pick out from the lights alone (the user said so).
+
     Parameters:
     - chords: The chords to teach, as play_pads takes them, e.g. [[[1,1],[1,3],[1,5]]] (at most 16)
     - hold: Seconds each demo chord is held (0.05-10, default 1.5)
