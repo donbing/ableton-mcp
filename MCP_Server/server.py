@@ -5370,6 +5370,11 @@ def _on_scratch(index: Optional[int], name: Optional[str], forget_wavs: bool, ru
                     os.remove(path)
                     removed.append(path)
                 except OSError:
+                    continue
+                # Live's analysis file for the take (measured on the Push: "<take>.wav.asd" stays behind)
+                try:
+                    os.remove(path + ".asd")
+                except OSError:
                     pass
     line = ("On a temporary audio track '%s' (track %d), made for this call and %s%s."
             % (name, index, "deleted after" if gone is None else

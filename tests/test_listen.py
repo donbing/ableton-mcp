@@ -992,11 +992,15 @@ def test_without_a_scratch_track_a_temporary_one_is_made_and_deleted_with_its_wa
     take = tmp_path / "Samples" / "Recorded" / "0001 Claude Listen (temporary).wav"
     take.parent.mkdir(parents=True)
     take.write_bytes(b"RIFF")
+    # Live writes an analysis file next to every take
+    analysis = take.parent / (take.name + ".asd")
+    analysis.write_bytes(b"asd")
     song.take_path = str(take)
     out = call(server.listen, None, bars=2)
     assert out.startswith("On a temporary audio track 'Claude Listen (temporary)' (track 3), made for this call and "
                           "deleted after; its takes' WAVs were deleted too.\nListened on 'Claude Listen (temporary)'")
     assert [t.name for t in song.tracks] == ["Drums", "Vox", "Listen"] and not take.exists()
+    assert not analysis.exists()
     assert measured and measured[0][0] == str(take)
 
 
