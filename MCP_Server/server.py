@@ -7346,8 +7346,9 @@ def pad_lesson(
     port, so it knows the exact pad pressed (not just the note) and when it went down and up.
 
     Listening ends when the user has not pressed a pad `wait` seconds after the demo, or every pad is
-    up and nothing happened for `quiet` seconds. Presses landing within 0.15 s of each other are one
-    chord. Each chord in the reply has: demo and played pads ([row, column], row 1 at the bottom),
+    up and nothing happened for `quiet` seconds. A chord is the pads held down together (a press
+    joins it while any of its pads is still down, or within 0.15 s of its first), so a learner
+    placing fingers one at a time still plays one chord. Presses during the demo don't count. Each chord in the reply has: demo and played pads ([row, column], row 1 at the bottom),
     missed and extra pads, right, spread (seconds between its first and last pad going down), held
     (first pad down to last pad up, null if still held) and gap_after (to the next chord), to compare
     with the demo's hold and gap. all_right is true when every chord matched, in order, and no more.

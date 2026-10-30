@@ -44,6 +44,14 @@ def test_presses_close_together_are_one_chord():
     assert [[p["pad"] for p in g] for g in groups] == [[[1, 1], [1, 3], [1, 5]], [[2, 1]]]
 
 
+def test_a_chord_put_down_one_finger_at_a_time_is_one_chord():
+    # as measured on the Push: four pads over 1.1 s, all held, then let go together
+    presses = P.pad_presses(events(press(36, 6.12, 8.99), press(45, 6.41, 9.0), press(38, 6.84, 9.02),
+                                   press(40, 7.23, 9.03), press(36, 10.66, 11.5)))
+    groups = P.chord_groups(presses)
+    assert [[p["pad"] for p in g] for g in groups] == [[[1, 1], [2, 2], [1, 3], [1, 5]], [[1, 1]]]
+
+
 def test_score_names_missed_and_extra_pads_and_the_timing():
     demo = [[[1, 1], [1, 3], [1, 5]], [[2, 1], [2, 3], [2, 5]]]
     played = P.chord_groups(P.pad_presses(events(

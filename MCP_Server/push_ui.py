@@ -49,7 +49,7 @@ PROMPT_SAVE_GREEN = 126
 # the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; seen on this Push 2026-10-30:
 # [1,1] and [8,8] lit and sounded where expected
 PAD_FIRST_NOTE, PAD_ROWS = 36, 8
-# presses this close together count as one chord (a guess, not yet measured on a real hand)
+# presses this close together are one chord even if the first is already up (a quick stab)
 CHORD_WINDOW = 0.15
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
@@ -168,10 +168,13 @@ def pad_presses(events, after=0.0):
 
 
 def chord_groups(presses, window=CHORD_WINDOW):
-    """Presses that went down within `window` seconds of a chord's first press are one chord."""
+    """One chord is the pads held down together: a press joins the chord while any of its pads is
+    still down, or within `window` seconds of its first press. A learner puts fingers down one at a
+    time (over a second apart, measured), so a fixed window alone splits a chord."""
     groups = []
     for press in sorted(presses, key=lambda p: p["down"]):
-        if groups and press["down"] - groups[-1][0]["down"] <= window:
+        still_down = groups and any(p["up"] is None or p["up"] > press["down"] for p in groups[-1])
+        if groups and (still_down or press["down"] - groups[-1][0]["down"] <= window):
             groups[-1].append(press)
         else:
             groups.append([press])
