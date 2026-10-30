@@ -151,7 +151,10 @@ def fake_rtmidi(monkeypatch, clock, script):
             sent.append((round(clock.t, 2), data))
 
     monkeypatch.setitem(sys.modules, "rtmidi", types.SimpleNamespace(MidiOut=Port, MidiIn=Port))
-    monkeypatch.setattr(M, "time", types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep))
+    monkeypatch.setattr(M, "open_output", lambda name: Port())
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep,
+                                                       time=lambda: 1000.0, localtime=__import__("time").localtime,
+                                                       strftime=__import__("time").strftime))
     return sent
 
 
@@ -176,3 +179,38 @@ def test_push_midi_without_pads_replies_as_before(monkeypatch):
     clock = FakeClock()
     fake_rtmidi(monkeypatch, clock, [])
     assert M.run({"steps": [], "release": []}) == {"lights": []}
+
+
+def test_wait_for_rescan_returns_once_live_has_reopened_its_devices(tmp_path, monkeypatch):
+    import time as real_time
+    log = tmp_path / "Log.txt"
+    since = real_time.mktime((2026, 10, 30, 15, 25, 11, 0, 0, -1)) + 0.96
+    log.write_text("2026-10-30T15:25:10.000000: info: MidiDeviceManager: End OpenAllActivatedDevices\n"
+                   "2026-10-30T15:25:12.999545: info: MidiDeviceManager: End OpenAllActivatedDevices\n")
+    assert M.wait_for_rescan(str(log), since, timeout=0.5)
+
+
+def test_wait_for_rescan_ignores_an_older_rescan_and_gives_up(tmp_path):
+    import time as real_time
+    log = tmp_path / "Log.txt"
+    since = real_time.mktime((2026, 10, 30, 15, 25, 11, 0, 0, -1))
+    log.write_text("2026-10-30T15:25:10.000000: info: MidiDeviceManager: End OpenAllActivatedDevices\n")
+    assert not M.wait_for_rescan(str(log), since, timeout=0.2)
+    assert not M.wait_for_rescan(str(tmp_path / "missing.txt"), since, timeout=0.2)
+
+
+def test_push_midi_waits_for_the_rescan_when_given_the_log(monkeypatch):
+    clock, waited = FakeClock(), []
+    fake_rtmidi(monkeypatch, clock, [])
+    monkeypatch.setattr(M, "wait_for_rescan", lambda path, since: waited.append(path))
+    M.run({"steps": [], "release": [], "live_log": "/x/Log.txt"})
+    M.run({"steps": [], "release": []})
+    assert waited == ["/x/Log.txt"]
+
+
+def test_pad_lesson_passes_lives_log_for_the_rescan_wait(monkeypatch):
+    seen = []
+    monkeypatch.setattr(P, "live_log", lambda prefs_dir=None: "/x/Log.txt")
+    monkeypatch.setattr(P, "_run", lambda request, seconds: seen.append(request) or {"pads": [], "steps_end": 0.0})
+    P.send_and_watch([], [], 5, 2, 10)
+    assert seen[0]["live_log"] == "/x/Log.txt"

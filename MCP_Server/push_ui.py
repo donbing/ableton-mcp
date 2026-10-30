@@ -51,6 +51,8 @@ PROMPT_SAVE_GREEN = 126
 PAD_FIRST_NOTE, PAD_ROWS = 36, 8
 # our presses use MIDI channels 2-16 in turn (status nibble 1-15), as the pads do
 PAD_FIRST_CHANNEL, PAD_CHANNELS = 1, 15
+# the most push_midi waits for Live's MIDI rescan before pressing pads
+SETTLE_SECONDS = 3.0
 # presses this close together are one chord even if the first is already up (a quick stab)
 CHORD_WINDOW = 0.15
 # the log is read from its end; a load is far less than this far back
@@ -143,19 +145,30 @@ def _run(request, seconds):
     return result
 
 
-def send(steps, listen=0.0, until_cc=None, until_value=None, release=()):
-    """Run push_midi.py under the Push's system Python; returns the light messages it saw."""
+def _settle_log():
+    """Live's log, for push_midi to wait out Live's MIDI rescan before pressing pads (None if missing)."""
+    try:
+        return live_log()
+    except PushError:
+        return None
+
+
+def send(steps, listen=0.0, until_cc=None, until_value=None, release=(), settle=False):
+    """Run push_midi.py under the Push's system Python; returns the light messages it saw. settle:
+    first wait for Live's MIDI rescan (for pads held for a while: see push_midi.wait_for_rescan)."""
     request = {"steps": steps, "listen": listen, "until_cc": until_cc, "until_value": until_value,
                "release": list(release)}
-    return _run(request, listen + sum(delay for delay, _ in steps))["lights"]
+    if settle:
+        request["live_log"] = _settle_log()
+    return _run(request, listen + sum(delay for delay, _ in steps) + (SETTLE_SECONDS if settle else 0))["lights"]
 
 
 def send_and_watch(steps, release, wait, quiet, max_seconds):
     """Send the steps, then read the user's own pad presses until they stop (see push_midi.py).
     Returns (pad events, when the steps ended), times in seconds from the start."""
-    request = {"steps": steps, "release": list(release),
+    request = {"steps": steps, "release": list(release), "live_log": _settle_log(),
                "pads": {"wait": wait, "quiet": quiet, "max": max_seconds}}
-    result = _run(request, max_seconds + sum(delay for delay, _ in steps))
+    result = _run(request, max_seconds + sum(delay for delay, _ in steps) + SETTLE_SECONDS)
     return result["pads"], result["steps_end"]
 
 

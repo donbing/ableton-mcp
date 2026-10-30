@@ -25,6 +25,10 @@ every pad is up and nothing happened for `quiet` seconds, or `max` seconds. The 
 "pads": the pad note-ons and note-offs (36-99, any channel: the pads are MPE, a channel per press) and
 "steps_end": when the last step was sent. Our own presses go to the UI's input, so they never show up
 here. Measured on the Push (2026-10-30): the pads send 36 bottom left to 99 top right.
+
+We send from an ALSA port nobody can subscribe to (HiddenOut, through libasound with ctypes), so Live
+does not hear our raw bytes. With "live_log" (Live's Log.txt) it first waits for Live's MIDI rescan
+that opening ports sets off, so no note is held across it.
 """
 
 import json
@@ -35,6 +39,8 @@ INPUT_PORT = "Ableton Internal Input"
 LIGHTS_PORT = "Ableton Internal Output"
 PADS_PORT = "Ableton Push 3 Live Port"
 FIRST_PAD, LAST_PAD = 36, 99
+# Live's rescan comes about 1.0 s after a port appears and takes ~25 ms (measured 2026-10-30)
+RESCAN_TIMEOUT = 3.0
 
 
 def _port(midi, name):
@@ -44,12 +50,97 @@ def _port(midi, name):
     return None
 
 
+class HiddenOut:
+    """Sends to one ALSA port from a port of our own that nobody can subscribe to. Live takes every
+    subscribable port as a track input (Track=on), so with rtmidi's MidiOut it played our raw pad
+    numbers (36-99) as notes under the Push's own (measured with Capture MIDI 2026-10-30)."""
+
+    QUEUE_DIRECT = 253
+
+    def __init__(self, name):
+        import ctypes
+        self.ctypes, self.asound = ctypes, ctypes.CDLL("libasound.so.2")
+        self.seq, self.coder = ctypes.c_void_p(), ctypes.c_void_p()
+        if self.asound.snd_seq_open(ctypes.byref(self.seq), b"default", 1, 0) < 0:  # output only
+            raise OSError("no ALSA sequencer")
+        self.asound.snd_seq_set_client_name(self.seq, b"AbletonMCP pads")
+        # capability READ without SUBS_READ: we can send from it, nobody can subscribe to it
+        self.port = self.asound.snd_seq_create_simple_port(self.seq, b"AbletonMCP pads", 1, 1 << 20)
+        self.dest = self._find(name)
+        self.asound.snd_midi_event_new(16, ctypes.byref(self.coder))
+        self.event = (ctypes.c_ubyte * 28)()  # snd_seq_event_t
+
+    def _find(self, name):
+        ctypes, asound = self.ctypes, self.asound
+        cinfo, pinfo = ctypes.c_void_p(), ctypes.c_void_p()
+        asound.snd_seq_client_info_malloc(ctypes.byref(cinfo))
+        asound.snd_seq_port_info_malloc(ctypes.byref(pinfo))
+        asound.snd_seq_port_info_get_name.restype = ctypes.c_char_p
+        asound.snd_seq_client_info_set_client(cinfo, -1)
+        while asound.snd_seq_query_next_client(self.seq, cinfo) >= 0:
+            client = asound.snd_seq_client_info_get_client(cinfo)
+            asound.snd_seq_port_info_set_client(pinfo, client)
+            asound.snd_seq_port_info_set_port(pinfo, -1)
+            while asound.snd_seq_query_next_port(self.seq, pinfo) >= 0:
+                if name in asound.snd_seq_port_info_get_name(pinfo).decode(errors="replace"):
+                    return client, asound.snd_seq_port_info_get_port(pinfo)
+        return None
+
+    def send_message(self, data):
+        ctypes, event = self.ctypes, self.event
+        ctypes.memset(event, 0, len(event))
+        self.asound.snd_midi_event_reset_encode(self.coder)
+        self.asound.snd_midi_event_encode(self.coder, (ctypes.c_ubyte * len(data))(*data), len(data), event)
+        event[3] = self.QUEUE_DIRECT  # queue
+        event[13] = self.port  # source port (the client is filled in by ALSA)
+        event[14], event[15] = self.dest
+        self.asound.snd_seq_event_output_direct(self.seq, event)
+
+    def close_port(self):
+        self.asound.snd_midi_event_free(self.coder)
+        self.asound.snd_seq_close(self.seq)
+
+
+def open_output(name):
+    """Our way into the UI's input `name`, or None when there is no such port."""
+    out = HiddenOut(name)
+    if out.dest is None:
+        out.close_port()
+        return None
+    return out
+
+
+def wait_for_rescan(log_path, since, timeout=RESCAN_TIMEOUT):
+    """Live rescans its MIDI devices about 1 s after any ALSA port appears or goes, closing and
+    reopening all of them, the Push UI's own input to Live included: a note held across it never
+    gets its note-off (the first demo chord rang on). Wait until Live's log says the rescan after
+    `since` (time.time()) is over, at most `timeout` s."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(since)) + ("%.6f" % (since % 1))[1:]
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 20000))
+                tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return False
+        for line in tail.splitlines():
+            if "End OpenAllActivatedDevices" in line and line[:26] > stamp:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def run(request):
     import rtmidi
 
     watch = request.get("pads")
-    out, lights = rtmidi.MidiOut(), rtmidi.MidiIn()
-    ports = [(out, INPUT_PORT), (lights, LIGHTS_PORT)]
+    opened_at = time.time()
+    out, lights = open_output(INPUT_PORT), rtmidi.MidiIn()
+    if out is None:
+        return {"error": "no MIDI port named '%s' (is Live running on this Push?)" % INPUT_PORT}
+    ports = [(lights, LIGHTS_PORT)]
     if watch:
         pad_in = rtmidi.MidiIn()
         pad_in.ignore_types(sysex=True, timing=True, active_sense=True)
@@ -57,8 +148,11 @@ def run(request):
     for midi, name in ports:
         index = _port(midi, name)
         if index is None:
+            out.close_port()
             return {"error": "no MIDI port named '%s' (is Live running on this Push?)" % name}
         midi.open_port(index)
+    if request.get("live_log"):
+        wait_for_rescan(request["live_log"], opened_at)
     got, pads, start = [], [], time.monotonic()
     until, until_value = request.get("until_cc"), request.get("until_value")
 

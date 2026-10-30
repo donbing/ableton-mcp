@@ -7312,7 +7312,7 @@ def play_pads(
             steps, release = _push.pad_steps([[tuple(p) for p in chord] for chord in chords], hold, gap, velocity)
         except (TypeError, ValueError) as e:
             return "Error: %s." % e
-        lights = _push.send(steps, listen=0.5, release=release)
+        lights = _push.send(steps, listen=0.5, release=release, settle=True)
         lit = _push.pad_lights(lights)
         played = "; ".join(" + ".join("[%d,%d]" % tuple(p) for p in chord) for chord in chords)
         if not lit:

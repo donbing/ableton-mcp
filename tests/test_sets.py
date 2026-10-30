@@ -206,8 +206,14 @@ class FakeIn(FakePorts):
         return (FakeIn.queue.pop(0), 0.0) if FakeIn.queue else None
 
 
+def fake_output(cls):
+    """push_midi.open_output with cls's ports in place of ALSA's (the real one sends through libasound)."""
+    return lambda name: cls() if any(name in p for p in cls.ports) else None
+
+
 def test_the_helper_opens_the_ui_ports_by_name_and_stops_at_the_awaited_light(monkeypatch):
     monkeypatch.setitem(sys.modules, "rtmidi", types.SimpleNamespace(MidiOut=FakeOut, MidiIn=FakeIn))
+    monkeypatch.setattr(M, "open_output", fake_output(FakeOut))
     FakeOut.sent, FakeIn.queue = [], []
     FakePorts.replies = [[[0xB0, 80, 127], [0xB0, 107, 122]], []]
     result = M.run({"steps": P.press(80), "listen": 30, "until_cc": 80})
@@ -218,6 +224,7 @@ def test_the_helper_opens_the_ui_ports_by_name_and_stops_at_the_awaited_light(mo
 
 def test_the_helper_can_wait_for_one_value_of_a_light(monkeypatch):
     monkeypatch.setitem(sys.modules, "rtmidi", types.SimpleNamespace(MidiOut=FakeOut, MidiIn=FakeIn))
+    monkeypatch.setattr(M, "open_output", fake_output(FakeOut))
     FakeOut.sent, FakeIn.queue = [], []
     FakePorts.replies = [[[0xB0, 27, 0], [0xB0, 82, 0], [0xB0, 27, 126]], []]
     result = M.run({"steps": P.press(94), "listen": 30, "until_cc": 27, "until_value": 126})
@@ -229,6 +236,7 @@ def test_the_helper_says_which_port_is_missing(monkeypatch):
     class NoUi(FakeOut):
         ports = ["Ableton Push 3:Ableton Push 3 Live Port 16:0"]
     monkeypatch.setitem(sys.modules, "rtmidi", types.SimpleNamespace(MidiOut=NoUi, MidiIn=FakeIn))
+    monkeypatch.setattr(M, "open_output", fake_output(NoUi))
     assert "Ableton Internal Input" in M.run({"steps": []})["error"]
 
 
