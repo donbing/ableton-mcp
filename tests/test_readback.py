@@ -20,6 +20,7 @@ class Song(object):
 
     def __init__(self):
         self._time, self._applied_time = 10.0, 10.0
+        self.is_playing = True
         self._pending_devices = []
         track = types.SimpleNamespace(name="Bass", devices=[Device("EQ")])
         self.tracks = [track]

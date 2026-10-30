@@ -265,6 +265,7 @@ class Slot(object):
         if kwargs and not self.takes_length:
             raise TypeError("fire() got an unexpected keyword argument")
         self.fired.append(kwargs)
+        self.song.is_playing = True
         if self.is_recording:
             self.finish()
         elif self.clip is None:
@@ -335,7 +336,9 @@ class Song(object):
                        Track(self, "Vox", input_type="Ext. In", monitoring=1),
                        Track(self, "Listen")]
         self.tracks[0].clip_slots[0].clip = Clip("Beat", audio=False)
-        self.return_tracks, self.scenes, self.cue_points = [], [None] * 3, []
+        self.return_tracks, self.cue_points = [], []
+        self.scenes = [Scene(self, "Scene %d" % (i + 1)) for i in range(3)]
+        self.current_song_time, self.fired_scenes = 130.0, []
         self.master_track = types.SimpleNamespace(name="Main", devices=[],
                                                   mixer_device=types.SimpleNamespace(volume=Param(0.85),
                                                                                      panning=Param(0.0)))
@@ -352,6 +355,21 @@ class Song(object):
         for t in self.tracks:
             for s in t.clip_slots:
                 s.tick()
+
+    def start_playing(self):
+        self.is_playing = True
+
+    def stop_playing(self):
+        self.is_playing = False
+
+
+class Scene(object):
+    def __init__(self, song, name):
+        self.song, self.name, self.tempo = song, name, -1.0
+
+    def fire(self):
+        self.song.fired_scenes.append(self.name)
+        self.song.is_playing = True
 
 
 POLLS = ("get_slot_state", "get_track_info")
@@ -838,3 +856,122 @@ def test_quiet_with_a_source_needs_no_main_input(conn, song, measured):
     offer_drums(song)
     out = call(server.listen, None, source="Drums", quiet=True, **LISTEN)
     assert out.startswith("Listened") and master_volumes(conn) == [0.0, 0.85]
+
+
+# ---------------------------------------------------------------- at a beat, with a scene, several parts
+
+def sent(conn, command):
+    return [p for c, p in conn.sent if c == command]
+
+
+def test_at_beat_plays_from_one_bar_before_and_puts_a_stopped_live_back(conn, song, measured):
+    song.is_playing = False
+    out = call(server.listen, None, at_beat=16.0, **LISTEN)
+    commands = conn.commands()
+    # Play from bar 4 (the take fires on the next bar line, bar 5), then the take
+    assert sent(conn, "start_playback") == [{"at_beat": 12.0}]
+    assert commands.index("start_playback") < commands.index("record_into_slot") < commands.index("stop_playback")
+    assert song.is_playing is False and song.current_song_time == 130.0
+    assert out.startswith("Each take is bars 5-6 of the Arrangement (from beat 16). Live was stopped before, so it "
+                          "was stopped again and the playhead put back to beat 130.")
+    assert "Listened on 'Listen'" in out and measured
+
+
+def test_at_beat_while_playing_plays_on(conn, song, measured):
+    out = call(server.listen, None, at_beat=16.0, **LISTEN)
+    assert "stop_playback" not in conn.commands() and song.is_playing is True
+    assert "Live was playing before, so it plays on from there." in out
+
+
+def test_at_beat_off_the_launch_grid_is_refused(conn, song, measured):
+    out = call(server.listen, None, at_beat=18.0, **LISTEN)
+    assert out.startswith("Error: a take starts on the launch grid (every 4 beats here), and at_beat 18 is between "
+                          "16 (bar 5) and 20 (bar 6).")
+    assert not CHANGES & set(conn.commands()) and "start_playback" not in conn.commands()
+
+
+def test_at_beat_on_a_two_bar_grid(conn, song, measured):
+    song.clip_trigger_quantization = 3
+    assert "every 8 beats" in call(server.listen, None, at_beat=4.0, **LISTEN)
+    call(server.listen, None, at_beat=16.0, **LISTEN)
+    assert sent(conn, "start_playback") == [{"at_beat": 8.0}]
+
+
+def test_at_beat_0_starts_live_with_the_take(conn, song, measured):
+    out = call(server.listen, None, at_beat=0.0, **LISTEN)
+    commands = conn.commands()
+    assert "start_playback" not in commands
+    assert commands.index("stop_playback") < commands.index("record_into_slot")
+    assert {"time": 0.0} in sent(conn, "set_current_song_time") and out.startswith("Each take is bars 1-2")
+
+
+def test_a_scene_is_fired_with_the_take(conn, song, measured):
+    song.is_playing = False
+    out = call(server.listen, None, scene=1, **LISTEN)
+    commands = conn.commands()
+    assert song.fired_scenes == ["Scene 2"]
+    assert commands.index("start_playback") < commands.index("fire_scene") < commands.index("record_into_slot")
+    assert song.is_playing is False
+    assert out.startswith("Scene 1 was fired with each take, so the takes start with it. Live was stopped before")
+    assert "play their Session clips until back_to_arrangement" in out
+
+
+def test_several_sources_take_one_pass_each_from_the_same_beat(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, at_beat=16.0, sources=["Drums", "mix"], **LISTEN)
+    assert sent(conn, "start_playback") == [{"at_beat": 12.0}, {"at_beat": 12.0}]
+    assert conn.commands().count("record_into_slot") == 2 and len(measured) == 2
+    assert "== Drums ==\nListened on 'Listen' (track 2) at 120.0 bpm 4/4: took its input from 'Drums'" in out
+    assert "== the whole mix ==\nListened on 'Listen'" in out
+    assert song.tracks[2].input_routing_type.display_name == "Resampling"
+    assert all(slot.clip is None for slot in song.tracks[2].clip_slots)
+
+
+def test_several_sources_without_a_cue_listen_to_what_plays(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, sources=["Drums", "mix"], **LISTEN)
+    assert "start_playback" not in conn.commands() and out.startswith("== Drums ==")
+
+
+def test_several_kept_takes_go_into_the_next_empty_slots(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, sources=["Drums", "mix"], keep=True, **LISTEN)
+    assert "kept the take in slot 0" in out and "kept the take in slot 1" in out
+
+
+def test_a_failed_pass_stops_the_rest(conn, song, measured):
+    offer_drums(song)
+    song.wait = 10 ** 6
+    out = call(server.listen, None, at_beat=16.0, sources=["Drums", "mix"], **LISTEN)
+    assert conn.commands().count("record_into_slot") == 1 and "Error: no take was recorded" in out
+    assert out.endswith("Stopped after that pass; the parts after it were not recorded.")
+
+
+def test_every_source_is_checked_before_anything_is_recorded(conn, song, measured):
+    offer_drums(song)
+    out = call(server.listen, None, sources=["Drums", "Bass"], **LISTEN)
+    assert out.startswith("Error: 'Listen' cannot take its input from 'Bass'")
+    assert not CHANGES & set(conn.commands())
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    (dict(at_beat=16.0, scene=0), "give at_beat (the Arrangement) or scene (the Session), not both"),
+    (dict(at_beat=-4.0), "at_beat must be 0 or later"),
+    (dict(scene=-1), "scene must be a scene index"),
+    (dict(source="Drums", sources=["mix"]), "give source (one part) or sources (several), not both"),
+    (dict(sources=[]), "sources takes 1 to 4 parts"),
+    (dict(sources=["mix"] * 5), "sources takes 1 to 4 parts"),
+    (dict(sources=["mix", "mix"], clip_index=1), "leave clip_index out"),
+])
+def test_bad_cues_and_sources_are_refused(conn, song, measured, kwargs, expected):
+    song.is_playing = False
+    out = call(server.listen, None, **dict(LISTEN, **kwargs))
+    assert out.startswith("Error") and expected in out
+    assert not CHANGES & set(conn.commands()) and "start_playback" not in conn.commands()
+
+
+def test_at_beat_needs_the_1_10_26_remote_script(conn, song, measured, monkeypatch):
+    import MCP_Server.script_handshake as sh
+    caps = [c for c in sh._script_info["capabilities"] if c != "start_playback_at_beat"]
+    monkeypatch.setattr(sh, "_script_info", {"script_version": "1.10.25", "capabilities": caps})
+    assert "needs the Remote Script 1.10.26" in call(server.listen, None, at_beat=16.0, **LISTEN)

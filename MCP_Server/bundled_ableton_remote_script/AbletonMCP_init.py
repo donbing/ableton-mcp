@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.25"
+SCRIPT_VERSION = "1.10.26"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -172,6 +172,9 @@ SCRIPT_CAPABILITIES = [
     "set_transport_options",
     "record_into_slot",
     "get_slot_state",
+    # 1.10.26: start_playback takes at_beat and makes a move made while stopped stick
+    "start_playback_at_beat",
+    "set_current_song_time",
     "start_arrangement_record",
     "stop_recording",
     "delete_return_track",
@@ -592,7 +595,7 @@ class AbletonMCP(ControlSurface):
                     params.get("track_index", 0), params.get("clip_index", 0),
                     params.get("expected_name"), params.get("length_bars"), params.get("confirm"))
             elif command_type == "start_arrangement_record":
-                # Socket thread: the playhead move lands on the next tick, before recording starts.
+                # Socket thread: from stopped, Play is pressed a tick before the move and the record button.
                 response["result"] = self._start_arrangement_record(
                     params.get("start_time"), params.get("end_time"), params.get("confirm"))
             elif command_type == "stop_recording":
@@ -1056,7 +1059,7 @@ class AbletonMCP(ControlSurface):
                                 params.get("confirm", False),
                                 params.get("track_type", "track"))
                         elif command_type == "start_playback":
-                            result = self._start_playback()
+                            result = self._start_playback(params.get("at_beat"))
                         elif command_type == "stop_playback":
                             result = self._stop_playback()
                         elif command_type in ("undo", "redo"):
@@ -1187,6 +1190,8 @@ class AbletonMCP(ControlSurface):
                             response["result"] = self._verify_load_on_track(response["result"])
                         elif command_type == "set_current_song_time":
                             response["result"] = self._verify_song_time(response["result"])
+                        elif command_type == "start_playback":
+                            response["result"] = self._jump_after_play(response["result"])
                 except queue.Empty:
                     response["status"] = "error"
                     response["message"] = "Timeout waiting for operation to complete"
@@ -3271,24 +3276,59 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error performing %s: %s" % (action, str(e)))
             raise
 
-    def _start_playback(self):
-        """Start playing the session"""
+    # A playhead move made while stopped, for the next _start_playback (see _set_current_song_time).
+    _pending_song_time = None
+
+    def _start_playback(self, at_beat=None):
+        """Start playing the session; from at_beat, or from a move made while stopped. The jump to it is
+        made after Play (_jump_after_play): on the Push a move made while stopped can be lost."""
         try:
-            self._song.start_playing()
-            
-            result = {
-                "playing": self._song.is_playing
-            }
-            return result
+            song = self._song
+            if at_beat is not None:
+                at_beat = self._require_finite_number(at_beat, "at_beat")
+                if at_beat < 0:
+                    raise ValueError("at_beat must be 0 or later")
+            pending, self._pending_song_time = self._pending_song_time, None
+            was_playing = bool(song.is_playing)
+            target = at_beat
+            # only while Live still reads it back: a Play and Stop on the Push since then moved it
+            if target is None and pending is not None and not was_playing \
+                    and abs(float(song.current_song_time) - pending) < 1e-3:
+                target = pending
+            if not was_playing:
+                song.start_playing()
+            return {"playing": song.is_playing, "was_playing": was_playing, "jump_to": target}
         except Exception as e:
             self.log_message("Error starting playback: " + str(e))
             raise
-    
-    def _stop_playback(self):
-        """Stop playing the session"""
+
+    def _jump_after_play(self, result):
+        """Socket thread, after start_playing: move the playhead to jump_to (as a move made while
+        playing, which holds), settle and read it back. Never raises."""
+        result = dict(result)
+        target = result.pop("jump_to", None)
+        if target is None:
+            return result
         try:
+            self._call_on_main_thread(lambda: setattr(self._song, "current_song_time", target))
+            time.sleep(0.2)
+            now = self._call_on_main_thread(lambda: float(self._song.current_song_time))
+            result.update(from_beat=target, current_song_time=now)
+            # playing on: a little past the target, never before it or a bar beyond
+            if not target - 1e-3 <= now <= target + self._bar_beats():
+                result["warning"] = "The playhead is at beat %s, not at %s" % (now, target)
+        except Exception as e:
+            result["warning"] = "Could not move the playhead to beat %s: %s" % (target, e)
+        return result
+
+    def _stop_playback(self):
+        """Stop playing the session. Already stopped, nothing is pressed: a second Stop sends the
+        playhead home, and a move made after it is lost on the next Play."""
+        try:
+            if not self._song.is_playing:
+                return {"playing": False, "already_stopped": True}
             self._song.stop_playing()
-            
+
             result = {
                 "playing": self._song.is_playing
             }
@@ -3313,10 +3353,15 @@ class AbletonMCP(ControlSurface):
         try:
             requested = float(time_val)
             self._song.current_song_time = requested
+            stopped = not self._song.is_playing
+            # A move made while stopped reads back but can be lost: after a Stop pressed while already
+            # stopped, Play starts at beat 0 whatever was set (Push 3, Live 12.4.15, 2026-10-30).
+            # _start_playback makes it stick by jumping again once Live plays.
+            self._pending_song_time = requested if stopped else None
             # Live applies the new position a moment later and reads the OLD one
             # back until then; the dispatcher settles and reads again
             # (_verify_song_time) before the reply goes out.
-            return {"requested": requested, "current_song_time": requested}
+            return {"requested": requested, "current_song_time": requested, "stopped": stopped}
         except Exception as e:
             self.log_message("Error setting current song time: " + str(e))
             raise
@@ -6987,21 +7032,40 @@ class AbletonMCP(ControlSurface):
             info = self._call_on_main_thread(check)
             if not do_apply:
                 return info
-            if start_time is not None:
-                def move():
-                    self._song.current_song_time = start_time
-                self._call_on_main_thread(move)
-                time.sleep(0.3)
+            start_at = info["start_time"]
+
+            def play():
+                # From stopped, Play first and record once the playhead is on the start: a move made
+                # while stopped can be lost (Play then starts, and would record, at beat 0). The
+                # count-in becomes as many bars of pre-roll, with recording punched in at the start.
+                song = self._song
+                if song.is_playing:
+                    return False, 0.0
+                song.start_playing()
+                return True, self.COUNT_IN_BARS.get(int(getattr(song, "count_in_duration", 0) or 0), 0) \
+                    * self._bar_beats()
+
+            pressed_play, preroll = self._call_on_main_thread(play)
+            preroll = min(preroll, start_at)
+            if preroll:
+                info["pre_roll_beats"] = preroll
 
             def start():
+                # the move and the record button in one tick, so the take starts on start_at;
+                # already playing without start_time, it records from where the playhead is now
                 song = self._song
+                if start_time is not None or pressed_play:
+                    song.current_song_time = start_at - preroll
+                self._record_stop_token += 1
+                self._record_stop_at = end_time
+                token = self._record_stop_token
+                if preroll:
+                    self.schedule_message(1, lambda: self._poll_record_start(token, start_at))
+                    return
                 song.record_mode = True
                 if not song.is_playing:
                     song.start_playing()
-                self._record_stop_token += 1
-                self._record_stop_at = end_time
                 if end_time is not None:
-                    token = self._record_stop_token
                     self.schedule_message(1, lambda: self._poll_record_stop(token))
 
             self._call_on_main_thread(start)
@@ -7018,6 +7082,27 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error starting Arrangement recording: " + str(e))
             raise
+
+    # Song.count_in_duration index -> bars
+    COUNT_IN_BARS = {1: 1, 2: 2, 3: 4}
+
+    def _poll_record_start(self, token, start_at):
+        """Main thread, once a tick during the pre-roll: turn Arrangement recording on at start_at,
+        then hand over to _poll_record_stop. A Stop (or a newer take) ends the pre-roll."""
+        if token != self._record_stop_token:
+            return
+        song = self._song
+        if not song.is_playing:
+            self._record_stop_at = None
+            return
+        now = float(song.current_song_time)
+        # past the start by more than a bar is the old position, read back before the move lands
+        if start_at <= now < start_at + self._bar_beats():
+            song.record_mode = True
+            if self._record_stop_at is not None:
+                self.schedule_message(1, lambda: self._poll_record_stop(token))
+            return
+        self.schedule_message(1, lambda: self._poll_record_start(token, start_at))
 
     def _poll_record_stop(self, token):
         """Main thread, once a tick: turn Arrangement recording off at _record_stop_at."""
@@ -7063,7 +7148,8 @@ class AbletonMCP(ControlSurface):
                     song.record_mode = False
                 if before["session_record"]:
                     song.session_record = False
-                if stop_transport:
+                # a Stop while stopped sends the playhead home (see _stop_playback)
+                if stop_transport and song.is_playing:
                     song.stop_playing()
                 return {"before": before, "slots_ended": ended, "slots_cancelled": cancelled}
 

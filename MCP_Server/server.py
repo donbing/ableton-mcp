@@ -28,6 +28,12 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
 
+
+def _dumps(obj: Any) -> str:
+    """A tool's JSON reply without indentation: about a third fewer characters (and tokens) than
+    indent=2 on the replies Push sessions read most (measured on the October 2026 transcripts)."""
+    return json.dumps(obj, separators=(",", ":"))
+
 @dataclass
 class AbletonConnection:
     host: str
@@ -454,7 +460,7 @@ def get_session_info(ctx: Context, user_prompt: str = "") -> str:
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_session_info")
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
         return f"Error getting session info: {str(e)}"
@@ -477,7 +483,7 @@ def get_remote_script_info(ctx: Context, user_prompt: str = "") -> str:
         info = handshake(ableton.send_command)
         cached = dict(get_cached_script_info() or info)
         cached["expected_version"] = EXPECTED_REMOTE_SCRIPT_VERSION
-        return json.dumps(cached, indent=2)
+        return _dumps(cached)
     except Exception as e:
         logger.error(f"Error getting remote script info: {str(e)}")
         return f"Error getting remote script info: {str(e)}"
@@ -502,7 +508,7 @@ def get_track_info(ctx: Context, track_index: int, track_type: str = "track",
         if track_type != "track":
             params["track_type"] = track_type
         result = ableton.send_command("get_track_info", params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
@@ -561,7 +567,7 @@ def get_meters(
         if source != "output":
             params["source"] = source
         result = ableton.send_command("get_meters", params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting meters: {str(e)}")
         return f"Error getting meters: {str(e)}"
@@ -634,7 +640,7 @@ def get_clip_notes(
                 header.append("# clip scale: %s %s (%s)" % (
                     scale["root_name"], scale["scale_name"], " ".join(scale["scale_notes"])))
             return "\n".join(header + [format_notes(result["notes"], numerator, denominator)])
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting clip notes: {str(e)}")
         return f"Error getting clip notes: {str(e)}"
@@ -675,7 +681,7 @@ def get_clip_info(
             "get_clip_info",
             _clip_ref(track_index, clip_index, clip_start_time),
         )
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting clip info: {str(e)}")
         return f"Error getting clip info: {str(e)}"
@@ -742,7 +748,7 @@ def get_device_parameters(
             params["track_type"] = track_type
         ableton = get_ableton_connection()
         result = ableton.send_command("get_device_parameters", params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting device parameters: {str(e)}")
         return f"Error getting device parameters: {str(e)}"
@@ -846,7 +852,7 @@ def get_session_snapshot(
                 "include_params": include_params,
             },
         )
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting session snapshot: {str(e)}")
         return f"Error getting session snapshot: {str(e)}"
@@ -932,7 +938,7 @@ def _set_track_flag(command: str, flag: str, track_index: int, enabled: bool,
         if expected_name is not None:
             params["expected_name"] = expected_name
         result = get_ableton_connection().send_command(command, params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error setting track {flag}: {str(e)}")
         return f"Error setting track {flag}: {str(e)}"
@@ -1301,13 +1307,13 @@ def remove_notes_from_clip(
                 "remove_notes_from_clip", dict(params, dry_run=True))
             return (
                 "NOT REMOVED (preview only). This window selects "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo remove these notes, call remove_notes_from_clip again with "
                 "the same arguments and confirm=true."
             )
         result = ableton.send_command(
             "remove_notes_from_clip", dict(params, dry_run=False))
-        return "Removed notes. " + json.dumps(result, indent=2)
+        return "Removed notes. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error removing notes from clip: {str(e)}")
         return f"Error removing notes from clip: {str(e)}"
@@ -1372,13 +1378,13 @@ def apply_note_modifications(
                 "apply_note_modifications", dict(params, dry_run=True))
             return (
                 "NOT APPLIED (preview only). These notes would change: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo apply, call apply_note_modifications again with the same "
                 "notes and confirm=true."
             )
         result = ableton.send_command(
             "apply_note_modifications", dict(params, dry_run=False))
-        return "Applied note modifications. " + json.dumps(result, indent=2)
+        return "Applied note modifications. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error applying note modifications: {str(e)}")
         return f"Error applying note modifications: {str(e)}"
@@ -1439,12 +1445,12 @@ def quantize_clip(
             preview = ableton.send_command("quantize_clip", dict(params, dry_run=True))
             return (
                 "NOT QUANTIZED (preview only). This would happen: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo quantize, call quantize_clip again with the same arguments "
                 "and confirm=true."
             )
         result = ableton.send_command("quantize_clip", dict(params, dry_run=False))
-        return "Quantized clip. " + json.dumps(result, indent=2)
+        return "Quantized clip. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error quantizing clip: {str(e)}")
         return f"Error quantizing clip: {str(e)}"
@@ -1496,7 +1502,7 @@ def set_clip_loop(
         if looping is not None:
             params["looping"] = looping
         result = ableton.send_command("set_clip_loop", params)
-        return "Loop set. " + json.dumps(result, indent=2)
+        return "Loop set. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error setting clip loop: {str(e)}")
         return f"Error setting clip loop: {str(e)}"
@@ -1562,7 +1568,7 @@ def _audio_clip_call(command: str, label: str, params: Dict[str, Any]) -> str:
         if missing:
             return missing
         result = get_ableton_connection().send_command(command, params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error {label}: {str(e)}")
         return f"Error {label}: {str(e)}"
@@ -1831,7 +1837,7 @@ def delete_clip(ctx: Context, track_index: int, clip_index: int, user_prompt: st
             "track_index": track_index,
             "clip_index": clip_index,
         })
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting clip: {str(e)}")
         return f"Error deleting clip: {str(e)}"
@@ -1891,12 +1897,12 @@ def delete_track(
             preview = ableton.send_command("delete_track", dict(params, dry_run=True))
             return (
                 "NOT DELETED (preview only). This would delete: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo delete, call delete_track again with the same track_index "
                 "and expected_name and confirm=true."
             )
         result = ableton.send_command("delete_track", dict(params, dry_run=False))
-        return "Deleted track. " + json.dumps(result, indent=2)
+        return "Deleted track. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting track: {str(e)}")
         return f"Error deleting track: {str(e)}"
@@ -1915,7 +1921,7 @@ def _scene_command(command: str, params: Dict[str, Any], doing: str) -> str:
         if missing:
             return missing
         result = get_ableton_connection().send_command(command, params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error {doing}: {str(e)}")
         return f"Error {doing}: {str(e)}"
@@ -2007,12 +2013,12 @@ def delete_scene(
             preview = ableton.send_command("delete_scene", dict(params, dry_run=True))
             return (
                 "NOT DELETED (preview only). This would delete: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo delete, call delete_scene again with the same scene_index "
                 "and expected_name and confirm=true."
             )
         result = ableton.send_command("delete_scene", dict(params, dry_run=False))
-        return "Deleted scene. " + json.dumps(result, indent=2)
+        return "Deleted scene. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting scene: {str(e)}")
         return f"Error deleting scene: {str(e)}"
@@ -2155,13 +2161,13 @@ def delete_arrangement_clips(
                 "delete_arrangement_clips", dict(params, confirm=False))
             return (
                 "NOT DELETED (preview only). This would delete: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo delete, call delete_arrangement_clips again with the "
                 "same arguments and confirm=true."
             )
         result = ableton.send_command(
             "delete_arrangement_clips", dict(params, confirm=True))
-        return "Deleted arrangement clips. " + json.dumps(result, indent=2)
+        return "Deleted arrangement clips. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting arrangement clips: {str(e)}")
         return f"Error deleting arrangement clips: {str(e)}"
@@ -2227,12 +2233,12 @@ def delete_device(
             preview = ableton.send_command("delete_device", dict(params, confirm=False))
             return (
                 "NOT DELETED (preview only). This would delete: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo delete, call delete_device again with the same "
                 "arguments and confirm=true."
             )
         result = ableton.send_command("delete_device", dict(params, confirm=True))
-        return "Deleted device. " + json.dumps(result, indent=2)
+        return "Deleted device. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting device: {str(e)}")
         return f"Error deleting device: {str(e)}"
@@ -2333,16 +2339,33 @@ def redo(ctx: Context, confirm: bool = False, user_prompt: str = "") -> str:
 @mcp.tool()
 @telemetry_tool("start_playback")
 @trajectory_tool("start_playback")
-def start_playback(ctx: Context, user_prompt: str = "") -> str:
-    """Start playing the Ableton session.
+def start_playback(ctx: Context, at_beat: Optional[float] = None, user_prompt: str = "") -> str:
+    """Start playing the Ableton session, from at_beat when given. Without at_beat Live plays from a
+    playhead move made while stopped (set_arrangement_time), else from where it is. Already playing,
+    at_beat jumps there.
 
     Parameters:
+    - at_beat: Arrangement position in beats to play from (e.g. 128.0 = bar 33 in 4/4)
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import script_has_capability
+
         ableton = get_ableton_connection()
-        result = ableton.send_command("start_playback")
-        return "Started playback"
+        if at_beat is not None and not script_has_capability("start_playback_at_beat"):
+            # an older Remote Script ignores at_beat: Play first, then the jump (which holds while playing)
+            ableton.send_command("start_playback")
+            time.sleep(0.3)
+            result = ableton.send_command("set_current_song_time", {"time": at_beat})
+            return "Started playback, then moved the playhead to beat %s" % result.get("current_song_time", at_beat)
+        result = ableton.send_command("start_playback", {} if at_beat is None else {"at_beat": at_beat})
+        message = "Already playing" if result.get("was_playing") else "Started playback"
+        if result.get("from_beat") is not None:
+            message += "%s from beat %s (the playhead is at %.2f)" % (
+                ", jumped" if result.get("was_playing") else "", result["from_beat"], result["current_song_time"])
+        if result.get("warning"):
+            message += ". WARNING: %s" % result["warning"]
+        return message
     except Exception as e:
         logger.error(f"Error starting playback: {str(e)}")
         return f"Error starting playback: {str(e)}"
@@ -2359,6 +2382,9 @@ def stop_playback(ctx: Context, user_prompt: str = "") -> str:
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("stop_playback")
+        if result.get("already_stopped"):
+            # a second Stop would send the playhead home
+            return "Live was already stopped; nothing was pressed and the playhead stays where it is"
         return "Stopped playback"
     except Exception as e:
         logger.error(f"Error stopping playback: {str(e)}")
@@ -2479,7 +2505,7 @@ def get_browser_items_at_path(ctx: Context, path: str, user_prompt: str = "", of
             return (f"Error: {error}\n"
                    f"Available browser categories: {', '.join(available_cats)}")
 
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         error_msg = str(e)
         if "Browser is not available" in error_msg:
@@ -2575,7 +2601,8 @@ def switch_to_arrangement_view(ctx: Context, user_prompt: str = "") -> str:
 @trajectory_tool("set_arrangement_time")
 def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> str:
     """
-    Move the arrangement playhead to a specific position.
+    Move the arrangement playhead to a specific position. While stopped, start_playback then plays from
+    here; to play from a spot in one call use start_playback(at_beat=...).
 
     Parameters:
     - time: Position in beats from the start of the arrangement (e.g. 8.0 = bar 3 in 4/4)
@@ -2585,6 +2612,10 @@ def set_arrangement_time(ctx: Context, time: float, user_prompt: str = "") -> st
         ableton = get_ableton_connection()
         result = ableton.send_command("set_current_song_time", {"time": time})
         message = f"Playhead moved to beat {result.get('current_song_time', time)}"
+        if result.get("stopped"):
+            message += (". Live is stopped: start_playback plays from here (it jumps here again once Live plays,"
+                        " as a move made while stopped can be lost); the Push's own Play button may start"
+                        " elsewhere")
         if result.get("warning"):
             message += f". WARNING: {result['warning']}"
         return message
@@ -2609,7 +2640,7 @@ def get_arrangement_clips(ctx: Context, track_index: int, user_prompt: str = "")
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_arrangement_clips", {"track_index": track_index})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting arrangement clips: {str(e)}")
         return f"Error getting arrangement clips: {str(e)}"
@@ -2665,6 +2696,186 @@ def duplicate_to_arrangement(
         return f"Error duplicating clip to arrangement: {str(e)}"
 
 
+# A cap on one plan's copies, so a typo (bars=1000) cannot fill the Arrangement for minutes.
+ARRANGE_MAX_COPIES = 400
+
+
+def _arrange_track(key: str, names: List[str]) -> int:
+    """A plan's track: its exact name, or its index (digits) when no track has that name."""
+    if key in names:
+        if names.count(key) > 1:
+            raise ValueError("two tracks are named '%s'; use the index" % key)
+        return names.index(key)
+    if str(key).strip().lstrip("#").isdigit():
+        index = int(str(key).strip().lstrip("#"))
+        if 0 <= index < len(names):
+            return index
+        raise ValueError("track %d is out of range (the set has %d tracks)" % (index, len(names)))
+    raise ValueError("no track is named '%s'" % key)
+
+
+def _arrange_plan(sections: list, tracks: list, bar_beats: float) -> tuple:
+    """The copies a plan makes: [{section, track, track_name, slot, clip, start, end, trim_to}] in order,
+    and the sections with their beats. Raises ValueError for a plan that cannot be laid out."""
+    names = [t["name"] for t in tracks]
+    copies, laid, next_bar = [], [], 1.0
+    for n, section in enumerate(sections):
+        if not isinstance(section, dict):
+            raise ValueError("section %d is not an object" % (n + 1))
+        label = section.get("name") or "section %d" % (n + 1)
+        start_bar = float(section.get("start_bar", next_bar))
+        bars = section.get("bars")
+        if isinstance(bars, bool) or not isinstance(bars, (int, float)) or bars <= 0:
+            raise ValueError("'%s' needs bars (above 0)" % label)
+        if start_bar < 1:
+            raise ValueError("'%s' starts at bar %g; bar 1 is the start" % (label, start_bar))
+        start, end = (start_bar - 1) * bar_beats, (start_bar - 1 + bars) * bar_beats
+        parts = {}
+        scene = section.get("scene")
+        if scene is not None:
+            for i, t in enumerate(tracks):
+                slots = t.get("clip_slots") or []
+                if 0 <= scene < len(slots) and slots[scene].get("has_clip"):
+                    parts[i] = scene
+        for key, slot in (section.get("clips") or {}).items():
+            index = _arrange_track(str(key), names)
+            if slot is None:
+                # drops a track the scene brought in
+                parts.pop(index, None)
+            else:
+                parts[index] = slot
+        if not parts:
+            raise ValueError("'%s' has no clips (give scene and/or clips)" % label)
+        for index in sorted(parts):
+            slot, slots = parts[index], tracks[index].get("clip_slots") or []
+            if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < len(slots) \
+                    or not slots[slot].get("has_clip"):
+                raise ValueError("'%s': '%s' has no Session clip in slot %s" % (label, names[index], slot))
+            clip = slots[slot]["clip"] or {}
+            length = float(clip.get("length") or 0)
+            if length <= 0:
+                raise ValueError("'%s': the clip in '%s' slot %d has no length" % (label, names[index], slot))
+            at = start
+            while at < end - 1e-6:
+                copies.append({"section": label, "track": index, "track_name": names[index], "slot": slot,
+                               "clip": clip.get("name"), "start": at, "end": at + length,
+                               "trim_to": end if at + length > end + 1e-6 else None})
+                at += length
+        laid.append({"name": label, "bars": "%g-%g" % (start_bar, start_bar + bars - 1),
+                     "start_beat": start, "end_beat": end, "tracks": [names[i] for i in sorted(parts)]})
+        next_bar = start_bar + bars
+    return copies, laid
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
+@telemetry_tool("arrange_sections")
+@trajectory_tool("arrange_sections")
+def arrange_sections(ctx: Context, sections: List[Dict[str, Any]], confirm: bool = False,
+                     user_prompt: str = "") -> str:
+    """
+    Lay a whole song plan of Session clips into the Arrangement in one call, in two steps (instead of
+    one duplicate_to_arrangement per clip). Each section names where it goes and which clips play; each
+    clip repeats every its own length from the section's start, and a copy that runs past the section's
+    end is cut there. The copies replace what the Arrangement has under them on those tracks (Live's
+    undo brings it back). Step 1 (confirm=false, default) shows the sections, the copies and the
+    Arrangement clips they would replace; step 2 is the same call with confirm=true.
+
+    Parameters:
+    - sections: In song order, e.g.
+      [{"name": "Intro", "bars": 8, "clips": {"Chords": 0}},
+       {"name": "Drop", "bars": 16, "scene": 4, "clips": {"Hats": null}}]
+      Each section: bars (its length); start_bar (1 = the start; default right after the previous
+      section); scene (every track's clip in that scene row); clips ({track: slot}, a track's exact
+      name or its index; added to the scene's, or null to leave a track out); name (for the report).
+    - confirm: false = preview only (default), true = place the clips
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if not isinstance(sections, list) or not sections:
+            return "Error: sections must be a list of at least one section. Nothing was changed."
+        overview = _live("get_tracks_overview")
+        numerator, denominator = (int(n) for n in str(overview["time_signature"]).split("/"))
+        bar_beats = numerator * 4.0 / denominator
+        tracks = _live("get_session_snapshot", {"include_notes": False, "include_params": False})["tracks"]
+        try:
+            copies, laid = _arrange_plan(sections, tracks, bar_beats)
+        except ValueError as e:
+            return "Error: %s. Nothing was changed." % e
+        if len(copies) > ARRANGE_MAX_COPIES:
+            return ("Error: the plan makes %d copies; at most %d in one call. Split it into several calls. "
+                    "Nothing was changed." % (len(copies), ARRANGE_MAX_COPIES))
+
+        # what is in the way, per track: replaced inside the sections, and a cut copy must not spill onto a clip
+        replaced, spill = [], []
+        for index in sorted({c["track"] for c in copies}):
+            existing = _live("get_arrangement_clips", {"track_index": index}).get("clips", [])
+            ranges = [(s["start_beat"], s["end_beat"]) for s in laid if tracks[index]["name"] in s["tracks"]]
+            for clip in existing:
+                a, b = float(clip["start_time"]), float(clip["end_time"])
+                if any(a < hi and b > lo for lo, hi in ranges):
+                    replaced.append({"track": tracks[index]["name"], "clip": clip.get("name"), "start_beat": a,
+                                     "end_beat": b})
+            for copy in copies:
+                if copy["track"] == index and copy["trim_to"] is not None:
+                    hit = [c for c in existing if float(c["start_time"]) < copy["end"]
+                           and float(c["end_time"]) > copy["trim_to"]]
+                    if hit:
+                        spill.append("'%s' slot %d at beat %g is %g beats long and runs to beat %g, over '%s' at "
+                                     "beat %g, before it is cut at %g"
+                                     % (copy["track_name"], copy["slot"], copy["start"], copy["end"] - copy["start"],
+                                        copy["end"], hit[0].get("name"), float(hit[0]["start_time"]), copy["trim_to"]))
+        if spill:
+            return ("Error: %s. Shorten the section to the clip's length or clear that clip first. Nothing was "
+                    "changed." % "; ".join(spill))
+
+        summary = {"sections": laid, "copies": len(copies),
+                   "cut_at_section_end": sum(1 for c in copies if c["trim_to"] is not None),
+                   "replaces": replaced}
+        if not confirm:
+            per_track = {}
+            for c in copies:
+                per_track.setdefault(c["track_name"], []).append(c["start"])
+            summary["copy_starts_by_track"] = per_track
+            return ("NOT CHANGED (preview only). This would happen: " + _dumps(summary)
+                    + "\nTo place the clips, call arrange_sections again with the same sections and confirm=true.")
+
+        started, placed, failed = time.monotonic(), 0, []
+        for c in copies:
+            try:
+                _live("duplicate_session_clip_to_arrangement", {"track_index": c["track"], "clip_index": c["slot"],
+                                                                "destination_time": c["start"]})
+                placed += 1
+                if c["trim_to"] is not None:
+                    _live("trim_arrangement_clip", {"track_index": c["track"], "expected_name": c["track_name"],
+                                                    "clip_start_time": c["start"], "new_end_time": c["trim_to"],
+                                                    "confirm": True})
+            except Exception as e:
+                failed.append("'%s' slot %d at beat %g: %s" % (c["track_name"], c["slot"], c["start"], e))
+                if len(failed) >= 3:
+                    break
+        # read back: each copy is an Arrangement clip starting where it was put
+        missing = []
+        for index in sorted({c["track"] for c in copies}):
+            starts = {round(float(a["start_time"]), 3)
+                      for a in _live("get_arrangement_clips", {"track_index": index}).get("clips", [])}
+            missing += ["'%s' at beat %g" % (c["track_name"], c["start"]) for c in copies
+                        if c["track"] == index and round(c["start"], 3) not in starts]
+        summary.update(placed=placed, seconds=round(time.monotonic() - started, 1))
+        lines = ["Placed %d of %d copies in %d sections (%.1f s). Live's API can't save: save the Set on the "
+                 "Push to keep it." % (placed, len(copies), len(laid), summary["seconds"])]
+        if failed:
+            lines.append("Stopped after errors: %s." % "; ".join(failed))
+        if missing:
+            lines.append("Not found in the Arrangement afterwards: %s." % ", ".join(missing[:10]))
+        summary.pop("replaces")
+        lines.append(_dumps({"sections": laid, "replaced": len(replaced),
+                                 "cut_at_section_end": summary["cut_at_section_end"]}))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error in arrange_sections: {str(e)}")
+        return f"Error in arrange_sections: {str(e)}"
+
+
 def _arrangement_edit(command: str, params: dict, confirm: bool, verb: str) -> str:
     """Shared preview / apply step of the Arrangement clip edits."""
     from .script_handshake import require_capability
@@ -2680,11 +2891,11 @@ def _arrangement_edit(command: str, params: dict, confirm: bool, verb: str) -> s
         preview = ableton.send_command(command, dict(params, confirm=False))
         return (
             "NOT CHANGED (preview only). This would happen: "
-            + json.dumps(preview, indent=2)
+            + _dumps(preview)
             + f"\nTo {verb}, call {command} again with the same arguments and confirm=true."
         )
     result = ableton.send_command(command, dict(params, confirm=True))
-    return f"Done ({verb}). " + json.dumps(result, indent=2)
+    return f"Done ({verb}). " + _dumps(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
@@ -2935,7 +3146,7 @@ def back_to_arrangement(ctx: Context, user_prompt: str = "") -> str:
         if missing:
             return missing
         result = get_ableton_connection().send_command("back_to_arrangement", {})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error going back to the arrangement: {str(e)}")
         return f"Error going back to the arrangement: {str(e)}"
@@ -2967,7 +3178,7 @@ def get_track_routing(
             return missing
         result = get_ableton_connection().send_command(
             "get_track_routing", {"track_index": track_index, "track_type": track_type})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting track routing: {str(e)}")
         return f"Error getting track routing: {str(e)}"
@@ -3021,7 +3232,7 @@ def set_track_routing(
         if routing_channel is not None:
             params["routing_channel"] = routing_channel
         result = get_ableton_connection().send_command("set_track_routing", params)
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error setting track routing: {str(e)}")
         return f"Error setting track routing: {str(e)}"
@@ -3033,7 +3244,7 @@ def _json_call(command: str, params: dict, error_label: str) -> str:
     missing = require_capability(command)
     if missing:
         return missing
-    return json.dumps(get_ableton_connection().send_command(command, params), indent=2)
+    return _dumps(get_ableton_connection().send_command(command, params))
 
 
 @mcp.tool()
@@ -3594,7 +3805,7 @@ def list_sound_tags(ctx: Context, prefix: str = "", user_prompt: str = "") -> st
         if not items:
             return json.dumps({"error": "no tag files found", "roots": [str(r) for r in sound_tags.default_roots()],
                                "hint": "set ABLETON_LIBRARY_ROOTS to the folder holding Live's libraries"})
-        return json.dumps({"items_tagged": len(items), "tags": sound_tags.vocabulary(items, prefix)}, indent=1)
+        return _dumps({"items_tagged": len(items), "tags": sound_tags.vocabulary(items, prefix)})
     except Exception as e:
         logger.error(f"Error listing sound tags: {str(e)}")
         return f"Error listing sound tags: {str(e)}"
@@ -3669,7 +3880,7 @@ def search_sounds_by_tags(
         reply.update({"checked": checked, "not_in_browser": unavailable, "count": len(results),
                       "truncated": checked < len(hits) and len(results) < limit,
                       "results": results})
-        return json.dumps(reply, indent=1)
+        return _dumps(reply)
     except Exception as e:
         logger.error(f"Error searching sounds by tag: {str(e)}")
         return f"Error searching sounds by tag: {str(e)}"
@@ -4939,8 +5150,10 @@ _LISTEN_MAIN = "Main"
 _LISTEN_MAIN_CHANNEL = "Post FX"
 
 
-def _listen_refusal(overview: dict, index: int, expected_name: str, source: Optional[str] = None) -> Optional[str]:
-    """Why listen must not record on this track (from `source`, when given), or None. Nothing is changed."""
+def _listen_refusal(overview: dict, index: int, expected_name: str, source: Optional[str] = None,
+                    needs_playing: bool = True) -> Optional[str]:
+    """Why listen must not record on this track (from `source`, when given), or None. Nothing is changed.
+    needs_playing=False: listen starts Live itself (at_beat, scene)."""
     tracks = overview.get("tracks", [])
     if not 0 <= index < len(tracks):
         return "Error: track index %d out of range (the set has %d tracks)." % (index, len(tracks))
@@ -4966,9 +5179,9 @@ def _listen_refusal(overview: dict, index: int, expected_name: str, source: Opti
     if row.get("monitoring") != "off":
         return ("Error: monitoring on '%s' is '%s'; it must be 'off' so the take cannot play back into "
                 "what it records. Nothing was recorded. %s" % (expected_name, row.get("monitoring"), setup))
-    if not overview.get("is_playing"):
+    if needs_playing and not overview.get("is_playing"):
         return ("Error: Live is not playing, so the take would be silent. Nothing was recorded. "
-                "Fire the clips (or start playback) first.")
+                "Fire the clips (or start playback) first, or listen with at_beat or scene.")
     return None
 
 
@@ -5089,6 +5302,148 @@ def _record_take(index: int, slot: int, expected_name: str, bars: float, spb: fl
     return take
 
 
+# Several parts in one call: one pass each, one after another.
+LISTEN_MAX_PASSES = 4
+# in `sources`: the whole mix, as listen takes it without a source
+_LISTEN_MIX = "mix"
+
+
+def _listen_cue_refusal(at_beat: Optional[float], scene: Optional[int], grid: float, bar_beats: float) -> Optional[str]:
+    """Why listen cannot start its takes at at_beat (on this launch grid, in beats) or scene, or None."""
+    if at_beat is not None and scene is not None:
+        return "Error: give at_beat (the Arrangement) or scene (the Session), not both. Nothing was recorded."
+    if scene is not None and (isinstance(scene, bool) or scene < 0):
+        return "Error: scene must be a scene index (0 or more). Nothing was recorded."
+    if at_beat is None:
+        return None
+    if isinstance(at_beat, bool) or not math.isfinite(float(at_beat)) or at_beat < 0:
+        return "Error: at_beat must be 0 or later. Nothing was recorded."
+    steps = float(at_beat) / grid
+    if abs(steps - round(steps)) > 1e-6:
+        below, above = math.floor(steps) * grid, math.ceil(steps) * grid
+        return ("Error: a take starts on the launch grid (every %g beats here), and at_beat %g is between %g "
+                "(bar %g) and %g (bar %g). Nothing was recorded." % (grid, at_beat, below, below / bar_beats + 1,
+                                                                   above, above / bar_beats + 1))
+    return None
+
+
+def _listen_cue(at_beat: Optional[float], scene: Optional[int], grid: float) -> None:
+    """Right before a take is fired: put Live where the take is to start. The take fires on the next grid
+    line, so the playhead goes one grid step before at_beat (Play first, then the jump: a move made while
+    stopped can be lost); at beat 0 there is no room for that, so Live is stopped at 0 and the take's own
+    launch starts it there. A scene is fired just before the take, so both launch on the same line."""
+    if at_beat is not None:
+        if at_beat < grid:
+            _live("stop_playback")
+            _live("set_current_song_time", {"time": 0.0})
+        else:
+            _live("start_playback", {"at_beat": at_beat - grid})
+            _listen_sleep(0.3)
+    elif scene is not None:
+        if not _live("get_session_info").get("is_playing"):
+            _live("start_playback")
+            _listen_sleep(0.2)
+        _live("fire_scene", {"scene_index": scene})
+
+
+def _listen_pass(index: int, expected_name: str, clip_index: Optional[int], bars: float, spb: float,
+                 source: Optional[str], quiet: bool, keep: bool, bars_per_row: Optional[int], silence_db: float,
+                 spectrogram: bool, window: Optional[tuple], max_hz: Optional[float], cue,
+                 read: Optional[tuple] = None) -> tuple:
+    """One take: route the scratch track to `source`, arm it, cue Live (cue()), record, put everything
+    back, measure and delete the take's clip. read: (overview, slots) just read, for the first pass.
+    Returns (text, image or None); the text starts with "Error" when no take came."""
+    overview, slots = read or (_live("get_tracks_overview"),
+                               _live("get_track_info", {"track_index": index}).get("clip_slots", []))
+    if clip_index is None:
+        free = [s["index"] for s in slots if not s.get("has_clip")]
+        if not free:
+            return ("Error: '%s' has no empty slot; delete a clip on it or create_scene. Nothing was recorded."
+                    % expected_name), None
+        slot = free[0]
+    else:
+        slot = clip_index
+    tap = _mix_source(index, source)
+    armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
+
+    did, notes, take, routed, main_before = [], [], None, None, None
+    try:
+        if tap is not None:
+            routed, now = _route_scratch(index, expected_name, tap)
+            did.append("took its input from '%s'%s"
+                       % (now.get("type"), " (%s)" % now["channel"] if now.get("channel") else ""))
+        if quiet:
+            main_before = _live("get_track_info", {"track_index": 0, "track_type": "master"}).get("volume")
+            if main_before:
+                _live("set_track_volume", {"track_index": 0, "value": 0.0, "track_type": "master"})
+                did.append("turned Main all the way down")
+            else:
+                main_before = None
+        if index not in armed_before:
+            _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
+                                    "expected_name": expected_name})
+            did.append("armed it for the take")
+        cue()
+        take = _record_take(index, slot, expected_name, bars, spb, did, notes)
+    finally:
+        try:
+            restore = [(index, False)] if index not in armed_before else []
+            now_armed = {t["index"] for t in _live("get_tracks_overview").get("tracks", []) if t.get("arm")}
+            # Live's Exclusive Arm disarms the others when one track is armed
+            rearm = sorted(armed_before - now_armed - {index})
+            for i, arm in restore + [(i, True) for i in rearm]:
+                _live("set_track_arm", {"track_index": i, "enabled": arm, "track_type": "track"})
+            if restore:
+                did.append("disarmed it again")
+            if rearm:
+                did.append("re-armed track(s) %s, which Exclusive Arm had disarmed"
+                           % ", ".join(map(str, rearm)))
+        finally:
+            if main_before is not None:
+                try:
+                    put = _live("set_track_volume", {"track_index": 0, "value": main_before,
+                                                     "track_type": "master"})
+                    did.append("put Main back to %s" % put.get("display", main_before))
+                except Exception as e:
+                    notes.append("Main could not be put back to %s (%s); set it with set_track_volume"
+                                 % (main_before, e))
+            if routed is not None:
+                try:
+                    _unroute_scratch(index, expected_name, routed)
+                    did.append("put its input back to '%s'" % routed["type"])
+                except Exception as e:
+                    notes.append("its input could not be put back to '%s' (%s); set it with set_track_routing"
+                                 % (routed["type"], e))
+    if take is None:
+        return ("Error: no take was recorded on '%s' (%s). Is the transport still playing?"
+                % (expected_name, "; ".join(did + notes) or "nothing changed")), None
+
+    path = None
+    try:
+        path = _live("get_audio_clip_info", {"track_index": index, "clip_index": slot}).get("file_path")
+        if not path:
+            raise _listen.ListenError("Live reports no file for the take")
+        _wait_for_file(path)
+        result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
+    finally:
+        if keep:
+            did.append("kept the take in slot %d" % slot)
+        else:
+            _live("delete_clip", {"track_index": index, "clip_index": slot})
+            did.append("deleted the take's clip (the WAV stays)")
+    lines = ["Listened on '%s' (track %d) at %s bpm %s: %s."
+             % (expected_name, index, overview["tempo"], overview["time_signature"], "; ".join(did))]
+    lines += ["Note: %s." % n for n in notes]
+    lines += ["File: %s" % path, _listen.format_report(result)]
+    if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
+        lines.append("The take is silent: check that the clips play and nothing is muted%s."
+                     % ("" if tap == _LISTEN_MAIN or source is not None else
+                        " and Main is up (the take was recorded after the Main fader)"))
+    # the WAV outlives the clip, so the picture can be drawn after the clip is gone
+    out = _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"), window, max_hz)
+    return (out[0], out[1]) if isinstance(out, list) else (out, None)
+
+
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
 @telemetry_tool("listen")
 @trajectory_tool("listen")
@@ -5106,12 +5461,17 @@ def listen(
     spectrogram_bars: Optional[str] = None,
     spectrogram_max_hz: Optional[float] = None,
     quiet: bool = False,
+    at_beat: Optional[float] = None,
+    scene: Optional[int] = None,
+    sources: Optional[List[str]] = None,
     user_prompt: str = "",
 ):
     """
     Hear what Live is playing: record `bars` of Live's own output on a scratch audio track, measure
     the take with ffmpeg (as analyze_audio_clip does: loudness, peak, RMS, silence and a per-bar
-    level and band table) and delete the take's clip. Start playback or fire the clips first. The
+    level and band table) and delete the take's clip. Start playback or fire the clips first, or let
+    listen do it: at_beat plays the Arrangement from that beat, scene fires a Session scene with the
+    take (from stopped, Live is stopped again and the playhead put back afterwards). The
     take starts at the next launch quantization, so a pass takes up to a bar longer than its length
     (more at "2 bars" and up), plus a moment to measure. The launch quantization must be whole bars
     ("bar", "2 bars", "4 bars", "8 bars") so the table's rows are bars; set it with
@@ -5149,31 +5509,49 @@ def listen(
     - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
       or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
     - quiet: True = Main is turned all the way down during the take and put back after (silent room)
+    - at_beat: Listen to the Arrangement from this beat (a line on the launch grid, e.g. 128 = bar 33 in
+      4/4): Live plays from one grid step before it and the take starts on it. Session clips that play
+      override the Arrangement on their tracks (back_to_arrangement first).
+    - scene: Fire this Session scene with the take (its index), so the take starts with the scene
+    - sources: Several parts in one call, up to 4, one take each after the other (each again from
+      at_beat or with the scene), e.g. ["2-Drums", "3-Bass", "mix"]; "mix" is the whole mix
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
+        from .script_handshake import script_has_capability
+
         if not _listen.find_ffmpeg():
             return "Error: ffmpeg was not found where the MCP server runs, so nothing can be measured."
         if isinstance(bars, bool) or not 0 < float(bars) <= LISTEN_MAX_BARS:
             return "Error: bars must be above 0 and at most %d." % LISTEN_MAX_BARS
         bars, index = float(bars), scratch_track_index
+        if sources is not None:
+            if source is not None:
+                return "Error: give source (one part) or sources (several), not both. Nothing was recorded."
+            if not sources or len(sources) > LISTEN_MAX_PASSES:
+                return "Error: sources takes 1 to %d parts. Nothing was recorded." % LISTEN_MAX_PASSES
+            if len(sources) > 1 and clip_index is not None:
+                return ("Error: several sources record one take each, into the first empty slot; leave "
+                        "clip_index out. Nothing was recorded.")
+        passes = [None if part == _LISTEN_MIX else part for part in sources] if sources else [source]
+        cued = at_beat is not None or scene is not None
+        if at_beat is not None and not script_has_capability("start_playback_at_beat"):
+            return ("Error: at_beat needs the Remote Script 1.10.26 or later on the Push (it plays first and "
+                    "jumps after, as a move made while stopped can be lost). Nothing was recorded.")
         overview = _live("get_tracks_overview")
-        refusal = _listen_refusal(overview, index, expected_name, source)
-        if refusal:
-            return refusal
+        for part in passes:
+            refusal = _listen_refusal(overview, index, expected_name, part, needs_playing=not cued)
+            if refusal:
+                return refusal
         slots = _live("get_track_info", {"track_index": index}).get("clip_slots", [])
         if clip_index is None:
-            free = [s["index"] for s in slots if not s.get("has_clip")]
-            if not free:
+            if all(s.get("has_clip") for s in slots):
                 return ("Error: '%s' has no empty slot; delete a clip on it or create_scene. Nothing was recorded."
                         % expected_name)
-            slot = free[0]
         elif not 0 <= clip_index < len(slots):
             return "Error: slot %d out of range ('%s' has %d slots)." % (clip_index, expected_name, len(slots))
         elif slots[clip_index].get("has_clip"):
             return "Error: slot %d on '%s' holds a clip; pick an empty one." % (clip_index, expected_name)
-        else:
-            slot = clip_index
         spb = _seconds_per_bar(overview["tempo"], overview["time_signature"])
         try:
             window, max_hz = _spectrogram_options(spectrogram_bars, spectrogram_max_hz, spb, bars)
@@ -5185,88 +5563,54 @@ def listen(
                                              window)
         if refusal:
             return refusal
-        tap = _mix_source(index, source)
-        if quiet and tap is None and (_live("get_track_routing", {"track_index": index}).get("input") or {}).get(
-                "type") == "Resampling":
-            return ("Error: '%s' records Resampling, which comes after the Main fader, and Live offers no Main "
-                    "input to take instead, so with quiet=True the take would be silent. Nothing was recorded."
-                    % expected_name)
-        armed_before = {t["index"] for t in overview["tracks"] if t.get("arm")}
+        numerator, denominator = (int(n) for n in str(overview["time_signature"]).split("/"))
+        bar_beats = numerator * 4.0 / denominator
+        grid = _LAUNCH_WAIT_BARS[quantization] * bar_beats
+        refusal = _listen_cue_refusal(at_beat, scene, grid, bar_beats)
+        if refusal:
+            return refusal
+        for part in passes:
+            if quiet and _mix_source(index, part) is None and (
+                    _live("get_track_routing", {"track_index": index}).get("input") or {}).get("type") == "Resampling":
+                return ("Error: '%s' records Resampling, which comes after the Main fader, and Live offers no Main "
+                        "input to take instead, so with quiet=True the take would be silent. Nothing was recorded."
+                        % expected_name)
 
-        did, notes, take, routed, main_before = [], [], None, None, None
+        head, texts, images, failed = [], [], [], False
+        playhead_before = _live("get_session_info").get("current_song_time") if cued else None
+        if at_beat is not None:
+            head.append("Each take is bars %g-%g of the Arrangement (from beat %g)."
+                        % (at_beat / bar_beats + 1, at_beat / bar_beats + bars, at_beat))
+        elif scene is not None:
+            head.append("Scene %d was fired with each take, so the takes start with it." % scene)
         try:
-            if tap is not None:
-                routed, now = _route_scratch(index, expected_name, tap)
-                did.append("took its input from '%s'%s"
-                           % (now.get("type"), " (%s)" % now["channel"] if now.get("channel") else ""))
-            if quiet:
-                main_before = _live("get_track_info", {"track_index": 0, "track_type": "master"}).get("volume")
-                if main_before:
-                    _live("set_track_volume", {"track_index": 0, "value": 0.0, "track_type": "master"})
-                    did.append("turned Main all the way down")
-                else:
-                    main_before = None
-            if index not in armed_before:
-                _live("set_track_arm", {"track_index": index, "enabled": True, "track_type": "track",
-                                        "expected_name": expected_name})
-                did.append("armed it for the take")
-            take = _record_take(index, slot, expected_name, bars, spb, did, notes)
+            for i, part in enumerate(passes):
+                text, image = _listen_pass(index, expected_name, clip_index, bars, spb, part, quiet, keep,
+                                           bars_per_row, silence_db, spectrogram, window, max_hz,
+                                           lambda: _listen_cue(at_beat, scene, grid),
+                                           (overview, slots) if i == 0 else None)
+                failed = text.startswith("Error")
+                texts.append("== %s ==\n%s" % (part or "the whole mix", text) if len(passes) > 1 else text)
+                if image is not None:
+                    images.append(image)
+                if failed:
+                    break
         finally:
-            try:
-                restore = [(index, False)] if index not in armed_before else []
-                now_armed = {t["index"] for t in _live("get_tracks_overview").get("tracks", []) if t.get("arm")}
-                # Live's Exclusive Arm disarms the others when one track is armed
-                rearm = sorted(armed_before - now_armed - {index})
-                for i, arm in restore + [(i, True) for i in rearm]:
-                    _live("set_track_arm", {"track_index": i, "enabled": arm, "track_type": "track"})
-                if restore:
-                    did.append("disarmed it again")
-                if rearm:
-                    did.append("re-armed track(s) %s, which Exclusive Arm had disarmed"
-                               % ", ".join(map(str, rearm)))
-            finally:
-                if main_before is not None:
-                    try:
-                        put = _live("set_track_volume", {"track_index": 0, "value": main_before,
-                                                         "track_type": "master"})
-                        did.append("put Main back to %s" % put.get("display", main_before))
-                    except Exception as e:
-                        notes.append("Main could not be put back to %s (%s); set it with set_track_volume"
-                                     % (main_before, e))
-                if routed is not None:
-                    try:
-                        _unroute_scratch(index, expected_name, routed)
-                        did.append("put its input back to '%s'" % routed["type"])
-                    except Exception as e:
-                        notes.append("its input could not be put back to '%s' (%s); set it with set_track_routing"
-                                     % (routed["type"], e))
-        if take is None:
-            return ("Error: no take was recorded on '%s' (%s). Is the transport still playing?"
-                    % (expected_name, "; ".join(did + notes) or "nothing changed"))
-
-        path = None
-        try:
-            path = _live("get_audio_clip_info", {"track_index": index, "clip_index": slot}).get("file_path")
-            if not path:
-                raise _listen.ListenError("Live reports no file for the take")
-            _wait_for_file(path)
-            result = _listen.analyze_file(path, spb, bars_per_row, silence_db)
-        finally:
-            if keep:
-                did.append("kept the take in slot %d" % slot)
-            else:
-                _live("delete_clip", {"track_index": index, "clip_index": slot})
-                did.append("deleted the take's clip (the WAV stays)")
-        lines = ["Listened on '%s' (track %d) at %s bpm %s: %s."
-                 % (expected_name, index, overview["tempo"], overview["time_signature"], "; ".join(did))]
-        lines += ["Note: %s." % n for n in notes]
-        lines += ["File: %s" % path, _listen.format_report(result)]
-        if result.get("integrated_lufs") is not None and result["integrated_lufs"] <= -70.0:
-            lines.append("The take is silent: check that the clips play and nothing is muted%s."
-                         % ("" if tap == _LISTEN_MAIN or source is not None else
-                            " and Main is up (the take was recorded after the Main fader)"))
-        # the WAV outlives the clip, so the picture can be drawn after the clip is gone
-        return _with_spectrogram("\n".join(lines), path, spectrogram, result.get("duration"), window, max_hz)
+            if cued and not overview.get("is_playing"):
+                _live("stop_playback")
+                if playhead_before is not None:
+                    _live("set_current_song_time", {"time": playhead_before})
+                head.append("Live was stopped before, so it was stopped again%s." % (
+                    " and the playhead put back to beat %g" % playhead_before if playhead_before is not None else ""))
+            elif at_beat is not None:
+                head.append("Live was playing before, so it plays on from there.")
+            if scene is not None:
+                head.append("The tracks with clips in scene %d play their Session clips until back_to_arrangement."
+                            % scene)
+        if failed and len(texts) < len(passes):
+            texts.append("Stopped after that pass; the parts after it were not recorded.")
+        text = "\n\n".join(([" ".join(head)] if head else []) + texts)
+        return [text] + images if images else text
     except Exception as e:
         logger.error(f"Error in listen: {str(e)}")
         return f"Error in listen: {str(e)}"
@@ -5596,12 +5940,12 @@ def delete_locator(
             preview = ableton.send_command("delete_locator", dict(params, dry_run=True))
             return (
                 "NOT DELETED (preview only). This would delete: "
-                + json.dumps(preview, indent=2)
+                + _dumps(preview)
                 + "\nTo delete, call delete_locator again with the same time "
                 "and expected_name and confirm=true."
             )
         result = ableton.send_command("delete_locator", dict(params, dry_run=False))
-        return "Deleted locator. " + json.dumps(result, indent=2)
+        return "Deleted locator. " + _dumps(result)
     except Exception as e:
         logger.error(f"Error deleting locator: {str(e)}")
         return f"Error deleting locator: {str(e)}"
@@ -5895,7 +6239,7 @@ def get_mixer(ctx: Context, track_index: int = 0, track_type: str = "track",
             "track_index": track_index,
             "track_type": track_type
         })
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error getting mixer: {str(e)}")
         return f"Error getting mixer: {str(e)}"
@@ -6050,7 +6394,7 @@ def create_return_track(ctx: Context, name: str = "", user_prompt: str = "") -> 
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("create_return_track", {"name": name})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error creating return track: {str(e)}")
         return f"Error creating return track: {str(e)}"
@@ -6088,7 +6432,7 @@ def load_device_on_return(ctx: Context, return_track_index: int, uri: str,
             "return_track_index": return_track_index,
             "uri": uri,
         })
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error loading device on return track: {str(e)}")
         return f"Error loading device on return track: {str(e)}"
@@ -6114,7 +6458,7 @@ def set_time_signature(ctx: Context, numerator: int, denominator: int, user_prom
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("set_time_signature", {"numerator": numerator, "denominator": denominator})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in set_time_signature: {str(e)}")
         return f"Error in set_time_signature: {str(e)}"
@@ -6141,7 +6485,7 @@ def set_metronome(ctx: Context, enabled: bool, user_prompt: str = "") -> str:
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("set_metronome", {"enabled": enabled})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in set_metronome: {str(e)}")
         return f"Error in set_metronome: {str(e)}"
@@ -6166,7 +6510,7 @@ def get_arrangement_loop(ctx: Context, user_prompt: str = "") -> str:
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("get_arrangement_loop", {})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in get_arrangement_loop: {str(e)}")
         return f"Error in get_arrangement_loop: {str(e)}"
@@ -6195,7 +6539,7 @@ def set_arrangement_loop(ctx: Context, loop_start: Optional[float] = None, loop_
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("set_arrangement_loop", {"loop_start": loop_start, "loop_length": loop_length, "enabled": enabled})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in set_arrangement_loop: {str(e)}")
         return f"Error in set_arrangement_loop: {str(e)}"
@@ -6220,7 +6564,7 @@ def get_cue_points(ctx: Context, user_prompt: str = "") -> str:
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("get_cue_points", {})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in get_cue_points: {str(e)}")
         return f"Error in get_cue_points: {str(e)}"
@@ -6249,7 +6593,7 @@ def jump_to_cue(ctx: Context, direction: str = "next", user_prompt: str = "") ->
             return missing
         ableton = get_ableton_connection()
         result = ableton.send_command("jump_to_cue", {"direction": direction})
-        return json.dumps(result, indent=2)
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error in jump_to_cue: {str(e)}")
         return f"Error in jump_to_cue: {str(e)}"
