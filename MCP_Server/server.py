@@ -3722,6 +3722,20 @@ def duplicate_track(
         return f"Error duplicating track: {str(e)}"
 
 
+def _browser_hit(item: Dict[str, Any]) -> Dict[str, Any]:
+    """One search result without what it repeats: the name (the path ends with it) and the usual flags.
+    Halves the biggest reply of the October 2026 sessions (83 searches, 312k characters)."""
+    if not isinstance(item, dict):
+        return item
+    hit = {"path": item.get("path") or item.get("name"), "uri": item.get("uri")}
+    if item.get("path") and item.get("name") and not item["path"].endswith(item["name"]):
+        hit["name"] = item["name"]
+    for key, usual in (("is_folder", False), ("is_device", False), ("is_loadable", True)):
+        if key in item and bool(item[key]) != usual:
+            hit[key[3:]] = bool(item[key])
+    return hit
+
+
 @mcp.tool()
 @telemetry_tool("search_browser_items")
 def search_browser_items(
@@ -3740,6 +3754,8 @@ def search_browser_items(
     uri that load_instrument_or_effect takes. The search is breadth first (a device
     comes before the presets inside it) and has a time budget: when truncated is
     true, narrow the query or the category. Idea from upstream PR #97 (vanjaoljaca).
+    Each result is its path (category/folders/name) and uri, plus "folder": true, "device": true or
+    "loadable": false where they apply (a loadable, non-device item has no flags).
 
     Parameters:
     - query: Words to look for
@@ -3750,9 +3766,17 @@ def search_browser_items(
     - user_prompt: The original user prompt that led to this tool call (for telemetry)
     """
     try:
-        return _json_call("search_browser_items", {
+        from .script_handshake import require_capability
+
+        missing = require_capability("search_browser_items")
+        if missing:
+            return missing
+        result = get_ableton_connection().send_command("search_browser_items", {
             "query": query, "category": category, "max_results": max_results,
-            "loadable_only": loadable_only, "max_seconds": max_seconds}, "searching the browser")
+            "loadable_only": loadable_only, "max_seconds": max_seconds})
+        if isinstance(result, dict) and isinstance(result.get("results"), list):
+            result = dict(result, results=[_browser_hit(item) for item in result["results"]])
+        return _dumps(result)
     except Exception as e:
         logger.error(f"Error searching the browser: {str(e)}")
         return f"Error searching the browser: {str(e)}"
@@ -5305,6 +5329,56 @@ def _record_take(index: int, slot: int, expected_name: str, bars: float, spb: fl
     return take
 
 
+# The name of the audio track listen and render_song make when no scratch track is given.
+_TEMP_SCRATCH = "Claude Listen (temporary)"
+
+
+def _on_scratch(index: Optional[int], name: Optional[str], forget_wavs: bool, run):
+    """run(index, name) on the scratch track given, or on a temporary audio track made at the end of the
+    Set (input Resampling, monitoring off) and deleted afterwards; forget_wavs also deletes the WAVs its
+    takes left in Samples/Recorded (the reply's "File:" lines)."""
+    if index is not None or name is not None:
+        if index is None or name is None:
+            return ("Error: give scratch_track_index and expected_name together, or neither (then a temporary "
+                    "track is made). Nothing was recorded.")
+        return run(index, name)
+    try:
+        made = _live("create_audio_track", {"index": -1})
+    except Exception as e:
+        return "Error: no temporary scratch track could be made (%s). Nothing was recorded." % e
+    index, name, out = made["index"], made["name"], None
+    try:
+        _live("set_track_name", {"track_index": index, "name": _TEMP_SCRATCH})
+        name = _TEMP_SCRATCH
+        _live("set_track_routing", {"track_index": index, "track_type": "track", "expected_name": name,
+                                    "direction": "input", "routing_type": "Resampling"})
+        _live("set_track_monitoring", {"track_index": index, "state": "off", "expected_name": name})
+        out = run(index, name)
+    finally:
+        try:
+            _live("delete_track", {"track_index": index, "expected_name": name, "dry_run": False})
+            gone = None
+        except Exception as e:
+            gone = e
+    text = out[0] if isinstance(out, list) else out
+    removed = []
+    if forget_wavs:
+        for path in re.findall(r"^File: (.+)$", text, re.M):
+            # only takes Live wrote, never another file a reply names
+            if "/Samples/Recorded/" in path.replace("\\", "/") and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                    removed.append(path)
+                except OSError:
+                    pass
+    line = ("On a temporary audio track '%s' (track %d), made for this call and %s%s."
+            % (name, index, "deleted after" if gone is None else
+               "NOT deleted (%s): delete it with delete_track" % gone,
+               "; its takes' WAVs were deleted too" if removed else ""))
+    text = line + "\n" + text
+    return [text] + out[1:] if isinstance(out, list) else text
+
+
 # Several parts in one call: one pass each, one after another.
 LISTEN_MAX_PASSES = 4
 # in `sources`: the whole mix, as listen takes it without a source
@@ -5447,10 +5521,7 @@ def _listen_pass(index: int, expected_name: str, clip_index: Optional[int], bars
     return (out[0], out[1]) if isinstance(out, list) else (out, None)
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
-@telemetry_tool("listen")
-@trajectory_tool("listen")
-def listen(
+def _listen_on(
     ctx: Context,
     scratch_track_index: int,
     expected_name: str,
@@ -5469,57 +5540,7 @@ def listen(
     sources: Optional[List[str]] = None,
     user_prompt: str = "",
 ):
-    """
-    Hear what Live is playing: record `bars` of Live's own output on a scratch audio track, measure
-    the take with ffmpeg (as analyze_audio_clip does: loudness, peak, RMS, silence and a per-bar
-    level and band table) and delete the take's clip. Start playback or fire the clips first, or let
-    listen do it: at_beat plays the Arrangement from that beat, scene fires a Session scene with the
-    take (from stopped, Live is stopped again and the playhead put back afterwards). The
-    take starts at the next launch quantization, so a pass takes up to a bar longer than its length
-    (more at "2 bars" and up), plus a moment to measure. The launch quantization must be whole bars
-    ("bar", "2 bars", "4 bars", "8 bars") so the table's rows are bars; set it with
-    set_transport_options(clip_trigger_quantization="bar"). A pass is at most 60 s, launch wait
-    included (the error says how many bars fit at the current tempo), and draws a spectrogram only
-    for takes up to 30 s. ffmpeg runs at low priority on one core.
-    The scratch track must already take its input from Live (input "Resampling", "Main" or another
-    track's output) with monitoring "off", so the take cannot feed back into Main; this tool refuses
-    otherwise, and only reroutes for `source` (below). Set one up once: create_audio_track, set_track_routing
-    (direction "input", routing_type "Resampling") and set_track_monitoring "off". It arms the track
-    for the take and leaves every arm as it was (re-arming tracks Live's Exclusive Arm disarmed).
-    The WAV stays in the project's Samples/Recorded folder (Live keeps track of project files).
-    One part at a time: source names a track (or a return, or "Main") as the scratch track's input
-    list shows it, e.g. "2-Ac Strings Pizz Basic". For the take the scratch track listens to that
-    track's Post Mixer output (its fader and pan; not its sends, so no reverb or delay return) and
-    afterwards its input is put back as it was. Nothing changes in what the user hears. Is the hook
-    masked? Is the low end the kick or the bass? Compare a part with the whole mix.
-    The whole mix is taken before the Main fader: a scratch track on "Resampling" (after the fader, so
-    silent with Main down) listens to Main's "Post FX" tap for the take, so the level does not depend
-    on where the user left Main. quiet=True also turns Main all the way down for the take and puts it
-    back afterwards: nothing reaches the speakers while Claude listens.
-
-    Parameters:
-    - scratch_track_index: The scratch audio track
-    - expected_name: Its exact current name (safety check)
-    - bars: Bars to record (default 2, at most 32, and at most 60 s with the launch wait)
-    - clip_index: The empty slot to record into (default: the track's first empty slot)
-    - keep: True keeps the take's clip in its slot (default false: deleted after measuring)
-    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - spectrogram: Also return a spectrogram image (about 600 tokens, and about a second per second
-      of audio drawn; at most 30 s, so pick bars of a longer take with spectrogram_bars)
-    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
-    - source: Record only this track's output instead of the scratch track's own input (see above)
-    - spectrogram_bars: Draw only these bars of the take, e.g. "13-16" or "4" (implies spectrogram)
-    - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
-      or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
-    - quiet: True = Main is turned all the way down during the take and put back after (silent room)
-    - at_beat: Listen to the Arrangement from this beat (a line on the launch grid, e.g. 128 = bar 33 in
-      4/4): Live plays from one grid step before it and the take starts on it. Session clips that play
-      override the Arrangement on their tracks (back_to_arrangement first).
-    - scene: Fire this Session scene with the take (its index), so the take starts with the scene
-    - sources: Several parts in one call, up to 4, one take each after the other (each again from
-      at_beat or with the scene), e.g. ["2-Drums", "3-Bass", "mix"]; "mix" is the whole mix
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
-    """
+    """The body of listen, on the scratch track given."""
     try:
         from .script_handshake import script_has_capability
 
@@ -5619,6 +5640,92 @@ def listen(
         return f"Error in listen: {str(e)}"
 
 
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
+@telemetry_tool("listen")
+@trajectory_tool("listen")
+def listen(
+    ctx: Context,
+    scratch_track_index: Optional[int] = None,
+    expected_name: Optional[str] = None,
+    bars: float = 2.0,
+    clip_index: Optional[int] = None,
+    keep: bool = False,
+    bars_per_row: Optional[int] = None,
+    spectrogram: bool = False,
+    silence_db: float = -50.0,
+    source: Optional[str] = None,
+    spectrogram_bars: Optional[str] = None,
+    spectrogram_max_hz: Optional[float] = None,
+    quiet: bool = False,
+    at_beat: Optional[float] = None,
+    scene: Optional[int] = None,
+    sources: Optional[List[str]] = None,
+    user_prompt: str = "",
+):
+    """
+    Hear what Live is playing: record `bars` of Live's own output on a scratch audio track, measure
+    the take with ffmpeg (as analyze_audio_clip does: loudness, peak, RMS, silence and a per-bar
+    level and band table) and delete the take's clip. Start playback or fire the clips first, or let
+    listen do it: at_beat plays the Arrangement from that beat, scene fires a Session scene with the
+    take (from stopped, Live is stopped again and the playhead put back afterwards). The
+    take starts at the next launch quantization, so a pass takes up to a bar longer than its length
+    (more at "2 bars" and up), plus a moment to measure. The launch quantization must be whole bars
+    ("bar", "2 bars", "4 bars", "8 bars") so the table's rows are bars; set it with
+    set_transport_options(clip_trigger_quantization="bar"). A pass is at most 60 s, launch wait
+    included (the error says how many bars fit at the current tempo), and draws a spectrogram only
+    for takes up to 30 s. ffmpeg runs at low priority on one core.
+    The scratch track must already take its input from Live (input "Resampling", "Main" or another
+    track's output) with monitoring "off", so the take cannot feed back into Main; this tool refuses
+    otherwise, and only reroutes for `source` (below). Set one up once: create_audio_track, set_track_routing
+    (direction "input", routing_type "Resampling") and set_track_monitoring "off". Without
+    scratch_track_index, listen makes a temporary one at the end of the Set for the call and deletes it
+    afterwards, with its takes' WAVs (Live's undo history gets those steps). It arms the track
+    for the take and leaves every arm as it was (re-arming tracks Live's Exclusive Arm disarmed).
+    The WAV stays in the project's Samples/Recorded folder (Live keeps track of project files).
+    One part at a time: source names a track (or a return, or "Main") as the scratch track's input
+    list shows it, e.g. "2-Ac Strings Pizz Basic". For the take the scratch track listens to that
+    track's Post Mixer output (its fader and pan; not its sends, so no reverb or delay return) and
+    afterwards its input is put back as it was. Nothing changes in what the user hears. Is the hook
+    masked? Is the low end the kick or the bass? Compare a part with the whole mix.
+    The whole mix is taken before the Main fader: a scratch track on "Resampling" (after the fader, so
+    silent with Main down) listens to Main's "Post FX" tap for the take, so the level does not depend
+    on where the user left Main. quiet=True also turns Main all the way down for the take and puts it
+    back afterwards: nothing reaches the speakers while Claude listens.
+
+    Parameters:
+    - scratch_track_index: The scratch audio track (default: a temporary one, see above)
+    - expected_name: Its exact current name (safety check; give both or neither)
+    - bars: Bars to record (default 2, at most 32, and at most 60 s with the launch wait)
+    - clip_index: The empty slot to record into (default: the track's first empty slot)
+    - keep: True keeps the take's clip in its slot (default false: deleted after measuring)
+    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
+    - spectrogram: Also return a spectrogram image (about 600 tokens, and about a second per second
+      of audio drawn; at most 30 s, so pick bars of a longer take with spectrogram_bars)
+    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - source: Record only this track's output instead of the scratch track's own input (see above)
+    - spectrogram_bars: Draw only these bars of the take, e.g. "13-16" or "4" (implies spectrogram)
+    - spectrogram_max_hz: Draw only up to this frequency (200-20000 Hz), e.g. 2000 to see a voice's
+      or a bass line's notes more closely (implies spectrogram; default up to half the sample rate)
+    - quiet: True = Main is turned all the way down during the take and put back after (silent room)
+    - at_beat: Listen to the Arrangement from this beat (a line on the launch grid, e.g. 128 = bar 33 in
+      4/4): Live plays from one grid step before it and the take starts on it. Session clips that play
+      override the Arrangement on their tracks (back_to_arrangement first).
+    - scene: Fire this Session scene with the take (its index), so the take starts with the scene
+    - sources: Several parts in one call, up to 4, one take each after the other (each again from
+      at_beat or with the scene), e.g. ["2-Drums", "3-Bass", "mix"]; "mix" is the whole mix
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    if keep and scratch_track_index is None:
+        return ("Error: keep needs a scratch track of your own: a temporary track and its clips are deleted "
+                "afterwards. Nothing was recorded.")
+    return _on_scratch(scratch_track_index, expected_name, True,
+                       lambda index, name: _listen_on(
+                           ctx, index, name, bars=bars, clip_index=clip_index, keep=keep, bars_per_row=bars_per_row,
+                           spectrogram=spectrogram, silence_db=silence_db, source=source,
+                           spectrogram_bars=spectrogram_bars, spectrogram_max_hz=spectrogram_max_hz, quiet=quiet,
+                           at_beat=at_beat, scene=scene, sources=sources, user_prompt=user_prompt))
+
+
 # A render plays in real time; a cap so a wrong end_bar cannot keep Live recording for an hour.
 RENDER_MAX_SECONDS = 600.0
 _RENDER_POLL_SECONDS = 1.0
@@ -5634,10 +5741,7 @@ def _render_take(index: int, start: float, end: float) -> Optional[tuple]:
     return None
 
 
-@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
-@telemetry_tool("render_song")
-@trajectory_tool("render_song")
-def render_song(
+def _render_song_on(
     ctx: Context,
     scratch_track_index: int,
     expected_name: str,
@@ -5649,30 +5753,7 @@ def render_song(
     confirm: bool = False,
     user_prompt: str = "",
 ) -> str:
-    """
-    Render the Arrangement (or bars of it) to a WAV in real time and measure it: Arrangement-record the
-    whole mix (Main before its fader, as listen takes it) onto the scratch track from start_bar to the
-    end of end_bar, then measure it with ffmpeg (loudness, peak, a per-bar table folded into at most
-    32 rows) and delete the take's Arrangement clip, so it cannot double the song. The WAV stays in the
-    project's Samples/Recorded folder. Live must be stopped and the Arrangement loop off; it plays from
-    start_bar (count-in bars play first as pre-roll) and is stopped and the playhead put back after.
-    Other armed tracks are disarmed for the take and re-armed after, so only the scratch track records.
-    Stopping Live on the Push ends the render early; what was recorded is measured. Session clips that
-    play override the Arrangement on their tracks (back_to_arrangement first). The scratch track is set
-    up as for listen (input Resampling or Main, monitoring off). At most 10 minutes.
-    Two steps: confirm=false (default) shows the bars, the length and what is set up; confirm=true runs it.
-
-    Parameters:
-    - scratch_track_index: The scratch audio track
-    - expected_name: Its exact current name (safety check)
-    - start_bar: First bar (default 1)
-    - end_bar: Last bar, included (default: the last bar with anything in the Arrangement)
-    - quiet: True (default) = Main all the way down during the render and put back after (silent room)
-    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
-    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
-    - confirm: false = preview only (default), true = render
-    - user_prompt: The original user prompt that led to this tool call (for telemetry)
-    """
+    """The body of render_song, on the scratch track given."""
     try:
         if not _listen.find_ffmpeg():
             return "Error: ffmpeg was not found where the MCP server runs, so nothing can be measured."
@@ -5825,6 +5906,103 @@ def render_song(
     except Exception as e:
         logger.error(f"Error in render_song: {str(e)}")
         return f"Error in render_song: {str(e)}"
+
+
+# wait_until: how long one call may wait, and how often it reads the playhead
+WAIT_MAX_SECONDS = 300.0
+_WAIT_POLL_SECONDS = 0.25
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@telemetry_tool("wait_until")
+def wait_until(ctx: Context, bar: Optional[float] = None, beat: Optional[float] = None,
+               timeout_seconds: float = 60.0, user_prompt: str = "") -> str:
+    """
+    Wait while Live plays until the playhead reaches a bar or a beat of the Arrangement, or Live stops
+    (a take ends, the user presses Stop), then say where it is. One call instead of a sleep loop of
+    get_session_info reads. Changes nothing.
+
+    Parameters:
+    - bar: The bar to wait for (1 = the start; in the song's time signature)
+    - beat: Or the beat (from 0)
+    - timeout_seconds: Give up after this long (default 60, at most 300)
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    try:
+        if (bar is None) == (beat is None):
+            return "Error: give bar or beat (one of them)."
+        if not 0 < timeout_seconds <= WAIT_MAX_SECONDS:
+            return "Error: timeout_seconds must be above 0 and at most %g." % WAIT_MAX_SECONDS
+        numerator, denominator = (int(n) for n in str(_live("get_tracks_overview")["time_signature"]).split("/"))
+        bar_beats = numerator * 4.0 / denominator
+        target = (float(bar) - 1) * bar_beats if bar is not None else float(beat)
+        started = _listen_now()
+
+        def where(time_):
+            return "beat %.2f (bar %d)" % (time_, int(time_ // bar_beats) + 1)
+
+        while True:
+            info = _live("get_session_info")
+            now = float(info.get("current_song_time") or 0.0)
+            waited = _listen_now() - started
+            if now >= target:
+                return "Reached %s after %.1f s." % (where(now), waited)
+            if not info.get("is_playing"):
+                return ("Live is %sstopped, at %s, before %s." % ("" if waited else "already ", where(now),
+                                                                    where(target)))
+            if waited >= timeout_seconds:
+                return "Not there after %.0f s: the playhead is at %s, before %s." % (waited, where(now),
+                                                                                      where(target))
+            _listen_sleep(_WAIT_POLL_SECONDS)
+    except Exception as e:
+        logger.error(f"Error in wait_until: {str(e)}")
+        return f"Error in wait_until: {str(e)}"
+
+
+@mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False), structured_output=False)
+@telemetry_tool("render_song")
+@trajectory_tool("render_song")
+def render_song(
+    ctx: Context,
+    scratch_track_index: Optional[int] = None,
+    expected_name: Optional[str] = None,
+    start_bar: float = 1.0,
+    end_bar: Optional[float] = None,
+    quiet: bool = True,
+    bars_per_row: Optional[int] = None,
+    silence_db: float = -50.0,
+    confirm: bool = False,
+    user_prompt: str = "",
+) -> str:
+    """
+    Render the Arrangement (or bars of it) to a WAV in real time and measure it: Arrangement-record the
+    whole mix (Main before its fader, as listen takes it) onto the scratch track from start_bar to the
+    end of end_bar, then measure it with ffmpeg (loudness, peak, a per-bar table folded into at most
+    32 rows) and delete the take's Arrangement clip, so it cannot double the song. The WAV stays in the
+    project's Samples/Recorded folder. Live must be stopped and the Arrangement loop off; it plays from
+    start_bar (count-in bars play first as pre-roll) and is stopped and the playhead put back after.
+    Other armed tracks are disarmed for the take and re-armed after, so only the scratch track records.
+    Stopping Live on the Push ends the render early; what was recorded is measured. Session clips that
+    play override the Arrangement on their tracks (back_to_arrangement first). The scratch track is set
+    up as for listen (input Resampling or Main, monitoring off); without scratch_track_index a temporary
+    one is made for the call and deleted after (the WAV stays). At most 10 minutes.
+    Two steps: confirm=false (default) shows the bars, the length and what is set up; confirm=true runs it.
+
+    Parameters:
+    - scratch_track_index: The scratch audio track (default: a temporary one, see above)
+    - expected_name: Its exact current name (safety check; give both or neither)
+    - start_bar: First bar (default 1)
+    - end_bar: Last bar, included (default: the last bar with anything in the Arrangement)
+    - quiet: True (default) = Main all the way down during the render and put back after (silent room)
+    - bars_per_row: Bars in each table row (default: enough for at most 32 rows)
+    - silence_db: Below this level for 0.5 s or more counts as silence (default -50)
+    - confirm: false = preview only (default), true = render
+    - user_prompt: The original user prompt that led to this tool call (for telemetry)
+    """
+    return _on_scratch(scratch_track_index, expected_name, False,
+                       lambda index, name: _render_song_on(
+                           ctx, index, name, start_bar=start_bar, end_bar=end_bar, quiet=quiet,
+                           bars_per_row=bars_per_row, silence_db=silence_db, confirm=confirm, user_prompt=user_prompt))
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

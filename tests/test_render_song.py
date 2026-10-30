@@ -26,6 +26,7 @@ class Live(object):
         self.playing, self.time, self.played_from, self.started = False, 130.0, 130.0, self.t
         self.recording, self.record_end, self.stop_at = False, None, None
         self.arrangement = []   # the scratch track's clips
+        self.scratch = 2
         self.sent = []
 
     def tick(self):
@@ -77,14 +78,31 @@ class Live(object):
                 self.playing = False
             return {}
         if command == "get_arrangement_clips":
-            return {"clips": [dict(c) for c in self.arrangement]} if params["track_index"] == 2 else {"clips": []}
+            if params["track_index"] != self.scratch:
+                return {"clips": []}
+            return {"clips": [dict(c) for c in self.arrangement]}
         if command == "get_audio_clip_info":
             assert params["arrangement"] is True
             return {"file_path": WAV}
         if command == "delete_arrangement_clips":
-            assert params["confirm"] is True and params["expected_name"] == "Listen"
+            assert params["confirm"] is True and params["expected_name"] == self.tracks[self.scratch]["name"]
             self.arrangement = [c for c in self.arrangement
                                 if not params["start_time"] <= c["start_time"] < params["end_time"]]
+            return {}
+        if command == "create_audio_track":
+            self.scratch = len(self.tracks)
+            self.tracks.append({"index": self.scratch, "name": "4-Audio", "kind": "audio", "arm": False,
+                                "monitoring": "auto"})
+            return {"index": self.scratch, "name": "4-Audio"}
+        if command == "set_track_name":
+            self.tracks[params["track_index"]]["name"] = params["name"]
+            return {}
+        if command == "set_track_monitoring":
+            self.tracks[params["track_index"]]["monitoring"] = params["state"]
+            return {}
+        if command == "delete_track":
+            assert params["dry_run"] is False and self.tracks[params["track_index"]]["name"] == params["expected_name"]
+            del self.tracks[params["track_index"]]
             return {}
         if command == "set_current_song_time":
             self.time = params["time"]
@@ -176,3 +194,10 @@ def test_refusals_record_nothing(live, change, kwargs, expected):
 
 def test_render_song_is_a_modifying_tool():
     assert "render_song" in MODIFYING_TOOLS
+
+
+def test_without_a_scratch_track_the_render_runs_on_a_temporary_one_and_keeps_the_wav(live):
+    out = call(server.render_song, None, end_bar=4, confirm=True)
+    assert out.startswith("On a temporary audio track 'Claude Listen (temporary)' (track 3), made for this call and "
+                          "deleted after.\nRendered bars 1-4")
+    assert "File: %s" % WAV in out and [t["name"] for t in live.tracks] == ["Drums", "Vox", "Listen"]

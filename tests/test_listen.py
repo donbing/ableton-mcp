@@ -286,7 +286,7 @@ class Slot(object):
     def finish(self):
         self.clip.is_recording, self.clip.is_playing = False, True
         self.clip.length = self.song.taken_beats
-        self.clip.file_path = "/data/Music/Ableton/Sets/Test Project/Samples/Recorded/0001 Listen.wav"
+        self.clip.file_path = self.song.take_path
 
     def tick(self):
         if self.is_triggered and self.song.is_playing:
@@ -339,6 +339,7 @@ class Song(object):
         self.return_tracks, self.cue_points = [], []
         self.scenes = [Scene(self, "Scene %d" % (i + 1)) for i in range(3)]
         self.current_song_time, self.fired_scenes = 130.0, []
+        self.take_path = "/data/Music/Ableton/Sets/Test Project/Samples/Recorded/0001 Listen.wav"
         self.master_track = types.SimpleNamespace(name="Main", devices=[],
                                                   mixer_device=types.SimpleNamespace(volume=Param(0.85),
                                                                                      panning=Param(0.0)))
@@ -361,6 +362,14 @@ class Song(object):
 
     def stop_playing(self):
         self.is_playing = False
+
+    def create_audio_track(self, index):
+        # as Live names a new audio track; its input is Ext. In and monitoring "auto"
+        track = Track(self, "%d-Audio" % (len(self.tracks) + 1), input_type="Ext. In", monitoring=1)
+        self.tracks.insert(len(self.tracks) if index == -1 else index, track)
+
+    def delete_track(self, index):
+        del self.tracks[index]
 
 
 class Scene(object):
@@ -975,3 +984,43 @@ def test_at_beat_needs_the_1_10_26_remote_script(conn, song, measured, monkeypat
     caps = [c for c in sh._script_info["capabilities"] if c != "start_playback_at_beat"]
     monkeypatch.setattr(sh, "_script_info", {"script_version": "1.10.25", "capabilities": caps})
     assert "needs the Remote Script 1.10.26" in call(server.listen, None, at_beat=16.0, **LISTEN)
+
+
+# ---------------------------------------------------------------- a temporary scratch track
+
+def test_without_a_scratch_track_a_temporary_one_is_made_and_deleted_with_its_wav(conn, song, measured, tmp_path):
+    take = tmp_path / "Samples" / "Recorded" / "0001 Claude Listen (temporary).wav"
+    take.parent.mkdir(parents=True)
+    take.write_bytes(b"RIFF")
+    song.take_path = str(take)
+    out = call(server.listen, None, bars=2)
+    assert out.startswith("On a temporary audio track 'Claude Listen (temporary)' (track 3), made for this call and "
+                          "deleted after; its takes' WAVs were deleted too.\nListened on 'Claude Listen (temporary)'")
+    assert [t.name for t in song.tracks] == ["Drums", "Vox", "Listen"] and not take.exists()
+    assert measured and measured[0][0] == str(take)
+
+
+def test_a_temporary_track_is_deleted_when_the_listen_is_refused(conn, song, measured):
+    song.is_playing = False
+    out = call(server.listen, None)
+    assert "Live is not playing" in out and [t.name for t in song.tracks] == ["Drums", "Vox", "Listen"]
+    assert "record_into_slot" not in conn.commands()
+
+
+def test_a_wav_outside_samples_recorded_is_never_deleted(conn, song, measured, tmp_path):
+    other = tmp_path / "mine.wav"
+    other.write_bytes(b"RIFF")
+    song.take_path = str(other)
+    call(server.listen, None)
+    assert other.exists()
+
+
+@pytest.mark.parametrize("kwargs, expected", [
+    (dict(scratch_track_index=2), "give scratch_track_index and expected_name together"),
+    (dict(expected_name="Listen"), "give scratch_track_index and expected_name together"),
+    (dict(keep=True), "keep needs a scratch track of your own"),
+])
+def test_temporary_track_refusals_make_no_track(conn, song, measured, kwargs, expected):
+    out = call(server.listen, None, **kwargs)
+    assert out.startswith("Error") and expected in out
+    assert "create_audio_track" not in conn.commands() and len(song.tracks) == 3

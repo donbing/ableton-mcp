@@ -1,4 +1,5 @@
 """search_browser_items: breadth first, every query word, a time budget (idea from upstream #97)."""
+import json
 import types
 
 import pytest
@@ -93,3 +94,19 @@ def test_tool_forwards(conn):
     call(server.search_browser_items, None, "analog pad", "instruments", 5, True, 3.0)
     assert conn.sent[-1] == ("search_browser_items", {"query": "analog pad", "category": "instruments",
                                                       "max_results": 5, "loadable_only": True, "max_seconds": 3.0})
+
+
+def test_results_leave_out_what_they_repeat(conn):
+    conn.response = {"query": "bpm", "count": 3, "truncated": False, "results": [
+        {"name": "80s Beat 90 bpm.wav", "path": "samples/80s Beat 90 bpm.wav", "uri": "query:Samples#FileId_3988",
+         "is_loadable": True, "is_device": False, "is_folder": False},
+        {"name": "Drums", "path": "samples/Drums", "uri": "query:Samples#Drums", "is_loadable": False,
+         "is_device": False, "is_folder": True},
+        {"name": "Odd", "path": "samples/Other", "uri": "u", "is_loadable": True, "is_device": True,
+         "is_folder": False}]}
+    out = json.loads(call(server.search_browser_items, None, "bpm"))
+    assert out["results"] == [{"path": "samples/80s Beat 90 bpm.wav", "uri": "query:Samples#FileId_3988"},
+                              {"path": "samples/Drums", "uri": "query:Samples#Drums", "folder": True,
+                               "loadable": False},
+                              {"path": "samples/Other", "uri": "u", "name": "Odd", "device": True}]
+    assert out["count"] == 3 and out["truncated"] is False
