@@ -46,7 +46,8 @@ CC_PROMPT_DONT_SAVE, CC_PROMPT_CANCEL, CC_PROMPT_SAVE = 24, 26, 27
 # the second button above the screen is "+ New Set" while the Set browser is open (lit 122)
 CC_NEW_SET = 103
 PROMPT_SAVE_GREEN = 126
-# the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; not yet measured on this Push
+# the 8x8 pads send notes 36 (bottom left) to 99 (top right), row by row; seen on this Push 2026-10-30:
+# [1,1] and [8,8] lit and sounded where expected
 PAD_FIRST_NOTE, PAD_ROWS = 36, 8
 # the log is read from its end; a load is far less than this far back
 LOG_TAIL_BYTES = 1 << 20
@@ -101,7 +102,9 @@ def pad_steps(chords, hold, gap, velocity):
 
 
 def pad_lights(lights):
-    """The pads the UI relit while we played, as [row, column]: the sign that the presses arrived."""
+    """The pads the UI relit while we played, as [row, column]: the sign that the presses arrived. In Note
+    mode the Push relights every pad that plays a held note and at times more of the grid (1 to 24 pads
+    for one pad, measured), so it is not the shape pressed."""
     seen = []
     for _, d in lights:
         if len(d) == 3 and d[0] & 0xF0 == 0x90 and PAD_FIRST_NOTE <= d[1] < PAD_FIRST_NOTE + PAD_ROWS * PAD_ROWS:

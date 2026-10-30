@@ -7135,7 +7135,10 @@ def play_pads(
         if not lit:
             return ("Pressed %s, but the Push relit no pads, so the presses may not have reached it. Ask the user "
                     "what they saw and heard." % played)
-        return "Pressed %s; the Push lit %d pad(s) in answer." % (played, len(lit))
+        # the Push highlights every pad that plays a held note and sometimes redraws more of the grid,
+        # so the count says the presses arrived, not which pads were pressed
+        return ("Pressed %s; the Push relit %d pad(s) in answer (often more than were pressed: it highlights "
+                "every pad that plays a held note)." % (played, len(lit)))
     except Exception as e:
         logger.error(f"Error playing pads: {str(e)}")
         return f"Error playing pads: {str(e)}"
