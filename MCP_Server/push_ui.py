@@ -52,7 +52,7 @@ PAD_FIRST_NOTE, PAD_ROWS = 36, 8
 # our presses use MIDI channels 2-16 in turn (status nibble 1-15), as the pads do
 PAD_FIRST_CHANNEL, PAD_CHANNELS = 1, 15
 # the most push_midi waits for Live's MIDI rescan before pressing pads
-SETTLE_SECONDS = 3.0
+SETTLE_SECONDS = 5.0
 # presses this close together are one chord even if the first is already up (a quick stab)
 CHORD_WINDOW = 0.15
 # the log is read from its end; a load is far less than this far back

@@ -41,6 +41,8 @@ PADS_PORT = "Ableton Push 3 Live Port"
 FIRST_PAD, LAST_PAD = 36, 99
 # Live's rescan comes about 1.0 s after a port appears and takes ~25 ms (measured 2026-10-30)
 RESCAN_TIMEOUT = 3.0
+# and a chord pressed right after it still never ended in Live; 2 s after it, it did (Capture MIDI)
+AFTER_RESCAN = 2.0
 
 
 def _port(midi, name):
@@ -151,8 +153,10 @@ def run(request):
             out.close_port()
             return {"error": "no MIDI port named '%s' (is Live running on this Push?)" % name}
         midi.open_port(index)
-    if request.get("live_log"):
-        wait_for_rescan(request["live_log"], opened_at)
+    if "live_log" in request:
+        if not (request["live_log"] and wait_for_rescan(request["live_log"], opened_at)):
+            time.sleep(max(0.0, opened_at + RESCAN_TIMEOUT - time.time()))
+        time.sleep(AFTER_RESCAN)
     got, pads, start = [], [], time.monotonic()
     until, until_value = request.get("until_cc"), request.get("until_value")
 

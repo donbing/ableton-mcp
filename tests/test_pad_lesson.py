@@ -202,10 +202,12 @@ def test_wait_for_rescan_ignores_an_older_rescan_and_gives_up(tmp_path):
 def test_push_midi_waits_for_the_rescan_when_given_the_log(monkeypatch):
     clock, waited = FakeClock(), []
     fake_rtmidi(monkeypatch, clock, [])
-    monkeypatch.setattr(M, "wait_for_rescan", lambda path, since: waited.append(path))
+    monkeypatch.setattr(M, "wait_for_rescan", lambda path, since: waited.append(path) or True)
     M.run({"steps": [], "release": [], "live_log": "/x/Log.txt"})
+    assert waited == ["/x/Log.txt"] and clock.t >= M.AFTER_RESCAN  # and then 2 s more
+    before = clock.t
     M.run({"steps": [], "release": []})
-    assert waited == ["/x/Log.txt"]
+    assert waited == ["/x/Log.txt"] and clock.t == before  # Set buttons don't wait
 
 
 def test_pad_lesson_passes_lives_log_for_the_rescan_wait(monkeypatch):
