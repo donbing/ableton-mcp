@@ -71,13 +71,11 @@ const CRGB CH_COLOUR[4] = {
   CRGB(0, 255, 40),    // correct
   CRGB(255, 0, 0),     // wrong
 };
-// Play notes fade out exponentially (even to the eye, and the same time for soft and hard notes):
-// these are the times from full to dark
+// Play notes fade out evenly to the eye, all the way to dark: the fade runs in perceived brightness (light to the
+// power 1/HD_GAMMA, the value the strip is sent), not in light, where most of it was too bright to see change.
+// These are the times from full to dark; softer notes start lower and get there sooner.
 const float RELEASE_MS = 450;     // key released
 const float SUSTAIN_MS = 4000;    // key released with the pedal down, like a held piano note dying away
-const float FADE_FLOOR = 0.02f;   // dark below this
-const float RELEASE_DECAY = powf(FADE_FLOOR, 10 / RELEASE_MS);  // per 10ms frame
-const float SUSTAIN_DECAY = powf(FADE_FLOOR, 10 / SUSTAIN_MS);
 const float FLASH_FADE = 0.025f;  // ~400ms
 const float HINT_LEVEL = 0.6f;
 const float MIN_LEVEL  = 0.2f;    // softest note still visible
@@ -403,9 +401,9 @@ void buildKeyMap() {
 
 void updateLevels() {
   for (int n = 0; n < 128; n++) {
-    if (!held[0][n]) {
-      level[0][n] *= sustained[n] ? SUSTAIN_DECAY : RELEASE_DECAY;
-      if (level[0][n] < FADE_FLOOR) level[0][n] = 0;
+    if (!held[0][n] && level[0][n] > 0) {
+      float seen = powf(level[0][n], 1 / HD_GAMMA) - 10 / (sustained[n] ? SUSTAIN_MS : RELEASE_MS);
+      level[0][n] = seen > 0 ? powf(seen, HD_GAMMA) : 0;
     }
     if (!held[1][n]) level[1][n] = 0;
     level[2][n] = max(0.0f, level[2][n] - FLASH_FADE);
