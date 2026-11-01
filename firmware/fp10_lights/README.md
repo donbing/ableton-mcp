@@ -33,11 +33,18 @@ hints go out on channel 2 from another track. Each set needs its own lights trac
 
 Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA`, `BRIGHTNESS`, the key mapping, and the fade
 times `RELEASE_MS` / `SUSTAIN_MS`.
-`MAX_MA` (250) caps the strip, idle draw included: FastLED counts 1 mA per LED, so 144 of it is idle and ~106 is
-left for lit keys. Its model under-reads SK9822s (about 15 mA for full blue against ~20 mA real), so the real
-worst case is ~300 mA for the strip, ~350-380 mA with the board on the same 500 mA port. `BRIGHTNESS` (128 = 50%)
-dims everything on the strip (not the status LED) and halves the current; the cap only bites when many keys are
-lit.
+`MAX_MA` (250) caps the strip, idle draw included: the firmware counts 1 mA per LED idle, so ~106 mA is left
+for lit keys at `LED_MA` (20 mA) per colour at full, and dims the whole strip when more is asked for. That makes
+the worst case ~250 mA for the strip, ~300-330 mA with the board on the same 500 mA port. (FastLED's own cap isn't
+used: it would count the gamma-encoded values sent in HD mode, below, and dim chords far too soon.)
+
+The strip runs as FastLED's `SK9822HD`: FastLED applies a 2.8 gamma and uses the chips' 5-bit global brightness,
+which gives fine steps near dark. Plain `SK9822` has only ~128 steps at 50% brightness, and dithering between them
+flickered at the end of fades. The sketch works in linear light and undoes the gamma (`toHd()`), so colours and
+fades look as they did; dithering is off.
+
+`BRIGHTNESS` (128 = 50%) dims everything on the strip (not the status LED) and halves the current; the cap only
+bites when many keys are lit.
 
 The mapping follows the keyboard layout at the back of the keys, where the strip sits: C-E split into 5 equal
 slots and F-B into 7, black keys included (so B's back is right of its front's middle, and C's left). It is fixed

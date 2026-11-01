@@ -36,7 +36,8 @@
 #define CLOCK_PIN    1
 #define COLOR_ORDER  BGR
 #define NUM_LEDS     144
-#define MAX_MA       250     // strip cap, idle included (FastLED counts 1mA per LED); shares a 500mA hub port with the board
+#define MAX_MA       250     // strip cap, idle included (~1mA per LED); shares a 500mA hub port with the board
+#define LED_MA       20.0f   // one SK9822 colour at full
 #define BRIGHTNESS   128     // 0-255, for everything on the strip (not the status LED); also halves the current
 #define ONBOARD_PIN  21
 
@@ -81,9 +82,16 @@ const float FLASH_FADE = 0.025f;  // ~400ms
 const float HINT_LEVEL = 0.6f;
 const float MIN_LEVEL  = 0.2f;    // softest note still visible
 
+// The strip runs as FastLED's SK9822HD: it applies a 2.8 gamma to what it's sent and uses the chips' 5-bit global
+// brightness, which gives fine steps near dark (plain SK9822 has ~128 steps at 50% brightness and dithering
+// between them flickered at the end of fades). Everything below works in linear light, 0-1, and toHd() undoes
+// the gamma so the look stays as it was.
+const float HD_GAMMA = 2.8f;
+
 USBMIDI MIDI("FP10 Lights");
 Preferences prefs;
 CRGB leds[NUM_LEDS];
+float light[NUM_LEDS][3];  // linear light per LED, summed over the channels before going to leds[]
 CRGB onboard[1];
 
 int16_t keyFirst[128], keyLast[128];  // LED range per note, from the calibration
@@ -417,24 +425,49 @@ CRGB statusColour() {
   }
 }
 
+// Linear light (1 = full) -> the value SK9822HD turns back into that light
+uint8_t toHd(float linear) {
+  if (linear <= 0) return 0;
+  return uint8_t(lroundf(255 * powf(min(linear, 1.0f), 1 / HD_GAMMA)));
+}
+
+// colour at a linear scale (0-1), sent as SK9822HD values
+CRGB hdColour(CRGB c, float scale) {
+  return CRGB(toHd(c.r / 255.0f * scale), toHd(c.g / 255.0f * scale), toHd(c.b / 255.0f * scale));
+}
+
 void render() {
   FastLED.clear();
   if (calStep >= 0) {
-    leds[REVERSED ? NUM_LEDS - 1 - calLed : calLed] = CRGB(90, 90, 90).nscale8_video(BRIGHTNESS);
+    leds[REVERSED ? NUM_LEDS - 1 - calLed : calLed] = hdColour(CRGB(90, 90, 90), BRIGHTNESS / 255.0f);
     onboard[0] = statusColour();
     FastLED.show();
     return;
   }
+  memset(light, 0, sizeof(light));
   for (int n = 0; n < 128; n++) {
     for (int ch = 0; ch < 4; ch++) {
       if (level[ch][n] <= 0) continue;
-      CRGB c = CH_COLOUR[ch];
-      c.nscale8_video(uint8_t(level[ch][n] * BRIGHTNESS));
+      float scale = level[ch][n] * BRIGHTNESS / (255.0f * 255.0f);
+      const CRGB &c = CH_COLOUR[ch];
       for (int i = keyFirst[n]; i <= keyLast[n]; i++) {
         if (i < 0 || i >= NUM_LEDS) continue;
-        leds[REVERSED ? NUM_LEDS - 1 - i : i] += c;
+        float *l = light[REVERSED ? NUM_LEDS - 1 - i : i];
+        l[0] += c.r * scale;
+        l[1] += c.g * scale;
+        l[2] += c.b * scale;
       }
     }
+  }
+  // Power cap, worked out here: FastLED's own would count the gamma-encoded values and dim chords far too soon
+  float ma = 0;
+  for (int i = 0; i < NUM_LEDS; i++) ma += (light[i][0] + light[i][1] + light[i][2]) * LED_MA;
+  float budget = MAX_MA - NUM_LEDS * 1.0f;
+  float cap = ma > budget ? budget / ma : 1;
+  for (int i = 0; i < NUM_LEDS; i++) {
+    for (int k = 0; k < 3; k++) light[i][k] *= cap;
+    if (light[i][0] > 0 || light[i][1] > 0 || light[i][2] > 0)
+      leds[i] = CRGB(toHd(light[i][0]), toHd(light[i][1]), toHd(light[i][2]));
   }
   onboard[0] = statusColour();
   FastLED.show();
@@ -443,7 +476,7 @@ void render() {
 void bootSweep() {
   for (int i = 0; i < NUM_LEDS; i += 2) {
     FastLED.clear();
-    leds[i] = CRGB(0, 40, 80);
+    leds[i] = hdColour(CRGB(0, 40, 80), 1);
     FastLED.show();
     delay(4);
   }
@@ -454,10 +487,9 @@ void setup() {
   Serial.begin(115200);
   pinMode(BOOT_PIN, INPUT_PULLUP);
   WiFi.mode(WIFI_OFF);
-  FastLED.addLeds<SK9822, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.addLeds<SK9822HD, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds, NUM_LEDS);
   FastLED.addLeds<WS2812, ONBOARD_PIN, RGB>(onboard, 1);
-  FastLED.setMaxPowerInVoltsAndMilliamps(5, MAX_MA);
-  FastLED.setDither(1);
+  FastLED.setDither(0);  // SK9822HD has the steps; dithering only made them flicker
   clearAll();
   loadCalibration();
   buildKeyMap();
