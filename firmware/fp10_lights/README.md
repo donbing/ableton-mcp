@@ -15,6 +15,7 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 | any | CC120 or CC123 | Clears everything |
 | 16 | CC119 ≥ 64 / < 64 | Wireless update mode on / off |
 | 16 | CC118 ≥ 64 / < 64 | Calibration mode on / cancel |
+| 16 | CC117 ≥ 64 | Restart (for `board.sh restart-test`) |
 
 Colours add where channels overlap on the same key. Channels 5-15 are ignored.
 
@@ -99,8 +100,27 @@ on the Push, `./board.sh update` (run from a PC with `ssh push3`) sends the CC f
 moo. `./board.sh update off` ends it. The onboard LED blinks amber while connecting, turns purple when ready,
 white while updating, red on failure. Update mode turns itself off after 10 minutes.
 
-After an update the board restarts, and about one restart in three the Push refuses it (`dmesg`: `can't set config
-#1, error -32`, no FP10 Lights port in Live; the board's LED stays green). Unplug and replug it; if it stays dark,
-use another hub port (that fixed it twice when the same port didn't, and the first port worked again later). Tried
-without success (2026-11-01): a clean USB disconnect before restarting, restarting through deep sleep, and the
-board reconnecting itself when unconfigured (from the board's side the connection looked fine, MIDI included).
+## When the Push refuses the board
+
+About one restart in three (after an update, or any restart), the Push refuses the board: `dmesg` says `can't set
+config #1, error -32` 13 ms after reading its name, and Live gets no FP10 Lights port. A replug always worked. The
+cause is unknown; it's the board's USB stack rejecting the Push's set-up request, not power.
+
+The firmware works around it (`usbWatch()`): if the Push hasn't set the board up 3 s after it starts, the board
+restarts, and that usually comes up fine. Some refusals clear sooner, with the board restarting ~0.5 s after them
+by itself (probably a crash). Either way it's back within a few seconds with no replug. The watchdog stays off
+while Wi-Fi update mode is on, and skips the boot sweep on its restarts.
+
+The test for it runs on the real hardware, from the PC:
+
+```sh
+./board.sh restart-test 20   # restart 20 times (CC117 on channel 16), check the Push sets the board up each time
+```
+
+It follows the board through its own restarts, counts the refusals, and fails only if the board stays off the
+Push. On 2026-11-01: 20/20 back, 7 refusals, all cleared by the board. If it does stay off (LED green, no port),
+replug it, or try another hub port.
+
+Tried without success (2026-11-01): a clean USB disconnect before restarting; restarting through deep sleep; a
+full chip reset through the RTC watchdog (refused 1 in 5); and reconnecting USB (`tud_disconnect` /
+`tud_connect`) when not set up, which left the board off the Push for good.

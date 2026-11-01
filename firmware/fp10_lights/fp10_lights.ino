@@ -16,6 +16,9 @@
 //   A white LED shows where C1 lights. Play any key below C1 to move it left, above to move it right,
 //   then C1 to accept. The same for C6. Both points are saved on the board. Onboard LED: cyan.
 //
+// Restart: CC117 >= 64 on channel 16 (board.sh restart / restart-test, for testing how the Push takes it back).
+//   If the Push hasn't set the board up 3 s after it starts, it restarts itself (usbWatch()).
+//
 // Wi-Fi details live in the board's flash, never in this code. Set them once over USB serial:
 //   set ssid <name> / set pass <password> / set otapass <password> / show / forget / update / calibrate
 
@@ -61,6 +64,8 @@
 #define BOOT_HOLD_MS    2000
 #define OTA_CHANNEL     15     // MIDI channel 16
 #define OTA_CC          119
+#define RESTART_CC      117    // on OTA_CHANNEL
+#define USB_SETUP_MS    3000   // not set up by the Push this long after starting: restart (see usbWatch())
 #define OTA_TIMEOUT_MS  (10UL * 60 * 1000)
 #define WIFI_TIMEOUT_MS 20000
 
@@ -144,6 +149,37 @@ void saveCalibration() {
   prefs.putFloat("cal_lo", calLowLed);
   prefs.putFloat("cal_hi", calHighLed);
   prefs.end();
+}
+
+// ---- USB watchdog ----
+
+// After about one restart in three the Push refuses the board ("can't set config #1, error -32"); the next restart
+// usually comes up fine. So if the Push hasn't set the board up within USB_SETUP_MS, restart. (Disconnecting and
+// reconnecting USB instead left the board off the Push for good, 2026-11-01.) Not while Wi-Fi update mode is on,
+// which is the way back in if USB never works. Off a host (Push off, a charger) this repeats every few seconds.
+// The flag survives the restart (not a power cut), so a watchdog restart can skip the boot sweep.
+#define USB_RESTART_MAGIC 0xF10A5EED
+RTC_NOINIT_ATTR uint32_t usbRestartFlag;
+bool usbRestarted = false;  // this boot came from a watchdog restart
+
+void usbWatchBoot() {
+  usbRestarted = usbRestartFlag == USB_RESTART_MAGIC;
+  usbRestartFlag = 0;
+}
+
+void usbWatch() {
+  static uint32_t unsetSince = 0;
+  if (tud_mounted() || (ota != OTA_OFF && ota != OTA_FAILED)) {
+    unsetSince = 0;
+    return;
+  }
+  if (!unsetSince) {
+    unsetSince = millis() | 1;
+    return;
+  }
+  if (millis() - unsetSince < USB_SETUP_MS) return;
+  usbRestartFlag = USB_RESTART_MAGIC;
+  ESP.restart();
 }
 
 // ---- Wireless update ----
@@ -355,6 +391,7 @@ void handlePacket(const midiEventPacket_t &p) {
     else if (ota != OTA_OFF) otaStop();
     return;
   }
+  if (type == 0xB0 && ch == OTA_CHANNEL && d1 == RESTART_CC && d2 >= 64) ESP.restart();
   if (type == 0xB0 && ch == OTA_CHANNEL && d1 == CAL_CC) {
     if (d2 >= 64) calStart();
     else if (calStep >= 0) calStop();
@@ -494,7 +531,8 @@ void setup() {
   otaSetup();
   MIDI.begin();
   USB.begin();
-  bootSweep();
+  usbWatchBoot();
+  if (!usbRestarted) bootSweep();
 }
 
 void loop() {
@@ -503,6 +541,7 @@ void loop() {
   readSerial();
   checkBootButton();
   otaService();
+  usbWatch();
   if (calStep >= 0 && millis() - calSince > CAL_TIMEOUT_MS) calStop();
 
   static uint32_t lastFrame = 0;

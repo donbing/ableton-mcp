@@ -17,9 +17,9 @@ Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital
 | any | CC120 / CC123 (All Sound / All Notes Off) | Clears everything |
 
 Colours add where channels overlap on one key. Channels 5-15 are ignored; channel 16 CC119 switches the board's
-Wi-Fi update mode and CC118 calibration mode, so never send those on channel 16 from Live. From the PC,
-`firmware/fp10_lights/board.sh update|calibrate [off]` sends them over SSH from a hidden port; after `update`,
-run `build.sh ota` on moo.
+Wi-Fi update mode, CC118 calibration mode and CC117 restarts it, so never send those on channel 16 from Live.
+From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and `board.sh restart` send them over SSH
+from a hidden port; after `update`, run `build.sh ota` on moo.
 
 The 1 m strip covers about MIDI notes 29-100 (F0-E5 in Live's names, where 60 = C3); notes outside stay dark. The
 firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them: nothing
@@ -43,11 +43,10 @@ If FP10 Lights is missing from the output types, find out which of these it is:
 
 - **Not in the input types either:** the Push has no MIDI port for the board. Check over SSH:
   `ssh push3 'cat /proc/asound/cards; dmesg | grep -E "FP10|set config" | tail'`. A `Lights` card should be listed.
-  If `lsusb` shows "FP10 Lights" but there's no card and dmesg says `can't set config #1, error -32`, the board
-  failed to finish connecting (seen after the hub reconnected, at Push start-up, and after Wi-Fi updates): ask
-  the user to unplug and replug the board. On 2026-11-01 it failed 4 times running, firmware ruled out (an older
-  build failed too); plugging into another hub port fixed it, and after that the original port worked again.
-  The board's LED stays green through this (it runs; only the Push side failed).
+  If dmesg says `can't set config #1, error -32`, the Push refused the board as it connected (about one restart
+  in three). Since 2026-11-01 the firmware restarts itself 3 s later and is normally back within ~5 s: wait and
+  check again. Only if it stays off (LED green, still no card) ask the user to unplug and replug it, or use
+  another hub port. `board.sh restart-test N` checks the recovery (README "When the Push refuses the board").
 - **The FP-10 missing too:** `lsusb` has no Roland, so the piano is off or unplugged: ask the user.
 - **In the input types but not the outputs:** track output is off for that port in the Push's MIDI settings
   (Setup > MIDI). That is a Push setting: tell the user to turn it on, don't change it.
