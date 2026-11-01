@@ -1,0 +1,10 @@
+profiles:
+  fp10:
+    notes: Waveshare ESP32-S3-Zero. FastLED stays on 3.9.x; 3.10.8 crashes the S3 driving SK9822 (LCD-SPI driver).
+    fqbn: esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,UploadMode=cdc
+    platforms:
+      - platform: esp32:esp32 (3.3.12)
+        platform_index_url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    libraries:
+      - FastLED (3.9.20)
+default_profile: fp10
