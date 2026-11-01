@@ -41,4 +41,5 @@ AbletonOS). The MCP server and the Remote Script both run on the Push.
 ## Skills
 
 - `push3-live-api` (`.claude/skills/`): Live's Python API as captured on the Push; for Remote Script work.
-- `ableton-music` (personal): making music through the MCP tools; its `doctor.md` covers connection trouble.
+- `ableton-music` (`.claude/skills/`): making music through the MCP tools; its `doctor.md` covers connection trouble
+  and `recipes/fp10-lights.md` the LED strip over the FP-10 (firmware in `firmware/fp10_lights/`).

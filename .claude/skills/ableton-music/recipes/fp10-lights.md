@@ -1,0 +1,74 @@
+# FP10 Lights: light the piano keys
+
+An SK9822 strip over the middle of the user's Roland FP-10, driven by an ESP32-S3 that shows up on the Push's USB hub
+as the MIDI device **FP10 Lights**. It only draws what it is sent; deciding what to light (lessons, right/wrong)
+is our job. Firmware and its README: `firmware/fp10_lights/` in the ableton-mcp repo.
+Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital Piano MIDI 1** and the board is
+**FP10 Lights MIDI 1**.
+
+## What the strip understands
+
+| Output channel | Meaning | Look |
+|---|---|---|
+| 1 | Play: what the user is playing | Blue, brightness from velocity, fades ~330 ms after release, held by sustain (CC64) |
+| 2 | Hint: play this next | Steady amber while the note is held |
+| 3 | Correct | Green flash, ~400 ms (no note-off needed) |
+| 4 | Wrong | Red flash, ~400 ms (no note-off needed) |
+| any | CC120 / CC123 (All Sound / All Notes Off) | Clears everything |
+
+Colours add where channels overlap on one key. Channels 5-15 are ignored; channel 16 CC119 switches the board's
+Wi-Fi update mode and CC118 calibration mode, so never send those on channel 16 from Live. From the PC,
+`firmware/fp10_lights/board.sh update|calibrate [off]` sends them over SSH from a hidden port; after `update`,
+run `build.sh ota` on moo.
+
+The 1 m strip covers about MIDI notes 29-100 (F0-E5 in Live's names, where 60 = C3); notes outside stay dark. The
+firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them: nothing
+to manage from here.
+
+## Light the keys as the user plays
+
+Use a separate, empty MIDI track for the lights. A MIDI track with an instrument outputs audio, not MIDI, so the
+user's piano sound (the FP-10's own speakers, or a Live instrument track) stays as it is.
+
+1. `get_tracks_overview`: is there already a track named `FP10 Lights`? Then check its routing and stop.
+2. `create_midi_track`, then `set_track_name` to `FP10 Lights`. Add no devices.
+3. `get_track_routing` on it: find the FP-10 among the input types and FP10 Lights among the output types. Use
+   the names exactly as Live lists them.
+4. `set_track_routing(direction="input", routing_type=<FP-10's name>, routing_channel=<"All Channels" or "Ch. 1">)`.
+5. `set_track_routing(direction="output", routing_type=<FP10 Lights' name>, routing_channel="Ch. 1")`.
+6. `set_track_monitoring(state="in")`. No arming needed, and no feedback risk: this track makes no sound.
+7. Ask the user to play a few keys and say whether they light, and whether the right keys light.
+
+If FP10 Lights is missing from the output types, find out which of these it is:
+
+- **Not in the input types either:** the Push has no MIDI port for the board. Check over SSH:
+  `ssh push3 'cat /proc/asound/cards; dmesg | grep -E "FP10|set config" | tail'`. A `Lights` card should be listed.
+  If `lsusb` shows "FP10 Lights" but there's no card and dmesg says `can't set config #1, error -32`, the board
+  failed to finish connecting (seen after the hub reconnected, at Push start-up, and after Wi-Fi updates): ask
+  the user to unplug and replug the board. On 2026-11-01 it failed 4 times running, firmware ruled out (an older
+  build failed too); plugging into another hub port fixed it, and after that the original port worked again.
+  The board's LED stays green through this (it runs; only the Push side failed).
+- **The FP-10 missing too:** `lsusb` has no Roland, so the piano is off or unplugged: ask the user.
+- **In the input types but not the outputs:** track output is off for that port in the Push's MIDI settings
+  (Setup > MIDI). That is a Push setting: tell the user to turn it on, don't change it.
+
+The board's onboard LED is dim green when idle and blinks blue on MIDI.
+
+If the wrong keys light, the mapping is off: it's set on the board, not in Live. Each key lights one LED. Run
+`board.sh calibrate`: the user moves a white LED with keys below / above C1, plays C1 to accept, then the same for
+C6; the board saves both (README "Calibrating from the piano"). The keys reach the board only through a lights
+track, so check the OPEN set has one first: each set needs its own, and the user may switch sets mid-task
+(2026-11-01: calibration "did nothing" because they had opened a song set without one).
+
+## Hints, lessons and right/wrong (more later)
+
+A track with monitoring "in" ignores its own clips, so anything played from clips goes on a second empty MIDI
+track, `FP10 Hints`, with no input, monitoring "off" and output FP10 Lights on the channel you want:
+
+- Hints: output channel "Ch. 2", and a clip whose notes are the keys to press, each lasting as long as it should
+  stay lit. Light it a beat early to give the user time to move.
+- Correct / wrong flashes need to know what the user played compared with the hint; that logic doesn't exist yet,
+  so don't promise it. A track can only send on one output channel, so channels 3 and 4 each need their own track.
+
+The tools can't send a single MIDI message, so there is no direct "clear the strip": stopping the hint clip ends
+its notes. If keys stay lit, ask the user to send All Notes Off, or unplug and replug the board.
