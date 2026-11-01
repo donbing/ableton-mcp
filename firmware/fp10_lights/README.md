@@ -8,8 +8,8 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 
 | Channel | Meaning | Look |
 |---|---|---|
-| 1 | Play: what's being played | Blue, brightness from velocity, fades ~450 ms after note-off; ~4 s with sustain (CC64) down |
-| 2 | Hint: play this next | Steady amber until note-off |
+| 1 | Play: what's being played | Blue, brightness from velocity (even steps to the eye), fades ~450 ms after note-off; ~4 s with sustain (CC64) down |
+| 2 | Hint: play this next | Steady amber until note-off, brightness from velocity (127 = full) |
 | 3 | Correct | Green flash, fades ~400 ms (note-off not needed) |
 | 4 | Wrong | Red flash, fades ~400 ms (note-off not needed) |
 | any | CC120 or CC123 | Clears everything |
@@ -35,7 +35,8 @@ hints go out on channel 2 from another track. Each set needs its own lights trac
 Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA`, `BRIGHTNESS`, the key mapping, and the fade
 times `RELEASE_MS` / `SUSTAIN_MS`.
 `MAX_MA` (250) caps the strip, idle draw included: the firmware counts 1 mA per LED idle, so ~106 mA is left
-for lit keys at `LED_MA` (20 mA) per colour at full, and dims the whole strip when more is asked for. That makes
+for lit keys at `LED_MA` (20 mA) per colour at full. When more is asked for it dims in order: first released play notes (fading or held by
+the pedal), then held play notes, and hints and flashes last. That makes
 the worst case ~250 mA for the strip, ~300-330 mA with the board on the same 500 mA port. (FastLED's own cap isn't
 used: it would count the gamma-encoded values sent in HD mode, below, and dim chords far too soon.)
 

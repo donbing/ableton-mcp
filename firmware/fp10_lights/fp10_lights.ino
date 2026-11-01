@@ -2,7 +2,7 @@
 // Waveshare ESP32-S3-Zero, USB Mode must be "USB-OTG (TinyUSB)". See README.md.
 //
 // Channel 1  play     lit while held, fades on release; with sustain (CC64) down, fades slowly instead
-// Channel 2  hint     steady while held
+// Channel 2  hint     steady while held, brightness from velocity (127 = full)
 // Channel 3  correct  short green flash
 // Channel 4  wrong    short red flash
 // CC120 / CC123 on any channel clears everything
@@ -82,8 +82,10 @@ const CRGB CH_COLOUR[4] = {
 const float RELEASE_MS = 450;     // key released
 const float SUSTAIN_MS = 4000;    // key released with the pedal down, like a held piano note dying away
 const float FLASH_FADE = 0.025f;  // ~400ms
-const float HINT_LEVEL = 0.6f;
-const float MIN_LEVEL  = 0.2f;    // softest note still visible
+const float HINT_LEVEL = 0.6f;    // a hint at velocity 127; softer hints are dimmer, on the same curve as play
+// Velocity sets perceived brightness, evenly from MIN_SEEN at velocity 1 to full at 127. (Setting light from
+// velocity instead left the softest note at ~56% of the loudest to the eye, so playing soft and loud looked alike.)
+const float MIN_SEEN   = 0.3f;    // softest note, in perceived brightness (light^(1/HD_GAMMA))
 
 // The strip runs as FastLED's SK9822HD: it applies a 2.8 gamma to what it's sent and uses the chips' 5-bit global
 // brightness, which gives fine steps near dark (plain SK9822 has ~128 steps at 50% brightness and dithering
@@ -91,10 +93,14 @@ const float MIN_LEVEL  = 0.2f;    // softest note still visible
 // the gamma so the look stays as it was.
 const float HD_GAMMA = 2.8f;
 
+// Power cap tiers, cut from the last up: hints and flashes keep their brightness longest, then held play notes;
+// released play notes (fading, or held by the pedal) dim first.
+enum Tier { TIER_GUIDE, TIER_HELD, TIER_FADING, TIERS };
+
 USBMIDI MIDI("FP10 Lights");
 Preferences prefs;
 CRGB leds[NUM_LEDS];
-float light[NUM_LEDS][3];  // linear light per LED, summed over the channels before going to leds[]
+float light[TIERS][NUM_LEDS][3];  // linear light per tier per LED, summed over the channels before going to leds[]
 CRGB onboard[1];
 
 int16_t keyFirst[128], keyLast[128];  // LED range per note, from the calibration
@@ -358,13 +364,18 @@ void readSerial() {
 
 // ---- MIDI ----
 
+// Velocity (1-127) -> linear light, even steps to the eye
+float velLevel(int vel) {
+  return powf(MIN_SEEN + (1 - MIN_SEEN) * (vel - 1) / 126.0f, HD_GAMMA);
+}
+
 void noteOn(int ch, int note, int vel) {
   held[ch][note] = true;
   if (ch == 0) {
     sustained[note] = false;
-    level[ch][note] = max(MIN_LEVEL, vel / 127.0f);
+    level[ch][note] = velLevel(vel);
   } else if (ch == 1) {
-    level[ch][note] = HINT_LEVEL;
+    level[ch][note] = HINT_LEVEL * velLevel(vel);
   } else {
     level[ch][note] = 1.0f;
   }
@@ -485,24 +496,33 @@ void render() {
       if (level[ch][n] <= 0) continue;
       float scale = level[ch][n] * BRIGHTNESS / (255.0f * 255.0f);
       const CRGB &c = CH_COLOUR[ch];
+      int tier = ch > 0 ? TIER_GUIDE : held[0][n] ? TIER_HELD : TIER_FADING;
       for (int i = keyFirst[n]; i <= keyLast[n]; i++) {
         if (i < 0 || i >= NUM_LEDS) continue;
-        float *l = light[REVERSED ? NUM_LEDS - 1 - i : i];
+        float *l = light[tier][REVERSED ? NUM_LEDS - 1 - i : i];
         l[0] += c.r * scale;
         l[1] += c.g * scale;
         l[2] += c.b * scale;
       }
     }
   }
-  // Power cap, worked out here: FastLED's own would count the gamma-encoded values and dim chords far too soon
-  float ma = 0;
-  for (int i = 0; i < NUM_LEDS; i++) ma += (light[i][0] + light[i][1] + light[i][2]) * LED_MA;
+  // Power cap, worked out here: FastLED's own would count the gamma-encoded values and dim chords far too soon.
+  // Each tier gets what's left of the budget after the ones above it, so a big pedalled chord dims its own tail
+  // before it touches the hint.
   float budget = MAX_MA - NUM_LEDS * 1.0f;
-  float cap = ma > budget ? budget / ma : 1;
+  float cap[TIERS];
+  for (int t = 0; t < TIERS; t++) {
+    float ma = 0;
+    for (int i = 0; i < NUM_LEDS; i++) ma += (light[t][i][0] + light[t][i][1] + light[t][i][2]) * LED_MA;
+    cap[t] = ma > budget ? budget / ma : 1;
+    budget = max(0.0f, budget - ma * cap[t]);
+  }
   for (int i = 0; i < NUM_LEDS; i++) {
-    for (int k = 0; k < 3; k++) light[i][k] *= cap;
-    if (light[i][0] > 0 || light[i][1] > 0 || light[i][2] > 0)
-      leds[i] = CRGB(toHd(light[i][0]), toHd(light[i][1]), toHd(light[i][2]));
+    float sum[3] = {0, 0, 0};
+    for (int t = 0; t < TIERS; t++)
+      for (int k = 0; k < 3; k++) sum[k] += light[t][i][k] * cap[t];
+    if (sum[0] > 0 || sum[1] > 0 || sum[2] > 0)
+      leds[i] = CRGB(toHd(sum[0]), toHd(sum[1]), toHd(sum[2]));
   }
   onboard[0] = statusColour();
   FastLED.show();

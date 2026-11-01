@@ -11,7 +11,7 @@ Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital
 | Output channel | Meaning | Look |
 |---|---|---|
 | 1 | Play: what the user is playing | Blue, brightness from velocity, fades ~450 ms after release; ~4 s with sustain (CC64) down |
-| 2 | Hint: play this next | Steady amber while the note is held |
+| 2 | Hint: play this next | Steady amber while the note is held, brightness from velocity (127 = full) |
 | 3 | Correct | Green flash, ~400 ms (no note-off needed) |
 | 4 | Wrong | Red flash, ~400 ms (no note-off needed) |
 | any | CC120 / CC123 (All Sound / All Notes Off) | Clears everything |
@@ -22,8 +22,8 @@ From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and `board.s
 from a hidden port; after `update`, run `build.sh ota` on moo.
 
 The 1 m strip covers about MIDI notes 29-100 (F0-E5 in Live's names, where 60 = C3); notes outside stay dark. The
-firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them: nothing
-to manage from here.
+firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them, notes left ringing
+by the pedal first and hints last: nothing to manage from here.
 
 ## Light the keys as the user plays
 
@@ -65,7 +65,8 @@ A track with monitoring "in" ignores its own clips, so anything played from clip
 track, `FP10 Hints`, with no input, monitoring "off" and output FP10 Lights on the channel you want:
 
 - Hints: output channel "Ch. 2", and a clip whose notes are the keys to press, each lasting as long as it should
-  stay lit. Light it a beat early to give the user time to move.
+  stay lit, at velocity 127 for a full-strength hint (softer = dimmer, e.g. for a note coming up after the next).
+  Light it a beat early to give the user time to move.
 - Correct / wrong flashes need to know what the user played compared with the hint; that logic doesn't exist yet,
   so don't promise it. A track can only send on one output channel, so channels 3 and 4 each need their own track.
 
