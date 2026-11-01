@@ -1,7 +1,7 @@
 // FP10 Lights: USB MIDI -> SK9822 strip over the piano keys
 // Waveshare ESP32-S3-Zero, USB Mode must be "USB-OTG (TinyUSB)". See README.md.
 //
-// Channel 1  play     lit while held, fades on release, held by sustain (CC64)
+// Channel 1  play     lit while held, fades on release; with sustain (CC64) down, fades slowly instead
 // Channel 2  hint     steady while held
 // Channel 3  correct  short green flash
 // Channel 4  wrong    short red flash
@@ -70,7 +70,13 @@ const CRGB CH_COLOUR[4] = {
   CRGB(0, 255, 40),    // correct
   CRGB(255, 0, 0),     // wrong
 };
-const float PLAY_FADE  = 0.03f;   // per 10ms frame, ~330ms to dark
+// Play notes fade out exponentially (even to the eye, and the same time for soft and hard notes):
+// these are the times from full to dark
+const float RELEASE_MS = 450;     // key released
+const float SUSTAIN_MS = 4000;    // key released with the pedal down, like a held piano note dying away
+const float FADE_FLOOR = 0.02f;   // dark below this
+const float RELEASE_DECAY = powf(FADE_FLOOR, 10 / RELEASE_MS);  // per 10ms frame
+const float SUSTAIN_DECAY = powf(FADE_FLOOR, 10 / SUSTAIN_MS);
 const float FLASH_FADE = 0.025f;  // ~400ms
 const float HINT_LEVEL = 0.6f;
 const float MIN_LEVEL  = 0.2f;    // softest note still visible
@@ -90,7 +96,7 @@ uint32_t calSince = 0;
 
 float level[4][128];     // brightness per channel per note
 bool  held[4][128];      // key physically down (play) or hint on
-bool  sustained[128];    // play notes released while pedal down
+bool  sustained[128];    // play notes released while pedal down: they fade slowly until it lifts
 bool  pedal = false;
 uint32_t lastMidiMs = 0;
 
@@ -389,7 +395,10 @@ void buildKeyMap() {
 
 void updateLevels() {
   for (int n = 0; n < 128; n++) {
-    if (!held[0][n] && !sustained[n]) level[0][n] = max(0.0f, level[0][n] - PLAY_FADE);
+    if (!held[0][n]) {
+      level[0][n] *= sustained[n] ? SUSTAIN_DECAY : RELEASE_DECAY;
+      if (level[0][n] < FADE_FLOOR) level[0][n] = 0;
+    }
     if (!held[1][n]) level[1][n] = 0;
     level[2][n] = max(0.0f, level[2][n] - FLASH_FADE);
     level[3][n] = max(0.0f, level[3][n] - FLASH_FADE);

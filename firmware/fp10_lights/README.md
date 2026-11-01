@@ -8,7 +8,7 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 
 | Channel | Meaning | Look |
 |---|---|---|
-| 1 | Play: what's being played | Blue, brightness from velocity, fades ~330 ms after note-off, held by sustain (CC64) |
+| 1 | Play: what's being played | Blue, brightness from velocity, fades ~450 ms after note-off; ~4 s with sustain (CC64) down |
 | 2 | Hint: play this next | Steady amber until note-off |
 | 3 | Correct | Green flash, fades ~400 ms (note-off not needed) |
 | 4 | Wrong | Red flash, fades ~400 ms (note-off not needed) |
@@ -31,7 +31,8 @@ hints go out on channel 2 from another track. Each set needs its own lights trac
   (Keep the cap small: big caps on a USB port trip its inrush protection.)
 - Onboard RGB LED (GPIO21) is the status light: dim green idle, blue blink on MIDI, see update mode below.
 
-Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA`, `BRIGHTNESS` and the key mapping.
+Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA`, `BRIGHTNESS`, the key mapping, and the fade
+times `RELEASE_MS` / `SUSTAIN_MS`.
 `MAX_MA` (250) caps the strip, idle draw included: FastLED counts 1 mA per LED, so 144 of it is idle and ~106 is
 left for lit keys. Its model under-reads SK9822s (about 15 mA for full blue against ~20 mA real), so the real
 worst case is ~300 mA for the strip, ~350-380 mA with the board on the same 500 mA port. `BRIGHTNESS` (128 = 50%)

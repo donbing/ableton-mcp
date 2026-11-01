@@ -10,7 +10,7 @@ Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital
 
 | Output channel | Meaning | Look |
 |---|---|---|
-| 1 | Play: what the user is playing | Blue, brightness from velocity, fades ~330 ms after release, held by sustain (CC64) |
+| 1 | Play: what the user is playing | Blue, brightness from velocity, fades ~450 ms after release; ~4 s with sustain (CC64) down |
 | 2 | Hint: play this next | Steady amber while the note is held |
 | 3 | Correct | Green flash, ~400 ms (no note-off needed) |
 | 4 | Wrong | Red flash, ~400 ms (no note-off needed) |
