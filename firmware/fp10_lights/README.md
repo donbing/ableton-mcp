@@ -14,6 +14,7 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 | 4 | Wrong | Red flash, fades ~400 ms (note-off not needed) |
 | any | CC120 or CC123 | Clears everything |
 | 16 | CC119 ≥ 64 / < 64 | Wireless update mode on / off |
+| 16 | CC118 ≥ 64 / < 64 | Calibration mode on / cancel |
 
 Colours add where channels overlap on the same key. Channels 5-15 are ignored.
 
@@ -28,8 +29,29 @@ Lesson hints go out on channel 2 from another track (or the MCP).
   (Keep the cap small: big caps on a USB port trip its inrush protection.)
 - Onboard RGB LED (GPIO21) is the status light: dim green idle, blue blink on MIDI, see update mode below.
 
-Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA` (power cap, 300 mA leaves room for the
-SK9822s' idle draw), and the key mapping `FIRST_NOTE` / `LEDS_PER_NOTE` / `REVERSED`.
+Settings at the top of `fp10_lights.ino`: pins, `COLOR_ORDER`, `MAX_MA`, `BRIGHTNESS` and the key mapping.
+`MAX_MA` (250) caps the strip, idle draw included: FastLED counts 1 mA per LED, so 144 of it is idle and ~106 is
+left for lit keys. Its model under-reads SK9822s (about 15 mA for full blue against ~20 mA real), so the real
+worst case is ~300 mA for the strip, ~350-380 mA with the board on the same 500 mA port. `BRIGHTNESS` (128 = 50%)
+dims everything on the strip (not the status LED) and halves the current; the cap only bites when many keys are lit. The mapping follows the keyboard layout at the back of the keys, where the
+strip sits: C-E split into 5 equal slots and F-B into 7, black keys included (so B's back is right of its front's
+middle, and C's left). It is fixed by which LED sits under the middle of C1 and C6. Each key
+lights the one LED nearest its middle; `WHITE_SPAN` / `BLACK_SPAN` (share of the key's width, e.g. 0.8 / 0.5)
+light more. `REVERSED` flips the strip.
+
+## Calibrating from the piano
+
+With the lights track routing the FP-10 to the board (channel 1), run `./board.sh calibrate` (or send CC118 ≥ 64
+on channel 16, or type `calibrate` on serial). The onboard LED turns cyan and one white LED shows where C1 lights.
+On an 88-key piano C1 (MIDI 36, Live's names) is the 2nd C from the bottom and C6 (MIDI 96) the 2nd C from the top.
+
+1. Play any key below C1 to move the light one LED left, any key above to move it right.
+2. When it sits in the middle of C1, play C1.
+3. The light jumps to C6: the same again, then play C6.
+
+Both points are saved on the board and survive updates; `show` on serial prints them, `forget` clears them along
+with the Wi-Fi details. `CAL_LOW_LED` / `CAL_HIGH_LED` are only the defaults for a board never calibrated.
+`./board.sh calibrate off` cancels, and so does 5 minutes without a key.
 
 ## Building
 
@@ -60,6 +82,14 @@ forget                   # clears everything
 update                   # starts update mode
 ```
 
-Start update mode by holding BOOT for 2 s, sending CC119 ≥ 64 on channel 16, or typing `update`. The onboard LED
+Start update mode by holding BOOT for 2 s, sending CC119 ≥ 64 on channel 16, or typing `update`. With the board
+on the Push, `./board.sh update` (run from a PC with `ssh push3`) sends the CC for you; then `./build.sh ota` on
+moo. `./board.sh update off` ends it. The onboard LED
 blinks amber while connecting, turns purple when ready, white while updating, red on failure. Update mode turns
 itself off after 10 minutes.
+
+After an update the board restarts, and about one restart in three the Push refuses it (`dmesg`: `can't set
+config #1, error -32`, no FP10 Lights port in Live; the board's LED stays green). Unplug and replug it; if it stays dark, use another hub port (that fixed it twice
+when the same port didn't, and the first port worked again later). Tried
+without success (2026-11-01): a clean USB disconnect before restarting, restarting through deep sleep, and the
+board reconnecting itself when unconfigured (from the board's side the connection looked fine, MIDI included).
