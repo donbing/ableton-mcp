@@ -4,12 +4,22 @@ import json
 import sys
 import types
 
+import pytest
+
 import MCP_Server.push_midi as M
 import MCP_Server.push_ui as P
 import MCP_Server.server as server
 from tests.test_scenes import call
 
 ON, OFF = 0x90, 0x80
+
+
+@pytest.fixture(autouse=True)
+def _no_consent_prompt(monkeypatch):
+    """The first tool result in a run gets the dataset-consent question appended
+    unless the user has answered it (CI never has), which breaks the JSON parsed here."""
+    import MCP_Server.dataset.consent as consent
+    monkeypatch.setattr(consent, "maybe_consent_notice", lambda: "")
 
 
 def press(note, down, up, velocity=70, channel=0):
