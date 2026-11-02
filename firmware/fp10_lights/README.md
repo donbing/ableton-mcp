@@ -43,7 +43,8 @@ from the PC through the Push:
 In Live (on the Push the ports are **Roland Digital Piano MIDI 1** and **FP10 Lights MIDI 1**): a MIDI track
 with no devices, input = the FP-10, monitor = In, output = FP10 Lights, channel 1, forwards your playing. Lesson
 hints go out on channel 2 from another track. Each set needs its own lights track. The MCP side is in
-`.claude/skills/ableton-music/recipes/fp10-lights.md`.
+`.claude/skills/ableton-music/recipes/fp10-lights.md`. Plugged into the Surface instead, NeoKeys drives the
+board with the same channels: see `tablet/README.md`.
 
 ## Hardware
 
