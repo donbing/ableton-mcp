@@ -16,8 +16,29 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 | 16 | CC119 ≥ 64 / < 64 | Wireless update mode on / off |
 | 16 | CC118 ≥ 64 / < 64 | Calibration mode on / cancel |
 | 16 | CC117 ≥ 64 | Restart (for `board.sh restart-test`) |
+| 16 | CC116 = note | Split: play notes below it light violet (left hand); 0 = off. Saved on the board |
+| 16 | CC115 ≥ 64 / < 64 | Sparks on / off: each play note throws sparks along the strip. Saved on the board |
 
 Colours add where channels overlap on the same key. Channels 5-15 are ignored.
+
+## Options
+
+Both are saved on the board (they survive updates; `show` on serial prints them, `forget` clears them) and set
+from the PC through the Push:
+
+```sh
+./board.sh split          # left hand violet below C3 (MIDI 60, Live's names)
+./board.sh split F#2      # or below any note: Live's names or a MIDI number
+./board.sh split off
+./board.sh sparks         # sparks on
+./board.sh sparks off
+```
+
+- **Split** recolours only play notes (channel 1) below the split note, in `LEFT_COLOUR`; hints and flashes stay
+  as they are. It goes by pitch, so a hand crossing over takes the other hand's colour.
+- **Sparks:** each play note throws 2-4 sparks out of its key, more and faster for harder notes. They start
+  white-hot, cool to the note's colour (violet ones from the left hand), slow down and fade in ~0.5 s
+  (`SPARK_SPEED`, `SPARK_DRAG`, `SPARK_MS`). They glide between LEDs and are in the power tier that dims first.
 
 In Live (on the Push the ports are **Roland Digital Piano MIDI 1** and **FP10 Lights MIDI 1**): a MIDI track
 with no devices, input = the FP-10, monitor = In, output = FP10 Lights, channel 1, forwards your playing. Lesson

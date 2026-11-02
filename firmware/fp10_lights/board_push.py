@@ -6,6 +6,9 @@ Live holds the board's raw MIDI port, so CCs go through the ALSA sequencer from 
     update [off]       Wi-Fi update mode (CC119)
     calibrate [off]    calibration mode (CC118)
     restart            restart the board (CC117)
+    split [NOTE|off]   left-hand colour for play notes below NOTE (CC116, value = the note): Live's names
+                       (C3 = MIDI 60, the default; F#2, Bb1) or a MIDI number. Saved on the board.
+    sparks [off]       each play note throws sparks along the strip (CC115). Saved on the board.
     restart-test [N]   restart N times (10); after each, check the Push sets the board up again (USB
                        configuration and MIDI port), following it through any restarts of its own: when the
                        Push refuses it ("can't set config #1, error -32"), the board restarts itself after 3 s.
@@ -18,7 +21,28 @@ import time
 from MCP_Server.push_midi import open_output
 
 PORT = "FP10 Lights MIDI 1"
-CCS = {"update": 119, "calibrate": 118, "restart": 117}
+CCS = {"update": 119, "calibrate": 118, "restart": 117, "split": 116, "sparks": 115}
+NOTE_NAMES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+
+def note_number(text):
+    """A MIDI note from Live's names (C3 = 60, F#2, Bb-1) or a number."""
+    if text.isdigit():
+        n = int(text)
+    else:
+        name = text[0].upper()
+        if name not in NOTE_NAMES:
+            raise SystemExit("not a note: %s" % text)
+        rest = text[1:]
+        shift = 1 if rest[:1] == "#" else -1 if rest[:1] == "b" else 0
+        rest = rest[1:] if shift else rest
+        try:
+            n = NOTE_NAMES[name] + shift + 12 * (int(rest) + 2)
+        except ValueError:
+            raise SystemExit("not a note: %s" % text)
+    if not 1 <= n <= 127:
+        raise SystemExit("note out of range (1-127): %s" % text)
+    return n
 MAX_SELF_RESTARTS = 5
 
 
@@ -108,7 +132,13 @@ def main(args):
     if not args:
         raise SystemExit(__doc__)
     cmd = args[0]
-    if cmd in ("update", "calibrate"):
+    if cmd == "split":
+        arg = args[1] if len(args) > 1 else "C3"
+        note = 0 if arg == "off" else note_number(arg)
+        send_cc(CCS[cmd], note)
+        print("split off" if not note else "split at %s (MIDI %d): notes below it light the left-hand colour"
+              % (arg, note))
+    elif cmd in ("update", "calibrate", "sparks"):
         off = len(args) > 1 and args[1] == "off"
         send_cc(CCS[cmd], 0 if off else 127)
         print("%s %s" % (cmd, "off" if off else "on"))

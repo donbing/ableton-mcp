@@ -16,6 +16,10 @@
 //   A white LED shows where C1 lights. Play any key below C1 to move it left, above to move it right,
 //   then C1 to accept. The same for C6. Both points are saved on the board. Onboard LED: cyan.
 //
+// Options, saved on the board (board.sh split / sparks):
+//   CC116 on channel 16 = split note: play notes below it (the left hand) light LEFT_COLOUR; 0 = off
+//   CC115 on channel 16 >= 64 / < 64: sparks on / off: each play note throws sparks along the strip
+//
 // Restart: CC117 >= 64 on channel 16 (board.sh restart / restart-test, for testing how the Push takes it back).
 //   If the Push hasn't set the board up 3 s after it starts, it restarts itself (usbWatch()).
 //
@@ -65,6 +69,8 @@
 #define OTA_CHANNEL     15     // MIDI channel 16
 #define OTA_CC          119
 #define RESTART_CC      117    // on OTA_CHANNEL
+#define SPLIT_CC        116    // on OTA_CHANNEL
+#define SPARKS_CC       115    // on OTA_CHANNEL
 #define USB_SETUP_MS    3000   // not set up by the Push this long after starting: restart (see usbWatch())
 #define OTA_TIMEOUT_MS  (10UL * 60 * 1000)
 #define WIFI_TIMEOUT_MS 20000
@@ -86,6 +92,15 @@ const float HINT_LEVEL = 0.6f;    // a hint at velocity 127; softer hints are di
 // Velocity sets perceived brightness, evenly from MIN_SEEN at velocity 1 to full at 127. (Setting light from
 // velocity instead left the softest note at ~56% of the loudest to the eye, so playing soft and loud looked alike.)
 const float MIN_SEEN   = 0.3f;    // softest note, in perceived brightness (light^(1/HD_GAMMA))
+
+const CRGB LEFT_COLOUR = CRGB(210, 0, 255);  // play notes below the split, when it's on: violet, away from the rest
+
+// Sparks: each play note throws 2-4 from its key, out along the strip. They start white-hot, cool to the note's
+// colour, slow down and fade. Harder notes throw more, faster and brighter.
+#define MAX_SPARKS     48
+const float SPARK_SPEED = 0.8f;   // LEDs per 10 ms frame at velocity 127, before the random spread
+const float SPARK_DRAG  = 0.93f;  // speed kept per frame: a spark at full speed travels ~11 LEDs
+const float SPARK_MS    = 500;    // average life
 
 // The strip runs as FastLED's SK9822HD: it applies a 2.8 gamma to what it's sent and uses the chips' 5-bit global
 // brightness, which gives fine steps near dark (plain SK9822 has ~128 steps at 50% brightness and dithering
@@ -117,6 +132,17 @@ bool  sustained[128];    // play notes released while pedal down: they fade slow
 bool  pedal = false;
 uint32_t lastMidiMs = 0;
 
+uint8_t splitNote = 0;   // play notes below it get LEFT_COLOUR; 0 = off
+bool sparksOn = false;
+
+struct Spark {
+  float pos, speed;  // LED (logical, before REVERSED), LEDs per frame (negative = left)
+  float life, fade;  // 1 -> 0, and how much a frame takes off
+  float bright;      // linear light at the start
+  CRGB colour;       // what it cools to
+};
+Spark sparks[MAX_SPARKS];  // life <= 0 = free
+
 enum OtaState { OTA_OFF, OTA_CONNECTING, OTA_READY, OTA_UPDATING, OTA_FAILED };
 OtaState ota = OTA_OFF;
 uint32_t otaSince = 0;
@@ -125,6 +151,7 @@ void clearAll() {
   memset(level, 0, sizeof(level));
   memset(held, 0, sizeof(held));
   memset(sustained, 0, sizeof(sustained));
+  memset(sparks, 0, sizeof(sparks));
 }
 
 // ---- Settings (NVS) ----
@@ -154,6 +181,20 @@ void saveCalibration() {
   prefs.begin("fp10", false);
   prefs.putFloat("cal_lo", calLowLed);
   prefs.putFloat("cal_hi", calHighLed);
+  prefs.end();
+}
+
+void loadOptions() {
+  prefs.begin("fp10", true);
+  splitNote = prefs.getUChar("split", 0);
+  sparksOn = prefs.getBool("sparks", false);
+  prefs.end();
+}
+
+void saveOptions() {
+  prefs.begin("fp10", false);
+  prefs.putUChar("split", splitNote);
+  prefs.putBool("sparks", sparksOn);
   prefs.end();
 }
 
@@ -328,18 +369,19 @@ void runCommand(String line) {
     }
   } else if (line == "show") {
     String ssid = setting("ssid");
-    Serial.printf("ssid: %s\npass: %s\notapass: %s\nC1 = LED %.1f, C6 = LED %.1f\n",
+    Serial.printf("ssid: %s\npass: %s\notapass: %s\nC1 = LED %.1f, C6 = LED %.1f\nsplit: %d (0 = off)\nsparks: %s\n",
                   ssid.length() ? ssid.c_str() : "(not set)",
                   setting("pass").length() ? "set" : "not set",
                   setting("otapass").length() ? "set" : "not set",
-                  calLowLed, calHighLed);
+                  calLowLed, calHighLed, splitNote, sparksOn ? "on" : "off");
   } else if (line == "forget") {
     prefs.begin("fp10", false);
     prefs.clear();
     prefs.end();
     loadCalibration();
+    loadOptions();
     buildKeyMap();
-    Serial.println("settings cleared (Wi-Fi and calibration)");
+    Serial.println("settings cleared (Wi-Fi, calibration, split and sparks)");
   } else if (line == "update") {
     otaStart();
   } else if (line == "calibrate") {
@@ -369,11 +411,32 @@ float velLevel(int vel) {
   return powf(MIN_SEEN + (1 - MIN_SEEN) * (vel - 1) / 126.0f, HD_GAMMA);
 }
 
+CRGB playColour(int note) { return splitNote && note < splitNote ? LEFT_COLOUR : CH_COLOUR[0]; }
+
+float randomIn(float lo, float hi) { return lo + (hi - lo) * (esp_random() / 4294967296.0f); }
+
+void throwSparks(int note, int vel) {
+  int count = 2 + vel / 50;  // 2-4
+  float from = (keyFirst[note] + keyLast[note]) / 2.0f;
+  for (int k = 0; k < count; k++) {
+    Spark *s = &sparks[0];  // a free one, or else the most faded
+    for (int i = 0; i < MAX_SPARKS && s->life > 0; i++)
+      if (sparks[i].life < s->life) s = &sparks[i];
+    s->pos = from;
+    s->speed = (k % 2 ? 1 : -1) * SPARK_SPEED * (0.3f + 0.7f * vel / 127) * randomIn(0.5f, 1.4f);
+    s->life = 1;
+    s->fade = 10 / (SPARK_MS * randomIn(0.6f, 1.4f));
+    s->bright = velLevel(vel);
+    s->colour = playColour(note);
+  }
+}
+
 void noteOn(int ch, int note, int vel) {
   held[ch][note] = true;
   if (ch == 0) {
     sustained[note] = false;
     level[ch][note] = velLevel(vel);
+    if (sparksOn) throwSparks(note, vel);
   } else if (ch == 1) {
     level[ch][note] = HINT_LEVEL * velLevel(vel);
   } else {
@@ -403,6 +466,12 @@ void handlePacket(const midiEventPacket_t &p) {
     return;
   }
   if (type == 0xB0 && ch == OTA_CHANNEL && d1 == RESTART_CC && d2 >= 64) ESP.restart();
+  if (type == 0xB0 && ch == OTA_CHANNEL && (d1 == SPLIT_CC || d1 == SPARKS_CC)) {
+    if (d1 == SPLIT_CC) splitNote = d2;
+    else sparksOn = d2 >= 64;
+    saveOptions();
+    return;
+  }
   if (type == 0xB0 && ch == OTA_CHANNEL && d1 == CAL_CC) {
     if (d2 >= 64) calStart();
     else if (calStep >= 0) calStop();
@@ -457,6 +526,13 @@ void updateLevels() {
     level[2][n] = max(0.0f, level[2][n] - FLASH_FADE);
     level[3][n] = max(0.0f, level[3][n] - FLASH_FADE);
   }
+  for (Spark &s : sparks) {
+    if (s.life <= 0) continue;
+    s.pos += s.speed;
+    s.speed *= SPARK_DRAG;
+    s.life -= s.fade;
+    if (s.pos < -1 || s.pos > NUM_LEDS) s.life = 0;
+  }
 }
 
 CRGB statusColour() {
@@ -495,7 +571,7 @@ void render() {
     for (int ch = 0; ch < 4; ch++) {
       if (level[ch][n] <= 0) continue;
       float scale = level[ch][n] * BRIGHTNESS / (255.0f * 255.0f);
-      const CRGB &c = CH_COLOUR[ch];
+      CRGB c = ch == 0 ? playColour(n) : CH_COLOUR[ch];
       int tier = ch > 0 ? TIER_GUIDE : held[0][n] ? TIER_HELD : TIER_FADING;
       for (int i = keyFirst[n]; i <= keyLast[n]; i++) {
         if (i < 0 || i >= NUM_LEDS) continue;
@@ -504,6 +580,22 @@ void render() {
         l[1] += c.g * scale;
         l[2] += c.b * scale;
       }
+    }
+  }
+  // Sparks: between two LEDs, shared by how close each is, so they glide; in the tier that dims first
+  for (const Spark &s : sparks) {
+    if (s.life <= 0) continue;
+    CRGB c = blend(CRGB::White, s.colour, uint8_t(255 * (1 - s.life)));  // white-hot, cooling to the note's colour
+    float scale = s.bright * s.life * s.life * BRIGHTNESS / (255.0f * 255.0f);
+    int first = floorf(s.pos);
+    float share[2] = {1 - (s.pos - first), s.pos - first};
+    for (int k = 0; k < 2; k++) {
+      int i = first + k;
+      if (i < 0 || i >= NUM_LEDS) continue;
+      float *l = light[TIER_FADING][REVERSED ? NUM_LEDS - 1 - i : i];
+      l[0] += c.r * scale * share[k];
+      l[1] += c.g * scale * share[k];
+      l[2] += c.b * scale * share[k];
     }
   }
   // Power cap, worked out here: FastLED's own would count the gamma-encoded values and dim chords far too soon.
@@ -547,6 +639,7 @@ void setup() {
   FastLED.setDither(0);  // SK9822HD has the steps; dithering only made them flicker
   clearAll();
   loadCalibration();
+  loadOptions();
   buildKeyMap();
   otaSetup();
   MIDI.begin();

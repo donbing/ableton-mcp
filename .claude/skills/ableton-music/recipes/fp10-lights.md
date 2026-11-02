@@ -17,9 +17,16 @@ Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital
 | any | CC120 / CC123 (All Sound / All Notes Off) | Clears everything |
 
 Colours add where channels overlap on one key. Channels 5-15 are ignored; channel 16 CC119 switches the board's
-Wi-Fi update mode, CC118 calibration mode and CC117 restarts it, so never send those on channel 16 from Live.
-From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and `board.sh restart` send them over SSH
-from a hidden port; after `update`, run `build.sh ota` on moo.
+Wi-Fi update mode, CC118 calibration mode, CC117 restarts it, CC116 sets the split and CC115 sparks, so never send
+those on channel 16 from Live. From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and
+`board.sh restart` send them over SSH from a hidden port; after `update`, run `build.sh ota` on moo.
+
+Options the user can switch, saved on the board (`board.sh`, from the PC):
+
+- `board.sh split [NOTE|off]`: play notes below NOTE (Live's names, C3 = 60 by default) light violet, a
+  left-hand colour; by pitch, not by hand. Hints and flashes keep their colours.
+- `board.sh sparks [off]`: each played note throws sparks out along the strip (white-hot, cooling to the note's
+  colour, ~0.5 s). Worth suggesting for free play; for a lesson where hints matter, they may distract.
 
 The 1 m strip covers about MIDI notes 29-100 (F0-E5 in Live's names, where 60 = C3); notes outside stay dark. The
 firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them, notes left ringing
