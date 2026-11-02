@@ -66,7 +66,15 @@ C6; the board saves both (README "Calibrating from the piano"). The keys reach t
 track, so check the OPEN set has one first: each set needs its own, and the user may switch sets mid-task
 (2026-11-01: calibration "did nothing" because they had opened a song set without one).
 
-## Hints, lessons and right/wrong (more later)
+## Lessons on the Surface (NeoKeys)
+
+For practising set pieces the user can move the piano's and the board's USB cables from the Push to the Surface
+and run NeoKeys there (`tablet/` in the ableton-mcp repo, `tablet\NeoKeys.cmd`). Then NeoKeys drives the strip:
+hints, green/red flashes in practice mode, and the user's playing echoed in blue. While the cables are on the
+Surface, Live doesn't hear the piano and can't reach the strip, so none of the steps here work: ask where the
+cables are before debugging a lights track.
+
+## Hints, lessons and right/wrong from Live (more later)
 
 A track with monitoring "in" ignores its own clips, so anything played from clips goes on a second empty MIDI
 track, `FP10 Hints`, with no input, monitoring "off" and output FP10 Lights on the channel you want:

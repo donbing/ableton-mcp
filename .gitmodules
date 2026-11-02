@@ -1,0 +1,3 @@
+[submodule "tablet/neokeys"]
+	path = tablet/neokeys
+	url = https://github.com/ArtinSHF/NeoKeys.git
