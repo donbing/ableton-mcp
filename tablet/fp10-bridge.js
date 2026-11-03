@@ -11,15 +11,22 @@
 // NeoKeys itself sends the song to every MIDI output on channel 1. That's kept
 // for the piano, but the strip is taken out of that list so the song doesn't
 // light up as if you played it.
+//
+// With the piano and the strip on the Push instead, both go through the Push's
+// MIDI hub (MCP_Server/midi_hub.py) over Wi-Fi: the piano's notes are fed to
+// NeoKeys as if they came from Web MIDI, and the strip's messages go back the
+// same way. ?hub=ws://host:port picks the hub, ?hub=off skips it.
 (() => {
   'use strict';
 
   const LIGHTS = /FP10 Lights/i;
+  const HUB_URL = new URLSearchParams(location.search).get('hub') || 'ws://push.local:8766';
+  const HUB_SKIP = /Ableton Push 3/;   // the Push's pads aren't piano keys
   const LOOKAHEAD_MS = 1200;           // real time a hint shows before its note
   const HINT_LEVELS = [20, 45, 80];    // velocities from far to near; 127 = due now
 
   // Everything we touch in NeoKeys. If an update renames one, the badge says so.
-  const HOOKS = ['initMIDI', 'awardHit', 'awardMiss', 'sendHardwareNoteOn', 'sendHardwareNoteOff',
+  const HOOKS = ['initMIDI', 'onMIDIMessage', 'awardHit', 'awardMiss', 'sendHardwareNoteOn', 'sendHardwareNoteOff',
                  'sendHardwarePedal', 'allHardwareNotesOff', 'shouldPauseForHand'];
   const missing = HOOKS.filter(name => typeof window[name] !== 'function');
   if (typeof state === 'undefined' || !state.notes || !state.waitingFor) missing.push('state');
@@ -40,12 +47,24 @@
   showBadge('FP10 Lights: press Start', '#555');
 
   let lights = [];                     // MIDIOutput ports of the strip
+  let hub = null, hubLights = null;    // the Push's hub socket, and its name for the strip
   const lit = new Map();               // hint note -> velocity sent on ch 2
 
   const send = (bytes) => {
     for (const out of lights) {
       try { out.send(bytes); } catch (e) { /* unplugged */ }
     }
+    if (hubLights && hub.readyState === WebSocket.OPEN) {
+      hub.send(JSON.stringify({ type: 'midi', to: hubLights, data: bytes }));
+    }
+  };
+  const haveLights = () => lights.length > 0 || hubLights !== null;
+
+  const showStatus = () => {
+    if (lights.length) showBadge('FP10 Lights connected', '#2d8a4e');
+    else if (hubLights) showBadge('FP10 Lights on the Push', '#2d8a4e');
+    else if (hub && hub.readyState === WebSocket.OPEN) showBadge('Push hub: FP10 Lights not found', '#a06a10');
+    else showBadge('FP10 Lights not found', '#a06a10');
   };
 
   // ---- keep the strip out of NeoKeys' song pass-through ----
@@ -83,14 +102,39 @@
       if (!LIGHTS.test(input.name || '')) input.addEventListener('midimessage', echo);
     }
     lit.clear();                       // a replugged board starts dark
-    if (lights.length) showBadge('FP10 Lights connected', '#2d8a4e');
-    else showBadge('FP10 Lights not found', '#a06a10');
+    showStatus();
+  };
+
+  // ---- the Push's hub: the piano in, the strip out ----
+  const connectHub = () => {
+    const ws = new WebSocket(HUB_URL);
+    hub = ws;
+    ws.onmessage = (e) => {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (err) { return; }
+      if (msg.type === 'hello' || msg.type === 'sources') {
+        const name = (msg.outputs || []).find(n => LIGHTS.test(n)) || null;
+        if (name !== hubLights) lit.clear();   // a replugged board starts dark
+        hubLights = name;
+        showStatus();
+      } else if (msg.type === 'midi' && !HUB_SKIP.test(msg.src) && !LIGHTS.test(msg.src)) {
+        window.onMIDIMessage({ data: msg.data });  // NeoKeys' own Web MIDI handler
+        echo({ data: msg.data });
+      }
+    };
+    ws.onclose = () => {
+      if (hub !== ws) return;
+      hubLights = null;
+      showStatus();
+      setTimeout(connectHub, 2000);            // the Push asleep or the hub not started yet
+    };
   };
 
   // NeoKeys asks for MIDI when Start is pressed; ask for our own access then.
   const origInit = window.initMIDI;
   window.initMIDI = async function () {
     await origInit.apply(this, arguments);
+    if (HUB_URL !== 'off' && !hub) connectHub();
     if (!navigator.requestMIDIAccess) return;
     try {
       const access = await navigator.requestMIDIAccess({ sysex: false });
@@ -127,7 +171,7 @@
   };
 
   const frame = () => {
-    if (lights.length) {
+    if (haveLights()) {
       const want = wanted();
       for (const [midi] of lit) {
         if (!want.has(midi)) { send([0x81, midi, 0]); lit.delete(midi); }
