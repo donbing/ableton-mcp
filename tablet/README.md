@@ -43,6 +43,37 @@ the piano too. The badge says "FP10 Lights on the Push". Add `?hub=ws://host:por
 another hub, or `?hub=off` to use only Web MIDI. Starting the hub makes Live rescan its MIDI ports once, so don't
 hold a note just then. The hub's protocol is in `MCP_Server/midi_hub.py`.
 
+## Claude me lessons
+
+The **🎓 Lessons** tab turns the loaded song into short practice lessons. Load a song (Built-in, Recent or a
+.mid file), then press **✨ Claude me**, or **🎓 Claude me** on the end-of-song screen. Claude plans 3-12 lessons,
+for example: the tune of the first phrase in the right hand at 60%, its chords as held left-hand blocks, both
+together, then the whole song. Click a lesson to load it in practice mode with its hand and tempo set; the strip
+hints and flashes as usual. At the end the screen says whether it passed (accuracy and wrong notes against the
+lesson's limits) and offers the next lesson, the same one 10% slower, or one hand at a time. **Quick plan** makes a
+plan without Claude.
+
+Each lesson is built in the browser from the song's own notes: the bars it names, as written, the right hand's
+top line, or one held triad per chord change. Its tempo is written into the lesson file, so the Tempo slider goes
+back to 1x. Plans and every run (accuracy, wrong notes, notes per bar) stay in the browser; 📋 downloads them
+as JSON, and the next Claude me for that song sends the recent runs so the new plan can go back over weak bars.
+
+Claude needs an API key where `serve.ps1` runs (the Surface), once:
+
+```powershell
+setx ANTHROPIC_API_KEY "sk-ant-..."
+```
+
+then start NeoKeys again. The page never sees the key: it sends `serve.ps1` a summary of the song (key, chords per
+half bar, sections, hand ranges, notes per bar; no notes), and `serve.ps1` asks the Claude API
+(`claude-opus-5-5`, set `CLAUDE_ME_MODEL` for another) and passes back the plan. Only NeoKeys as served by
+`serve.ps1` can ask. A plan takes a few seconds to a minute, and the server answers nothing else meanwhile.
+
+Limits: the analysis guesses the key from the notes when the file's key signature disagrees, names chords from
+the key's own chords (plus secondary dominants), and finds repeated phrases only when they repeat exactly (on a
+fine grid), so performed classical MIDI files often show every phrase as new. A tempo change inside the song is
+ignored (lessons use the first tempo). Practice mode checks which notes you play, not how long you hold them.
+
 ## How it fits together
 
 - `neokeys/` is a git submodule of upstream NeoKeys, never edited. Update it with
@@ -50,9 +81,13 @@ hold a note just then. The hub's protocol is in `MCP_Server/midi_hub.py`.
 - `fp10-bridge.js` adds the strip. It wraps a few of NeoKeys' global functions (`initMIDI`, `awardHit`,
   `awardMiss`, the `sendHardware*` helpers) and reads its `state` each frame for the hints. If an update renames
   any of them, the badge turns red and names what's missing, and NeoKeys runs as before without the strip.
-- `serve.ps1` (Windows PowerShell, nothing to install) serves `neokeys/index.html` with the bridge added and
-  NeoKeys' Cloudflare analytics beacon left out. Chrome only allows Web MIDI on secure pages, and `localhost`
-  counts as one.
+- `claude-me.js` adds the Lessons tab the same way: it wraps `loadMidiObject`, `awardHit`/`awardMiss`,
+  `restartCurrentSong`, `showVictoryOverlay` and `setTracksTab`, and uses NeoKeys' `Midi` and `MidiWriter` plus
+  tonal.js (loaded by `serve.ps1`). If any is missing it logs a warning and the tab doesn't appear.
+  `claude-me-plan.schema.json` is the plan format Claude must answer in.
+- `serve.ps1` (Windows PowerShell, nothing to install) serves `neokeys/index.html` with the bridge and the
+  lessons added and NeoKeys' Cloudflare analytics beacon left out, plus the `/api/claude-me/` endpoints. Chrome
+  only allows Web MIDI on secure pages, and `localhost` counts as one.
 
 The strip's MIDI protocol is in `firmware/fp10_lights/README.md`.
 
