@@ -19,7 +19,8 @@ To the hub:
 
     {"type": "midi", "to": name, "data": [status, d1, d2]}                one of "outputs" (only FP10 Lights)
 
-Names are the ALSA port names, as Live shows them ("Roland Digital Piano MIDI 1"). Only channel messages are
+Notes a client turns on are turned off when it goes (or the hub stops), so a dropped connection doesn't leave
+keys lit. Names are the ALSA port names, as Live shows them ("Roland Digital Piano MIDI 1"). Only channel messages are
 passed on (no sysex, clock or active sensing). From the Push's own pad port only pad notes (36-99) are, since
 its buttons and encoders send a stream of CCs there. Starting the hub makes Live rescan its MIDI ports once
 (about 1 s after our ports appear): a note held right then may hang in Live.
@@ -70,6 +71,17 @@ def parse_request(text, outputs):
             or not 0x80 <= data[0] <= 0xEF or any(b > 127 for b in data[1:])):
         return None
     return msg["to"], data
+
+
+def track_held(held, output, data):
+    """Keep `held`, the (output, channel, note) a client has on, up to date with a message it sent."""
+    kind, channel = data[0] & 0xF0, data[0] & 0x0F
+    if kind == 0x90 and len(data) == 3 and data[2]:
+        held.add((output, channel, data[1]))
+    elif kind in (0x80, 0x90) and len(data) >= 2:
+        held.discard((output, channel, data[1]))
+    elif kind == 0xB0 and len(data) >= 2 and data[1] in (120, 123):
+        held.difference_update({h for h in held if h[:2] == (output, channel)})
 
 
 class SeqIn:
@@ -165,6 +177,7 @@ class Hub:
     def __init__(self):
         from MCP_Server.push_midi import HiddenOut
         self.clients = set()
+        self.held = {}  # client -> the (output, channel, note) it has on, turned off when it goes
         self.seq = SeqIn(self.played, self.ports_changed)
         self.out = HiddenOut(OUTPUTS[0])  # one sending port, pointed at whichever output a message is for
         self.outputs = {}  # name -> (client, port)
@@ -199,28 +212,55 @@ class Hub:
                 from websockets.asyncio.server import broadcast
                 broadcast(self.clients, self.state("sources"))
 
+    def send(self, output, data):
+        if output in self.outputs:
+            self.out.dest = self.outputs[output]
+            self.out.send_message(data)
+
+    def release(self, held):
+        """Note-offs for what a client left on: a dropped connection would otherwise leave keys lit."""
+        for output, channel, note in sorted(held):
+            self.send(output, [0x80 | channel, note, 0])
+        if held:
+            print("turned off %d note(s) left on" % len(held), flush=True)
+        held.clear()
+
     async def client(self, ws):
+        from websockets.exceptions import ConnectionClosed
         self.clients.add(ws)
+        held = self.held[ws] = set()
         print("client connected:", ws.remote_address[0], flush=True)
         try:
             await ws.send(self.state("hello"))
             async for text in ws:
                 request = parse_request(text, self.outputs)
                 if request:
-                    self.out.dest = self.outputs[request[0]]
-                    self.out.send_message(request[1])
+                    track_held(held, *request)
+                    self.send(*request)
+        except ConnectionClosed:
+            pass  # dropped without a goodbye (Wi-Fi gone, tab killed): the same as leaving
         finally:
             self.clients.discard(ws)
+            self.release(self.held.pop(ws))
             print("client left:", ws.remote_address[0], flush=True)
 
     async def run(self, host, port):
+        import signal
         from websockets.asyncio.server import serve
         loop = asyncio.get_running_loop()
         loop.add_reader(self.seq.fileno(), self.seq.drain)
+        stop = loop.create_future()
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # kill, Ctrl+C, timeout, a closed SSH session
+            loop.add_signal_handler(sig, lambda: stop.done() or stop.set_result(None))
         self.refresh()
-        async with serve(self.client, host, port, compression=None):
-            print("MIDI hub on ws://%s:%d" % (host, port), flush=True)
-            await asyncio.Future()
+        try:
+            async with serve(self.client, host, port, compression=None):
+                print("MIDI hub on ws://%s:%d" % (host, port), flush=True)
+                await stop
+        finally:
+            for held in self.held.values():
+                self.release(held)
+            print("MIDI hub stopped", flush=True)
 
 
 def main():

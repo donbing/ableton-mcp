@@ -37,3 +37,18 @@ def test_request_needs_a_known_output_and_a_channel_message():
         assert parse_request(json.dumps(bad), LIGHTS) is None
     assert parse_request("not json", LIGHTS) is None
     assert parse_request("[1, 2]", LIGHTS) is None
+
+
+def test_held_notes_follow_offs_and_all_notes_off():
+    """A client that drops mid-note left keys lit (2026-11-03): the hub keeps what each one has on."""
+    from MCP_Server.midi_hub import track_held
+    held = set()
+    track_held(held, LIGHTS[0], [0x90, 48, 90])
+    track_held(held, LIGHTS[0], [0x90, 50, 90])
+    track_held(held, LIGHTS[0], [0x91, 60, 45])
+    track_held(held, LIGHTS[0], [0x80, 48, 0])
+    track_held(held, LIGHTS[0], [0x90, 50, 0])  # note-on with velocity 0 is an off
+    assert held == {(LIGHTS[0], 1, 60)}
+    track_held(held, LIGHTS[0], [0x90, 52, 90])
+    track_held(held, LIGHTS[0], [0xB1, 123, 0])  # all notes off clears its own channel only
+    assert held == {(LIGHTS[0], 0, 52)}
