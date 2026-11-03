@@ -59,3 +59,28 @@ def test_ping_gets_its_own_time_back():
     assert json.loads(pong_for(json.dumps({"type": "ping", "t": 1234.5}))) == {"type": "pong", "t": 1234.5}
     assert pong_for(json.dumps({"type": "midi", "to": LIGHTS[0], "data": [0x90, 60, 1]})) is None
     assert pong_for("not json") is None
+
+
+def test_timing_summary():
+    from MCP_Server.midi_hub import timing
+    assert timing([40, 10, 30, 20, 1000]) == "n=5, median 30 ms, 95% 1000 ms, max 1000 ms"
+    assert timing([7]) == "n=1, median 7 ms, 95% 7 ms, max 7 ms"
+
+
+def test_a_stopped_hubs_connections_dont_count_as_taken():
+    """After the hub was killed its connections lingered, and the restarted hub refused to start (2026-11-03)."""
+    import socket
+    from MCP_Server.midi_hub import port_taken
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    accepted, _ = server.accept()
+    server.close()  # the listener is gone, a connection on the port is left
+    try:
+        assert not port_taken("127.0.0.1", port)
+    finally:
+        accepted.close()
+        client.close()

@@ -28,8 +28,8 @@ passed on (no sysex, clock or active sensing). From the Push's own pad port only
 its buttons and encoders send a stream of CCs there. Starting the hub makes Live rescan its MIDI ports once
 (about 1 s after our ports appear): a note held right then may hang in Live.
 
-It logs what a later look needs (sources, outputs, each client's visit and traffic, notes it had to turn off),
-never each message, to the terminal and to /data/.ableton-mcp/midi_hub.log (two files of 256 KB at most).
+It logs what a later look needs (sources, outputs, each client's visit and traffic, notes it had to turn off,
+and every 30 s how long a client took to echo the notes played back to the strip), never each message, to the terminal and to /data/.ableton-mcp/midi_hub.log (two files of 256 KB at most).
 """
 
 import argparse
@@ -93,6 +93,17 @@ def pong_for(text):
     if isinstance(msg, dict) and msg.get("type") == "ping":
         return json.dumps({"type": "pong", "t": msg.get("t")})
     return None
+
+
+ECHO_REPORT_SECONDS = 30
+ECHO_MATCH_SECONDS = 3.0  # an echo later than this is taken for a new note, not an echo
+
+
+def timing(ms):
+    """'n=12, median 35 ms, 95% 80 ms, max 120 ms' for a list of milliseconds."""
+    s = sorted(ms)
+    return "n=%d, median %.0f ms, 95%% %.0f ms, max %.0f ms" % (
+        len(s), s[len(s) // 2], s[min(len(s) - 1, int(len(s) * 0.95))], s[-1])
 
 
 def track_held(held, output, data):
@@ -205,6 +216,7 @@ class Hub:
         self.outputs = {}  # name -> (client, port)
         self.pending = None
         self.passed = 0  # messages passed on to clients, for the log
+        self.played_at = {}  # note -> when its last note-on was passed on, to time clients' echoes
 
     def find_outputs(self):
         self.outputs = {name: dest for name in OUTPUTS if (dest := self.out._find(name))}
@@ -216,6 +228,8 @@ class Hub:
     def played(self, src, data):
         if keep(src, data) and self.clients:
             self.passed += 1
+            if data[0] & 0xF0 == 0x90 and len(data) == 3 and data[2]:
+                self.played_at[data[1]] = time.monotonic()
             from websockets.asyncio.server import broadcast
             broadcast(self.clients, json.dumps({"type": "midi", "src": src, "data": data}))
 
@@ -254,13 +268,16 @@ class Hub:
         self.clients.add(ws)
         held = self.held[ws] = set()
         who, joined, passed_before, sent = ws.remote_address[0], time.monotonic(), self.passed, 0
+        echoes = []  # ms from passing a note on to this client sending it back on channel 1 (its echo to the strip)
         log.info("client connected: %s", who)
+        reporter = asyncio.create_task(self.report_echoes(who, echoes))
         try:
             await ws.send(self.state("hello"))
             async for text in ws:
                 request = parse_request(text, self.outputs)
                 if request:
                     sent += 1
+                    self.time_echo(request[1], echoes)
                     track_held(held, *request)
                     self.send(*request)
                 elif pong := pong_for(text):
@@ -268,10 +285,26 @@ class Hub:
         except ConnectionClosed:
             pass  # dropped without a goodbye (Wi-Fi gone, tab killed): the same as leaving
         finally:
+            reporter.cancel()
+            if echoes:
+                log.info("echo from %s: %s", who, timing(echoes))
             self.clients.discard(ws)
             log.info("client left: %s after %.0f s, %d messages to it, %d from it", who,
                      time.monotonic() - joined, self.passed - passed_before, sent)
             self.release(self.held.pop(ws))
+
+    def time_echo(self, data, echoes):
+        if data[0] == 0x90 and len(data) == 3 and data[2]:
+            played = self.played_at.get(data[1])
+            if played is not None and time.monotonic() - played < ECHO_MATCH_SECONDS:
+                echoes.append((time.monotonic() - played) * 1000)
+
+    async def report_echoes(self, who, echoes):
+        while True:
+            await asyncio.sleep(ECHO_REPORT_SECONDS)
+            if echoes:
+                log.info("echo from %s: %s", who, timing(echoes))
+                echoes.clear()
 
     async def run(self, host, port):
         import signal
@@ -279,8 +312,12 @@ class Hub:
         loop = asyncio.get_running_loop()
         loop.add_reader(self.seq.fileno(), self.seq.drain)
         stop = loop.create_future()
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # kill, Ctrl+C, timeout, a closed SSH session
+        stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)  # kill, Ctrl+C, timeout, a closed SSH session
+        for sig in stops:
             loop.add_signal_handler(sig, lambda: stop.done() or stop.set_result(None))
+        # Started by the Remote Script, the hub inherits Live's blocked SIGTERM (seen in /proc/PID/status SigBlk),
+        # and a plain kill would never reach it
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, stops)
         self.refresh()
         try:
             async with serve(self.client, host, port, compression=None):
@@ -308,6 +345,8 @@ def port_taken(host, port):
     """Checked before opening any ALSA port: a second hub would make Live rescan its MIDI ports for nothing."""
     import socket
     probe = socket.socket()
+    # as the server binds: only a listening socket blocks this, not the leftover connections of a hub just stopped
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind((host, port))
         return False
