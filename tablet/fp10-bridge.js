@@ -137,24 +137,46 @@
     return origMidi.apply(this, arguments);
   };
 
-  // window.fp10Hub.ping() resolves to the round trip to the hub in ms (null when it isn't connected)
+  // The round trip to the hub in ms, or null when it isn't connected or doesn't answer within `timeout`
   const pings = new Map();             // t -> resolve
-  window.fp10Hub = {
-    ping() {
-      if (!hub || hub.readyState !== WebSocket.OPEN) return Promise.resolve(null);
-      const t = performance.now();
-      return new Promise((resolve) => {
-        pings.set(t, resolve);
-        hub.send(JSON.stringify({ type: 'ping', t }));
-        setTimeout(() => { if (pings.delete(t)) resolve(null); }, 5000);
-      });
-    },
+  const ping = (ws, timeout) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+    const t = performance.now();
+    return new Promise((resolve) => {
+      pings.set(t, resolve);
+      ws.send(JSON.stringify({ type: 'ping', t }));
+      setTimeout(() => { if (pings.delete(t)) resolve(null); }, timeout);
+    });
+  };
+  window.fp10Hub = { ping: () => ping(hub, 5000) };
+
+  // A Push that reboots or drops off Wi-Fi never closes its end, and the socket
+  // would look open for many minutes: a ping unanswered for HEARTBEAT_MS means
+  // the link is gone, so start again.
+  const HEARTBEAT_MS = 5000;
+  const hubLost = (ws) => {
+    if (hub !== ws) return;
+    hub = null;
+    hubLights = null;
+    hubPlays = false;
+    status.pianos = [];
+    showStatus();
+    setTimeout(connectHub, 2000);              // the Push asleep or the hub not started yet
   };
 
   const connectHub = () => {
     const ws = new WebSocket(HUB_URL);
     hub = ws;
     showStatus();
+    const beat = setInterval(async () => {
+      if (hub !== ws) return clearInterval(beat);
+      if (ws.readyState === WebSocket.OPEN && await ping(ws, HEARTBEAT_MS) === null && hub === ws) {
+        console.warn('[fp10] hub stopped answering; reconnecting');
+        clearInterval(beat);
+        try { ws.close(); } catch (err) { /* already gone */ }
+        hubLost(ws);
+      }
+    }, HEARTBEAT_MS);
     ws.onmessage = (e) => {
       let msg;
       try { msg = JSON.parse(e.data); } catch (err) { return; }
@@ -176,12 +198,8 @@
       }
     };
     ws.onclose = () => {
-      if (hub !== ws) return;
-      hubLights = null;
-      hubPlays = false;
-      status.pianos = [];
-      showStatus();
-      setTimeout(connectHub, 2000);            // the Push asleep or the hub not started yet
+      clearInterval(beat);
+      hubLost(ws);
     };
   };
 
