@@ -31,17 +31,16 @@ NeoKeys loads Tone.js, its MIDI libraries and the piano samples from the web, so
 
 ## With the cables on the Push
 
-Leave the piano and the board on the Push and start its MIDI hub (by hand for now; it runs until you stop it):
-
-```sh
-ssh push3 /data/uv/tools/ableton-mcp/bin/python -m MCP_Server.midi_hub
-```
+Leave the piano and the board on the Push. Its MIDI hub (`MCP_Server/midi_hub.py`) starts with Live: the AbletonMCP
+Remote Script (1.10.27 on) starts it and starts it again within ~10 s if it stops. Each start makes Live rescan its
+MIDI ports once, so a note held right then may hang. To turn it off, create `/data/.ableton-mcp/midi_hub.off` on
+the Push; to run it by hand instead, `ssh push3 /data/uv/tools/ableton-mcp/bin/python -m MCP_Server.midi_hub`. Its
+log is `/data/.ableton-mcp/midi_hub.log`.
 
 When Start is pressed, the bridge connects to `ws://push.local:8766` over Wi-Fi. The piano's notes and pedal reach
 NeoKeys as if it were plugged in, and the strip's hints and flashes go back the same way, while Live keeps playing
 the piano too. The badge says "FP10 Lights on the Push". Add `?hub=ws://host:port` to the page's address for
-another hub, or `?hub=off` to use only Web MIDI. Starting the hub makes Live rescan its MIDI ports once, so don't
-hold a note just then. The hub's protocol is in `MCP_Server/midi_hub.py`.
+another hub, or `?hub=off` to use only Web MIDI. The hub's protocol is in `MCP_Server/midi_hub.py`.
 
 ## Claude me lessons
 

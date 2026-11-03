@@ -18,6 +18,8 @@ AbletonOS). The MCP server and the Remote Script both run on the Push.
 - APICapture (LiveAPI's capture surface): `.../Remote Scripts/APICapture/`, output under `/data/apicapture/probe/`
 - Sets: `/data/Music/Ableton/Sets/` (the Push autosaves `[Autosave]` copies there)
 - MCP server: uv tool at `/data/uv/tools/ableton-mcp`; Live's command socket is `127.0.0.1:9877` on the Push
+- MIDI hub (`MCP_Server/midi_hub.py`, WebSocket `:8766`): the Remote Script starts it with Live and restarts it;
+  log `/data/.ableton-mcp/midi_hub.log`, off switch `/data/.ableton-mcp/midi_hub.off`
 
 ## Branches
 
@@ -29,7 +31,9 @@ AbletonOS). The MCP server and the Remote Script both run on the Push.
   `/data/uv/backups/` as `ableton_mcp-1.4.5-before-<feature>.whl`, copy the new one over
   `/data/uv/backups/ableton_mcp-1.4.5-py3-none-any.whl`, then on the Push run `/data/uv/uv tool install --force
   --reinstall --offline --python /usr/bin/python3.10 <wheel>` with `UV_TOOL_DIR=/data/uv/tools
-  UV_TOOL_BIN_DIR=/data/uv/bin UV_CACHE_DIR=/data/uv/cache`.
+  UV_TOOL_BIN_DIR=/data/uv/bin UV_CACHE_DIR=/data/uv/cache`. A running hub keeps the old code: to load the new
+  one, stop it by its pid (`kill`, not `pkill -f` over SSH, which matches its own shell) and the Remote Script
+  starts the new one within ~10 s.
 
 ## Rules
 
