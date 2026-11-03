@@ -304,6 +304,19 @@ def log_to_file(path):
     logging.getLogger().addHandler(handler)
 
 
+def port_taken(host, port):
+    """Checked before opening any ALSA port: a second hub would make Live rescan its MIDI ports for nothing."""
+    import socket
+    probe = socket.socket()
+    try:
+        probe.bind((host, port))
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--host", default="0.0.0.0")
@@ -313,6 +326,9 @@ def main():
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     logging.getLogger().setLevel(logging.INFO)
     log_to_file(LOG_PATH)
+    if port_taken(args.host, args.port):
+        log.info("a hub already listens on port %d: not starting another", args.port)
+        return
     try:
         asyncio.run(Hub().run(args.host, args.port))
     except KeyboardInterrupt:

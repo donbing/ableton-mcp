@@ -50,7 +50,7 @@ EXPECTED_COMMAND_ERRORS = (ValueError, IndexError)
 
 # Bumped whenever the TCP command surface changes; the MCP server compares
 # this to EXPECTED_REMOTE_SCRIPT_VERSION.
-SCRIPT_VERSION = "1.10.26"
+SCRIPT_VERSION = "1.10.27"
 
 # Shown on every undo / redo reply. Live merges edits made through the API into
 # a single undo step, so one undo can revert several MCP changes.
@@ -65,6 +65,16 @@ UNDO_WARNING = (
     "undo). Live's undo still reverts the user's own manual edits when no tool call "
     "came after them: read the session first.")
 PROTOCOL_VERSION = 1
+
+# The MIDI hub (MCP_Server/midi_hub.py) passes the instruments plugged into a Push 3 to the Surface over Wi-Fi.
+# The Push has no service manager, so the script starts it whenever Live runs, and again if it stops. Only where
+# the MCP server is installed as on the Push; creating HUB_OFF_FILE switches it off. Every start makes Live
+# rescan its MIDI ports, so a hub that keeps failing is retried less and less often.
+HUB_PYTHON = "/data/uv/tools/ableton-mcp/bin/python"
+HUB_PORT = 8766
+HUB_OFF_FILE = "/data/.ableton-mcp/midi_hub.off"
+HUB_CHECK_SECONDS = 10.0
+HUB_MAX_RETRY_SECONDS = 600.0
 
 # get_meters sampling limits. The window is capped so a request can never tie
 # up a client handler thread for long; the rate is capped because Live's meters
@@ -287,6 +297,21 @@ def _midi_int(value, label, low, high):
     return value
 
 
+def _hub_listening(tcp_table="/proc/net/tcp"):
+    """Whether something listens on HUB_PORT here. Read from the kernel's table rather than by connecting,
+    which the hub would log as a failed handshake every check."""
+    try:
+        with open(tcp_table) as f:
+            rows = f.read().splitlines()[1:]
+    except (IOError, OSError):
+        return False
+    for row in rows:
+        fields = row.split()  # sl local_address rem_address st ...; addresses are hex ip:port, st 0A = LISTEN
+        if len(fields) > 3 and fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == HUB_PORT:
+            return True
+    return False
+
+
 def create_instance(c_instance):
     """Create and return the AbletonMCP script instance"""
     return AbletonMCP(c_instance)
@@ -324,6 +349,7 @@ class AbletonMCP(ControlSurface):
         
         # Start the socket server
         self.start_server()
+        self._start_hub_watch()
 
         # Register LOM listeners for passive capture (after song is ready)
         try:
@@ -373,6 +399,38 @@ class AbletonMCP(ControlSurface):
 
         ControlSurface.disconnect(self)
         self.log_message("AbletonMCP disconnected")
+
+    def _start_hub_watch(self):
+        """Keep the MIDI hub running while this instance is (see HUB_PYTHON)."""
+        if not os.path.exists(HUB_PYTHON):
+            return
+        watch = threading.Thread(target=self._hub_watch)
+        watch.daemon = True
+        watch.start()
+
+    def _hub_watch(self):
+        starts = 0  # in a row without the hub coming up
+        while self.running:
+            if os.path.exists(HUB_OFF_FILE) or _hub_listening():
+                starts = 0
+            else:
+                self._start_hub()
+                starts += 1
+            wait = min(HUB_CHECK_SECONDS * 2 ** max(0, starts - 1), HUB_MAX_RETRY_SECONDS)
+            end = time.time() + wait
+            while self.running and time.time() < end:  # short naps, so a Set load stops this thread quickly
+                time.sleep(0.5)
+
+    def _start_hub(self):
+        """Start the hub detached from Live: the shell exits at once, so the hub isn't Live's child."""
+        import subprocess
+        env = dict((k, v) for k, v in os.environ.items() if not k.startswith("PYTHON"))  # Live's own Python
+        try:
+            subprocess.call(["/bin/sh", "-c", '"$0" -m MCP_Server.midi_hub </dev/null >/dev/null 2>&1 &', HUB_PYTHON],
+                            env=env, cwd="/")
+            self.log_message("MIDI hub started")
+        except Exception as e:
+            self.log_message("MIDI hub didn't start: " + str(e))
 
     def _close_client_sockets(self):
         with self._client_sockets_lock:
