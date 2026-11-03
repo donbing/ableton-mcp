@@ -15,12 +15,16 @@
 // With the piano and the strip on the Push instead, both go through the Push's
 // MIDI hub (MCP_Server/midi_hub.py) over Wi-Fi: the piano's notes are fed to
 // NeoKeys as if they came from Web MIDI, and the strip's messages go back the
-// same way. ?hub=ws://host:port picks the hub, ?hub=off skips it.
+// same way. From localhost (serve.ps1) it goes straight to push.local; from any
+// other http:// server (PianoDeck on moo) through that server's /hub relay, as
+// Chrome won't let such a page connect to another machine on the LAN.
+// ?hub=ws://host:port picks the hub, ?hub=off skips it.
 (() => {
   'use strict';
 
   const LIGHTS = /FP10 Lights/i;
-  const HUB_URL = new URLSearchParams(location.search).get('hub') || 'ws://push.local:8766';
+  const HUB_URL = new URLSearchParams(location.search).get('hub') ||
+    (location.hostname === 'localhost' ? 'ws://push.local:8766' : 'ws://' + location.host + '/hub');
   const HUB_SKIP = /Ableton Push 3/;   // the Push's pads aren't piano keys
   const LOOKAHEAD_MS = 1200;           // real time a hint shows before its note
   const HINT_LEVELS = [20, 45, 80];    // velocities from far to near; 127 = due now
@@ -89,6 +93,7 @@
 
   // ---- echo the piano to channel 1 ----
   const echo = (e) => {
+    if (hubPlays && !e.fromHub) return;  // the hub's copy is echoed instead
     const [status, d1, d2] = e.data;
     const cmd = status & 0xf0;
     if (cmd === 0x90 || cmd === 0x80) send([cmd, d1, d2]);
@@ -106,6 +111,16 @@
   };
 
   // ---- the Push's hub: the piano in, the strip out ----
+  // While the hub has an instrument, the same piano may also reach NeoKeys by
+  // Bluetooth (PianoDeck) or USB: only the hub's copy is played then.
+  const playable = (src) => !HUB_SKIP.test(src) && !LIGHTS.test(src);
+  let hubPlays = false, fromHub = false;
+  const origMidi = window.onMIDIMessage;
+  window.onMIDIMessage = function () {
+    if (hubPlays && !fromHub) return;
+    return origMidi.apply(this, arguments);
+  };
+
   const connectHub = () => {
     const ws = new WebSocket(HUB_URL);
     hub = ws;
@@ -116,25 +131,30 @@
         const name = (msg.outputs || []).find(n => LIGHTS.test(n)) || null;
         if (name !== hubLights) lit.clear();   // a replugged board starts dark
         hubLights = name;
+        hubPlays = (msg.sources || []).some(playable);
         showStatus();
-      } else if (msg.type === 'midi' && !HUB_SKIP.test(msg.src) && !LIGHTS.test(msg.src)) {
-        window.onMIDIMessage({ data: msg.data });  // NeoKeys' own Web MIDI handler
-        echo({ data: msg.data });
+      } else if (msg.type === 'midi' && playable(msg.src)) {
+        fromHub = true;
+        try { window.onMIDIMessage({ data: msg.data }); }  // NeoKeys' own Web MIDI handler
+        finally { fromHub = false; }
+        echo({ data: msg.data, fromHub: true });
       }
     };
     ws.onclose = () => {
       if (hub !== ws) return;
       hubLights = null;
+      hubPlays = false;
       showStatus();
       setTimeout(connectHub, 2000);            // the Push asleep or the hub not started yet
     };
   };
 
   // NeoKeys asks for MIDI when Start is pressed; ask for our own access then.
-  const origInit = window.initMIDI;
-  window.initMIDI = async function () {
-    await origInit.apply(this, arguments);
-    if (HUB_URL !== 'off' && !hub) connectHub();
+  let started = false;
+  const start = async () => {
+    if (started) return;
+    started = true;
+    if (HUB_URL !== 'off') connectHub();
     if (!navigator.requestMIDIAccess) return;
     try {
       const access = await navigator.requestMIDIAccess({ sysex: false });
@@ -144,6 +164,14 @@
       showBadge('FP10 Lights: MIDI blocked', '#b03040');
     }
   };
+  const origInit = window.initMIDI;
+  window.initMIDI = async function () {
+    await origInit.apply(this, arguments);
+    await start();
+  };
+  // PianoDeck starts NeoKeys by itself when sound is already allowed, which can
+  // be before this script has loaded.
+  if (typeof appStarted !== 'undefined' && appStarted) start();
 
   // ---- hints, worked out each frame from NeoKeys' state ----
   const wanted = () => {
