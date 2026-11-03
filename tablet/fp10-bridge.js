@@ -40,10 +40,22 @@
   badge.id = 'fp10Badge';
   badge.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:9999;padding:4px 10px;' +
     'border-radius:999px;font:12px system-ui,sans-serif;color:#fff;background:#555;opacity:.85;pointer-events:none';
-  const showBadge = (text, colour) => { badge.textContent = text; badge.style.background = colour; };
   document.body.appendChild(badge);
 
+  // What the badge says, for pages with their own status display (PianoDeck's start card): it's sent as an
+  // `fp10-status` event on window on every change, and window.fp10Status() returns the latest.
+  //   lights: 'usb' | 'push' | null   hub: 'off' | 'connecting' | 'open'   pianos: the hub's instruments
+  const status = { lights: null, hub: 'off', pianos: [], problem: null, text: '' };
+  window.fp10Status = () => ({ ...status, pianos: [...status.pianos] });
+  const announce = () => window.dispatchEvent(new CustomEvent('fp10-status', { detail: window.fp10Status() }));
+  const showBadge = (text, colour) => {
+    badge.textContent = status.text = text;
+    badge.style.background = colour;
+    announce();
+  };
+
   if (missing.length) {
+    status.problem = 'NeoKeys changed (' + missing.join(', ') + ')';
     showBadge('FP10 bridge off: NeoKeys changed (' + missing.join(', ') + ')', '#b03040');
     console.warn('[fp10] NeoKeys hooks missing:', missing);
     return;
@@ -65,6 +77,8 @@
   const haveLights = () => lights.length > 0 || hubLights !== null;
 
   const showStatus = () => {
+    status.lights = lights.length ? 'usb' : hubLights ? 'push' : null;
+    status.hub = !hub ? 'off' : hub.readyState === WebSocket.OPEN ? 'open' : 'connecting';
     if (lights.length) showBadge('FP10 Lights connected', '#2d8a4e');
     else if (hubLights) showBadge('FP10 Lights on the Push', '#2d8a4e');
     else if (hub && hub.readyState === WebSocket.OPEN) showBadge('Push hub: FP10 Lights not found', '#a06a10');
@@ -124,6 +138,7 @@
   const connectHub = () => {
     const ws = new WebSocket(HUB_URL);
     hub = ws;
+    showStatus();
     ws.onmessage = (e) => {
       let msg;
       try { msg = JSON.parse(e.data); } catch (err) { return; }
@@ -131,7 +146,8 @@
         const name = (msg.outputs || []).find(n => LIGHTS.test(n)) || null;
         if (name !== hubLights) lit.clear();   // a replugged board starts dark
         hubLights = name;
-        hubPlays = (msg.sources || []).some(playable);
+        status.pianos = (msg.sources || []).filter(playable);
+        hubPlays = status.pianos.length > 0;
         showStatus();
       } else if (msg.type === 'midi' && playable(msg.src)) {
         fromHub = true;
@@ -144,6 +160,7 @@
       if (hub !== ws) return;
       hubLights = null;
       hubPlays = false;
+      status.pianos = [];
       showStatus();
       setTimeout(connectHub, 2000);            // the Push asleep or the hub not started yet
     };
