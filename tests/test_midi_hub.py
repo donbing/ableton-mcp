@@ -52,3 +52,10 @@ def test_held_notes_follow_offs_and_all_notes_off():
     track_held(held, LIGHTS[0], [0x90, 52, 90])
     track_held(held, LIGHTS[0], [0xB1, 123, 0])  # all notes off clears its own channel only
     assert held == {(LIGHTS[0], 0, 52)}
+
+
+def test_ping_gets_its_own_time_back():
+    from MCP_Server.midi_hub import pong_for
+    assert json.loads(pong_for(json.dumps({"type": "ping", "t": 1234.5}))) == {"type": "pong", "t": 1234.5}
+    assert pong_for(json.dumps({"type": "midi", "to": LIGHTS[0], "data": [0x90, 60, 1]})) is None
+    assert pong_for("not json") is None

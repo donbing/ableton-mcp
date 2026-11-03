@@ -18,19 +18,30 @@ Messages are JSON text. From the hub:
 To the hub:
 
     {"type": "midi", "to": name, "data": [status, d1, d2]}                one of "outputs" (only FP10 Lights)
+    {"type": "ping", "t": any}                                            answered {"type": "pong", "t": the same}
+
+Pings let a client time the round trip (PianoDeck's perf recorder does, while it records).
 
 Notes a client turns on are turned off when it goes (or the hub stops), so a dropped connection doesn't leave
 keys lit. Names are the ALSA port names, as Live shows them ("Roland Digital Piano MIDI 1"). Only channel messages are
 passed on (no sysex, clock or active sensing). From the Push's own pad port only pad notes (36-99) are, since
 its buttons and encoders send a stream of CCs there. Starting the hub makes Live rescan its MIDI ports once
 (about 1 s after our ports appear): a note held right then may hang in Live.
+
+It logs what a later look needs (sources, outputs, each client's visit and traffic, notes it had to turn off),
+never each message, to the terminal and to /data/.ableton-mcp/midi_hub.log (two files of 256 KB at most).
 """
 
 import argparse
 import asyncio
 import json
+import logging
+import logging.handlers
+import os
+import time
 
 PORT = 8766
+LOG_PATH = "/data/.ableton-mcp/midi_hub.log"
 OUTPUTS = ("FP10 Lights MIDI 1",)
 # hardware ports we don't read: the strip only answers us, Midi Through echoes whatever is sent to it
 SKIP = ("FP10 Lights", "Midi Through")
@@ -71,6 +82,17 @@ def parse_request(text, outputs):
             or not 0x80 <= data[0] <= 0xEF or any(b > 127 for b in data[1:])):
         return None
     return msg["to"], data
+
+
+def pong_for(text):
+    """The answer to a client's ping, or None when `text` isn't one."""
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(msg, dict) and msg.get("type") == "ping":
+        return json.dumps({"type": "pong", "t": msg.get("t")})
+    return None
 
 
 def track_held(held, output, data):
@@ -182,6 +204,7 @@ class Hub:
         self.out = HiddenOut(OUTPUTS[0])  # one sending port, pointed at whichever output a message is for
         self.outputs = {}  # name -> (client, port)
         self.pending = None
+        self.passed = 0  # messages passed on to clients, for the log
 
     def find_outputs(self):
         self.outputs = {name: dest for name in OUTPUTS if (dest := self.out._find(name))}
@@ -192,6 +215,7 @@ class Hub:
 
     def played(self, src, data):
         if keep(src, data) and self.clients:
+            self.passed += 1
             from websockets.asyncio.server import broadcast
             broadcast(self.clients, json.dumps({"type": "midi", "src": src, "data": data}))
 
@@ -206,8 +230,8 @@ class Hub:
         before = dict(self.outputs)
         self.find_outputs()
         if self.seq.rescan() or self.outputs != before:
-            print("sources:", ", ".join(sorted(self.seq.sources.values())) or "none",
-                  "| outputs:", ", ".join(sorted(self.outputs)) or "none", flush=True)
+            log.info("sources: %s | outputs: %s", ", ".join(sorted(self.seq.sources.values())) or "none",
+                     ", ".join(sorted(self.outputs)) or "none")
             if self.clients:
                 from websockets.asyncio.server import broadcast
                 broadcast(self.clients, self.state("sources"))
@@ -222,27 +246,32 @@ class Hub:
         for output, channel, note in sorted(held):
             self.send(output, [0x80 | channel, note, 0])
         if held:
-            print("turned off %d note(s) left on" % len(held), flush=True)
+            log.info("turned off %d note(s) left on", len(held))
         held.clear()
 
     async def client(self, ws):
         from websockets.exceptions import ConnectionClosed
         self.clients.add(ws)
         held = self.held[ws] = set()
-        print("client connected:", ws.remote_address[0], flush=True)
+        who, joined, passed_before, sent = ws.remote_address[0], time.monotonic(), self.passed, 0
+        log.info("client connected: %s", who)
         try:
             await ws.send(self.state("hello"))
             async for text in ws:
                 request = parse_request(text, self.outputs)
                 if request:
+                    sent += 1
                     track_held(held, *request)
                     self.send(*request)
+                elif pong := pong_for(text):
+                    await ws.send(pong)
         except ConnectionClosed:
             pass  # dropped without a goodbye (Wi-Fi gone, tab killed): the same as leaving
         finally:
             self.clients.discard(ws)
+            log.info("client left: %s after %.0f s, %d messages to it, %d from it", who,
+                     time.monotonic() - joined, self.passed - passed_before, sent)
             self.release(self.held.pop(ws))
-            print("client left:", ws.remote_address[0], flush=True)
 
     async def run(self, host, port):
         import signal
@@ -255,12 +284,24 @@ class Hub:
         self.refresh()
         try:
             async with serve(self.client, host, port, compression=None):
-                print("MIDI hub on ws://%s:%d" % (host, port), flush=True)
+                log.info("MIDI hub on ws://%s:%d", host, port)
                 await stop
         finally:
             for held in self.held.values():
                 self.release(held)
-            print("MIDI hub stopped", flush=True)
+            log.info("MIDI hub stopped")
+
+
+log = logging.getLogger("midi_hub")
+
+
+def log_to_file(path):
+    """Keep the log (websockets' own lines too) in `path` as well, when its folder exists (on the Push)."""
+    if not os.path.isdir(os.path.dirname(path)):
+        return
+    handler = logging.handlers.RotatingFileHandler(path, maxBytes=256 * 1024, backupCount=1)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(handler)
 
 
 def main():
@@ -268,6 +309,10 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=PORT)
     args = parser.parse_args()
+    if not logging.getLogger().handlers:  # MCP_Server's import usually sets this up already
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.getLogger().setLevel(logging.INFO)
+    log_to_file(LOG_PATH)
     try:
         asyncio.run(Hub().run(args.host, args.port))
     except KeyboardInterrupt:

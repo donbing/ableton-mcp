@@ -107,7 +107,7 @@
 
   // ---- echo the piano to channel 1 ----
   const echo = (e) => {
-    if (hubPlays && !e.fromHub) return;  // the hub's copy is echoed instead
+    if (hubPlays && e.source !== 'hub') return;  // the hub's copy is echoed instead
     const [status, d1, d2] = e.data;
     const cmd = status & 0xf0;
     if (cmd === 0x90 || cmd === 0x80) send([cmd, d1, d2]);
@@ -125,14 +125,30 @@
   };
 
   // ---- the Push's hub: the piano in, the strip out ----
-  // While the hub has an instrument, the same piano may also reach NeoKeys by
-  // Bluetooth (PianoDeck) or USB: only the hub's copy is played then.
+  // Its messages reach NeoKeys as { data, source: 'hub' }. While the hub has an
+  // instrument, the same piano may also come by Bluetooth (PianoDeck) or USB:
+  // only the hub's copy is played then. Wrappers outside this one (PianoDeck's
+  // perf recorder) still see both, to time one against the other.
   const playable = (src) => !HUB_SKIP.test(src) && !LIGHTS.test(src);
-  let hubPlays = false, fromHub = false;
+  let hubPlays = false;
   const origMidi = window.onMIDIMessage;
-  window.onMIDIMessage = function () {
-    if (hubPlays && !fromHub) return;
+  window.onMIDIMessage = function (e) {
+    if (hubPlays && e.source !== 'hub') return;
     return origMidi.apply(this, arguments);
+  };
+
+  // window.fp10Hub.ping() resolves to the round trip to the hub in ms (null when it isn't connected)
+  const pings = new Map();             // t -> resolve
+  window.fp10Hub = {
+    ping() {
+      if (!hub || hub.readyState !== WebSocket.OPEN) return Promise.resolve(null);
+      const t = performance.now();
+      return new Promise((resolve) => {
+        pings.set(t, resolve);
+        hub.send(JSON.stringify({ type: 'ping', t }));
+        setTimeout(() => { if (pings.delete(t)) resolve(null); }, 5000);
+      });
+    },
   };
 
   const connectHub = () => {
@@ -150,10 +166,13 @@
         hubPlays = status.pianos.length > 0;
         showStatus();
       } else if (msg.type === 'midi' && playable(msg.src)) {
-        fromHub = true;
-        try { window.onMIDIMessage({ data: msg.data }); }  // NeoKeys' own Web MIDI handler
-        finally { fromHub = false; }
-        echo({ data: msg.data, fromHub: true });
+        const e = { data: msg.data, source: 'hub' };
+        window.onMIDIMessage(e);               // NeoKeys' own Web MIDI handler
+        echo(e);
+      } else if (msg.type === 'pong' && pings.has(msg.t)) {
+        const resolve = pings.get(msg.t);
+        pings.delete(msg.t);
+        resolve(performance.now() - msg.t);
       }
     };
     ws.onclose = () => {
