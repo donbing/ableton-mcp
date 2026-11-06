@@ -9,6 +9,9 @@ Live holds the board's raw MIDI port, so CCs go through the ALSA sequencer from 
     split [NOTE|off]   left-hand colour for play notes below NOTE (CC116, value = the note): Live's names
                        (C3 = MIDI 60, the default; F#2, Bb1) or a MIDI number. Saved on the board.
     sparks [off]       each play note throws sparks along the strip (CC115). Saved on the board.
+    brightness N       strip brightness 1-127 (CC113; 64 = the old fixed 50%). Saved on the board.
+    layers [N|all]     which kinds of light show (CC114), added up: 1 play, 2 sparks, 4 left-hand colour,
+                       8 hints, 16 flashes. NOT saved, and back to all 2 minutes after it was last sent.
     restart-test [N]   restart N times (10); after each, check the Push sets the board up again (USB
                        configuration and MIDI port), following it through any restarts of its own: when the
                        Push refuses it ("can't set config #1, error -32"), the board restarts itself after 3 s.
@@ -21,7 +24,8 @@ import time
 from MCP_Server.push_midi import open_output
 
 PORT = "FP10 Lights MIDI 1"
-CCS = {"update": 119, "calibrate": 118, "restart": 117, "split": 116, "sparks": 115}
+CCS = {"update": 119, "calibrate": 118, "restart": 117, "split": 116, "sparks": 115, "layers": 114,
+       "brightness": 113}
 NOTE_NAMES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 
 
@@ -142,6 +146,19 @@ def main(args):
         off = len(args) > 1 and args[1] == "off"
         send_cc(CCS[cmd], 0 if off else 127)
         print("%s %s" % (cmd, "off" if off else "on"))
+    elif cmd == "brightness":
+        value = int(args[1]) if len(args) > 1 else 64
+        if not 1 <= value <= 127:
+            raise SystemExit("brightness is 1-127")
+        send_cc(CCS[cmd], value)
+        print("brightness %d (about %d%%)" % (value, round(value * 2 / 2.55)))
+    elif cmd == "layers":
+        arg = args[1] if len(args) > 1 else "all"
+        value = 31 if arg == "all" else int(arg)
+        if not 0 <= value <= 31:
+            raise SystemExit("layers is 0-31: 1 play, 2 sparks, 4 left-hand colour, 8 hints, 16 flashes")
+        send_cc(CCS[cmd], value)
+        print("layers %d%s" % (value, "" if value == 31 else " for 2 minutes"))
     elif cmd == "restart":
         send_cc(CCS[cmd], 127)
         print(cmd)

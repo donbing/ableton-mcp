@@ -31,6 +31,7 @@ function Get-Page {
     $tag = '<script src="/fp10-bridge.js"></script>' + "`n" +
            '<script src="https://cdn.jsdelivr.net/npm/tonal@6.4.2/browser/tonal.min.js"></script>' + "`n" +
            '<script src="/claude-me.js"></script>' + "`n" +
+           '<script src="/lights-layers.js"></script>' + "`n" +
            '<script src="/panel-folds.js"></script>'
     $at = $html.LastIndexOf('</body>')
     if ($at -lt 0) { return $html + $tag }
@@ -38,7 +39,7 @@ function Get-Page {
 }
 
 # ---- Claude me: lesson plans from the Claude API, key kept here ----
-$own = @('fp10-bridge.js', 'claude-me.js', 'panel-folds.js')
+$own = @('fp10-bridge.js', 'claude-me.js', 'lights-layers.js', 'panel-folds.js')
 $claudeModel = if ($env:CLAUDE_ME_MODEL) { $env:CLAUDE_ME_MODEL } else { 'claude-opus-5-5' }
 $claudeUrl = if ($env:CLAUDE_ME_API_URL) { $env:CLAUDE_ME_API_URL } else { 'https://api.anthropic.com/v1/messages' }
 $planSchema = [IO.File]::ReadAllText((Join-Path $here 'claude-me-plan.schema.json'), [Text.Encoding]::UTF8)

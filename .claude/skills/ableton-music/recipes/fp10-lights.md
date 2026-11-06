@@ -17,8 +17,9 @@ Set up and working on the Push 2026-11-01: in Live the piano is **Roland Digital
 | any | CC120 / CC123 (All Sound / All Notes Off) | Clears everything |
 
 Colours add where channels overlap on one key. Channels 5-15 are ignored; channel 16 CC119 switches the board's
-Wi-Fi update mode, CC118 calibration mode, CC117 restarts it, CC116 sets the split and CC115 sparks, so never send
-those on channel 16 from Live. From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and
+Wi-Fi update mode, CC118 calibration mode, CC117 restarts it, CC116 sets the split, CC115 sparks, CC114 the
+layers (which kinds of light show, not saved, lapses after 2 min) and CC113 brightness, so never send those on
+channel 16 from Live. From the PC, `firmware/fp10_lights/board.sh update|calibrate [off]` and
 `board.sh restart` send them over SSH from a hidden port; after `update`, run `build.sh ota` on moo.
 
 Options the user can switch, saved on the board (`board.sh`, from the PC):
@@ -27,6 +28,11 @@ Options the user can switch, saved on the board (`board.sh`, from the PC):
   left-hand colour; by pitch, not by hand. Hints and flashes keep their colours.
 - `board.sh sparks [off]`: each played note throws sparks out along the strip (white-hot, cooling to the note's
   colour, ~0.5 s). Worth suggesting for free play; for a lesson where hints matter, they may distract.
+- `board.sh brightness N` (1-127, 64 = 50%). The user can also set split, sparks and brightness by touch in
+  PianoDeck's 💡 Lights app on the Surface.
+- `board.sh layers N`: for 2 minutes, show only some kinds of light (1 play, 2 sparks, 4 left-hand colour,
+  8 hints, 16 flashes, added up), e.g. 24 for hints and flashes only during a lesson; re-send within 2 minutes to
+  keep it. NeoKeys does this itself while it's open.
 
 The 1 m strip covers about MIDI notes 29-100 (F0-E5 in Live's names, where 60 = C3); notes outside stay dark. The
 firmware runs the strip at 50% brightness and caps it at 250 mA, so lighting many keys only dims them, notes left ringing

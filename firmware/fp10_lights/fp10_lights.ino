@@ -19,6 +19,12 @@
 // Options, saved on the board (board.sh split / sparks):
 //   CC116 on channel 16 = split note: play notes below it (the left hand) light LEFT_COLOUR; 0 = off
 //   CC115 on channel 16 >= 64 / < 64: sparks on / off: each play note throws sparks along the strip
+//   CC113 on channel 16 = brightness, 1-127 (64 = the old fixed 50%)
+//
+// Layers, NOT saved: CC114 on channel 16 = which kinds of light show, added up:
+//   1 play (your notes)  2 sparks  4 left-hand colour  8 hints  16 flashes   (31 or 127 = all, the default)
+//   Anything less than all lapses back to all after 2 minutes unless sent again, so an app that hid something
+//   and then closed or crashed can't leave it hidden (NeoKeys re-sends it every minute while it's open).
 //
 // Restart: CC117 >= 64 on channel 16 (board.sh restart / restart-test, for testing how the Push takes it back).
 //   If the Push hasn't set the board up 3 s after it starts, it restarts itself (usbWatch()).
@@ -45,7 +51,7 @@
 #define NUM_LEDS     144
 #define MAX_MA       250     // strip cap, idle included (~1mA per LED); shares a 500mA hub port with the board
 #define LED_MA       20.0f   // one SK9822 colour at full
-#define BRIGHTNESS   128     // 0-255, for everything on the strip (not the status LED); also halves the current
+#define BRIGHTNESS   128     // default, 0-255, for everything on the strip (not the status LED); CC113 changes it
 #define ONBOARD_PIN  21
 
 // ---- Key mapping ----
@@ -71,6 +77,15 @@
 #define RESTART_CC      117    // on OTA_CHANNEL
 #define SPLIT_CC        116    // on OTA_CHANNEL
 #define SPARKS_CC       115    // on OTA_CHANNEL
+#define LAYERS_CC       114    // on OTA_CHANNEL, not saved
+#define BRIGHT_CC       113    // on OTA_CHANNEL
+#define LAYERS_HOLD_MS  (2UL * 60 * 1000)
+#define L_PLAY    1
+#define L_SPARKS  2
+#define L_LEFT    4
+#define L_HINT    8
+#define L_FLASH   16
+#define L_ALL     31
 #define USB_SETUP_MS    3000   // not set up by the Push this long after starting: restart (see usbWatch())
 #define OTA_TIMEOUT_MS  (10UL * 60 * 1000)
 #define WIFI_TIMEOUT_MS 20000
@@ -134,6 +149,9 @@ uint32_t lastMidiMs = 0;
 
 uint8_t splitNote = 0;   // play notes below it get LEFT_COLOUR; 0 = off
 bool sparksOn = false;
+uint8_t brightness = BRIGHTNESS;
+uint8_t layers = L_ALL;  // which kinds of light show (CC114), back to all LAYERS_HOLD_MS after the last change
+uint32_t layersSince = 0;
 
 struct Spark {
   float pos, speed;  // LED (logical, before REVERSED), LEDs per frame (negative = left)
@@ -188,6 +206,7 @@ void loadOptions() {
   prefs.begin("fp10", true);
   splitNote = prefs.getUChar("split", 0);
   sparksOn = prefs.getBool("sparks", false);
+  brightness = prefs.getUChar("bright", BRIGHTNESS);
   prefs.end();
 }
 
@@ -195,6 +214,7 @@ void saveOptions() {
   prefs.begin("fp10", false);
   prefs.putUChar("split", splitNote);
   prefs.putBool("sparks", sparksOn);
+  prefs.putUChar("bright", brightness);
   prefs.end();
 }
 
@@ -369,11 +389,11 @@ void runCommand(String line) {
     }
   } else if (line == "show") {
     String ssid = setting("ssid");
-    Serial.printf("ssid: %s\npass: %s\notapass: %s\nC1 = LED %.1f, C6 = LED %.1f\nsplit: %d (0 = off)\nsparks: %s\n",
+    Serial.printf("ssid: %s\npass: %s\notapass: %s\nC1 = LED %.1f, C6 = LED %.1f\nsplit: %d (0 = off)\nsparks: %s\nbrightness: %d/255\nlayers: %d (31 = all)\n",
                   ssid.length() ? ssid.c_str() : "(not set)",
                   setting("pass").length() ? "set" : "not set",
                   setting("otapass").length() ? "set" : "not set",
-                  calLowLed, calHighLed, splitNote, sparksOn ? "on" : "off");
+                  calLowLed, calHighLed, splitNote, sparksOn ? "on" : "off", brightness, layers);
   } else if (line == "forget") {
     prefs.begin("fp10", false);
     prefs.clear();
@@ -381,7 +401,7 @@ void runCommand(String line) {
     loadCalibration();
     loadOptions();
     buildKeyMap();
-    Serial.println("settings cleared (Wi-Fi, calibration, split and sparks)");
+    Serial.println("settings cleared (Wi-Fi, calibration, split, sparks and brightness)");
   } else if (line == "update") {
     otaStart();
   } else if (line == "calibrate") {
@@ -411,7 +431,7 @@ float velLevel(int vel) {
   return powf(MIN_SEEN + (1 - MIN_SEEN) * (vel - 1) / 126.0f, HD_GAMMA);
 }
 
-CRGB playColour(int note) { return splitNote && note < splitNote ? LEFT_COLOUR : CH_COLOUR[0]; }
+CRGB playColour(int note) { return splitNote && (layers & L_LEFT) && note < splitNote ? LEFT_COLOUR : CH_COLOUR[0]; }
 
 float randomIn(float lo, float hi) { return lo + (hi - lo) * (esp_random() / 4294967296.0f); }
 
@@ -436,7 +456,7 @@ void noteOn(int ch, int note, int vel) {
   if (ch == 0) {
     sustained[note] = false;
     level[ch][note] = velLevel(vel);
-    if (sparksOn) throwSparks(note, vel);
+    if (sparksOn && (layers & L_SPARKS)) throwSparks(note, vel);
   } else if (ch == 1) {
     level[ch][note] = HINT_LEVEL * velLevel(vel);
   } else {
@@ -470,6 +490,16 @@ void handlePacket(const midiEventPacket_t &p) {
     if (d1 == SPLIT_CC) splitNote = d2;
     else sparksOn = d2 >= 64;
     saveOptions();
+    return;
+  }
+  if (type == 0xB0 && ch == OTA_CHANNEL && d1 == BRIGHT_CC) {
+    brightness = max(2, d2 * 2);
+    saveOptions();
+    return;
+  }
+  if (type == 0xB0 && ch == OTA_CHANNEL && d1 == LAYERS_CC) {
+    layers = (d2 & L_ALL) == L_ALL || d2 == 127 ? L_ALL : (d2 & L_ALL);
+    layersSince = millis();
     return;
   }
   if (type == 0xB0 && ch == OTA_CHANNEL && d1 == CAL_CC) {
@@ -561,7 +591,7 @@ CRGB hdColour(CRGB c, float scale) {
 void render() {
   FastLED.clear();
   if (calStep >= 0) {
-    leds[REVERSED ? NUM_LEDS - 1 - calLed : calLed] = hdColour(CRGB(90, 90, 90), BRIGHTNESS / 255.0f);
+    leds[REVERSED ? NUM_LEDS - 1 - calLed : calLed] = hdColour(CRGB(90, 90, 90), brightness / 255.0f);
     onboard[0] = statusColour();
     FastLED.show();
     return;
@@ -570,7 +600,8 @@ void render() {
   for (int n = 0; n < 128; n++) {
     for (int ch = 0; ch < 4; ch++) {
       if (level[ch][n] <= 0) continue;
-      float scale = level[ch][n] * BRIGHTNESS / (255.0f * 255.0f);
+      if (!(layers & (ch == 0 ? L_PLAY : ch == 1 ? L_HINT : L_FLASH))) continue;
+      float scale = level[ch][n] * brightness / (255.0f * 255.0f);
       CRGB c = ch == 0 ? playColour(n) : CH_COLOUR[ch];
       int tier = ch > 0 ? TIER_GUIDE : held[0][n] ? TIER_HELD : TIER_FADING;
       for (int i = keyFirst[n]; i <= keyLast[n]; i++) {
@@ -584,9 +615,9 @@ void render() {
   }
   // Sparks: between two LEDs, shared by how close each is, so they glide; in the tier that dims first
   for (const Spark &s : sparks) {
-    if (s.life <= 0) continue;
+    if (s.life <= 0 || !(layers & L_SPARKS)) continue;
     CRGB c = blend(CRGB::White, s.colour, uint8_t(255 * (1 - s.life)));  // white-hot, cooling to the note's colour
-    float scale = s.bright * s.life * s.life * BRIGHTNESS / (255.0f * 255.0f);
+    float scale = s.bright * s.life * s.life * brightness / (255.0f * 255.0f);
     int first = floorf(s.pos);
     float share[2] = {1 - (s.pos - first), s.pos - first};
     for (int k = 0; k < 2; k++) {
@@ -656,6 +687,7 @@ void loop() {
   otaService();
   usbWatch();
   if (calStep >= 0 && millis() - calSince > CAL_TIMEOUT_MS) calStop();
+  if (layers != L_ALL && millis() - layersSince > LAYERS_HOLD_MS) layers = L_ALL;
 
   static uint32_t lastFrame = 0;
   if (millis() - lastFrame >= 10) {

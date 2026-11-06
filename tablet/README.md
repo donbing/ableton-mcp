@@ -42,6 +42,15 @@ NeoKeys as if it were plugged in, and the strip's hints and flashes go back the 
 the piano too. The badge says "FP10 Lights on the Push". Add `?hub=ws://host:port` to the page's address for
 another hub, or `?hub=off` to use only Web MIDI. The hub's protocol is in `MCP_Server/midi_hub.py`.
 
+## Only NeoKeys' lights
+
+The strip's own effects (your playing in blue, violet below the split, sparks) sit on top of NeoKeys' hints and
+can be confusing. So while NeoKeys is in view the strip shows just its hints and flashes, plus whichever extras you
+switch on in settings under **Display → Lights**: show my playing, sparks, left-hand colour (all off to start
+with). Leave NeoKeys and the strip is back to normal. This uses the board's layers (CC114, not saved on the
+board, see `firmware/fp10_lights/README.md`), whichever way the strip is connected, so it also covers Live's
+lights track echoing the piano. The strip's saved effects themselves are set in PianoDeck's 💡 Lights app.
+
 ## Claude me lessons
 
 The **🎓** button in the top bar (next to ⚙) opens the Lessons drawer on the right, which turns the loaded song
@@ -85,6 +94,8 @@ ignored (lessons use the first tempo). Practice mode checks which notes you play
   `restartCurrentSong` and `showVictoryOverlay`, and uses NeoKeys' `Midi` and `MidiWriter` plus tonal.js (loaded
   by `serve.ps1`). If any is missing it logs a warning and the 🎓 button doesn't appear.
   `claude-me-plan.schema.json` is the plan format Claude must answer in.
+- `lights-layers.js` adds the Lights switches and sends the board's layers through `window.fp10Lights.send`,
+  which `fp10-bridge.js` provides (Web MIDI or the hub, whichever has the strip).
 - `panel-folds.js` folds the settings panel into Play (open), Sound, Display and Advanced. It only moves the
   panel's existing headings and controls into folding sections, so their ids and handlers are untouched; a
   heading it doesn't know goes into Advanced. Each section remembers whether it was left open.

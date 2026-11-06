@@ -13,7 +13,7 @@
     { id: 'play', title: 'Play', open: true,
       headings: ['tracks', 'midi file', 'mode', 'practice hands', 'speed'] },
     { id: 'sound', title: 'Sound', open: false, headings: ['volume', 'sound engine'] },
-    { id: 'display', title: 'Display', open: false, headings: ['note naming', 'falling notes'] },
+    { id: 'display', title: 'Display', open: false, headings: ['note naming', 'falling notes', 'lights'] },
     { id: 'advanced', title: 'Advanced', open: false, headings: [] },   // timeline, hand split, anything new
   ];
   const groupOf = (heading) => {

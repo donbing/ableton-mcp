@@ -75,6 +75,8 @@
     }
   };
   const haveLights = () => lights.length > 0 || hubLights !== null;
+  // For other scripts on the page (lights-layers.js): raw MIDI to the strip, by whichever path it's on.
+  window.fp10Lights = { send };
 
   const showStatus = () => {
     status.lights = lights.length ? 'usb' : hubLights ? 'push' : null;

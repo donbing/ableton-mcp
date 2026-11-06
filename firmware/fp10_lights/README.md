@@ -18,13 +18,16 @@ keys. The firmware only draws what it's told: lessons, timing and right/wrong de
 | 16 | CC117 ≥ 64 | Restart (for `board.sh restart-test`) |
 | 16 | CC116 = note | Split: play notes below it light violet (left hand); 0 = off. Saved on the board |
 | 16 | CC115 ≥ 64 / < 64 | Sparks on / off: each play note throws sparks along the strip. Saved on the board |
+| 16 | CC114 = layers | Which kinds of light show, added up: 1 play, 2 sparks, 4 left-hand colour, 8 hints, 16 flashes (31 or 127 = all). **Not** saved: back to all at boot, and 2 minutes after the last CC114 unless it's all |
+| 16 | CC113 = 1-127 | Brightness (64 = 50%, the default). Saved on the board |
 
 Colours add where channels overlap on the same key. Channels 5-15 are ignored.
 
 ## Options
 
-Both are saved on the board (they survive updates; `show` on serial prints them, `forget` clears them) and set
-from the PC through the Push:
+Split, sparks and brightness are saved on the board (they survive updates; `show` on serial prints them,
+`forget` clears them). Set them from PianoDeck's **💡 Lights** app on the Surface (by touch, through the Push's
+MIDI hub), or from the PC through the Push:
 
 ```sh
 ./board.sh split          # left hand violet below C3 (MIDI 60, Live's names)
@@ -32,6 +35,8 @@ from the PC through the Push:
 ./board.sh split off
 ./board.sh sparks         # sparks on
 ./board.sh sparks off
+./board.sh brightness 80  # 1-127, 64 = 50%
+./board.sh layers 24      # for 2 minutes: hints and flashes only (see Layers)
 ```
 
 - **Split** recolours only play notes (channel 1) below the split note, in `LEFT_COLOUR`; hints and flashes stay
@@ -39,6 +44,12 @@ from the PC through the Push:
 - **Sparks:** each play note throws 2-4 sparks out of its key, more and faster for harder notes. They start
   white-hot, cool to the note's colour (violet ones from the left hand), slow down and fade in ~0.5 s
   (`SPARK_SPEED`, `SPARK_DRAG`, `SPARK_MS`). They glide between LEDs and are in the power tier that dims first.
+- **Brightness** scales everything on the strip; the power cap (`MAX_MA`) still applies on top.
+- **Layers** (CC114) hide kinds of light for a while without touching the saved options: an app shows only what
+  it needs, then the board goes back to everything. NeoKeys sends 24 (hints and flashes) plus whatever you switch
+  on under Display → Lights, re-sends it every minute while it's in view, and sends 31 when it's hidden or closed.
+  Anything less than 31 lapses after 2 minutes, so a closed or crashed app can't leave effects hidden. Held state
+  carries on underneath: switching a layer back on shows keys that are already down.
 
 In Live (on the Push the ports are **Roland Digital Piano MIDI 1** and **FP10 Lights MIDI 1**): a MIDI track
 with no devices, input = the FP-10, monitor = In, output = FP10 Lights, channel 1, forwards your playing. Lesson
