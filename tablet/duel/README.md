@@ -10,6 +10,15 @@ bar. A caller plays a phrase an octave up; you answer it in your octave, in time
 - **On the Surface, with the piano and the strip:** plug both into the Surface (as for NeoKeys), double-click
   `tablet\Duel.cmd`, press Start and allow MIDI. It serves `http://localhost:8765/duel/` (Chrome only allows
   Web MIDI on secure pages, and `localhost` counts as one). The status line under the keys says what it found.
+- **On the Surface through PianoDeck, cables on the Push:** open **☄️ Duel** in PianoDeck (`http://moo:8484`).
+  That page isn't a secure context, so instead of Web MIDI Duel uses the Push's MIDI hub through PianoDeck's
+  `/hub` (`src/hub.js`, the same protocol as `tablet/fp10-bridge.js`): the FP-10 in, FP10 Lights out, the Push's
+  own pads ignored. Wi-Fi delays each note, so it's stamped earlier by half the measured ping round trip (at most
+  150 ms); the status line shows the lag allowed for. The call sounds in the browser (the hub doesn't play the
+  piano). `?hub=ws://host:port` picks another hub, `?hub=off` never uses one.
+- While a game runs Duel sets the board's layers (CC114) to 25: your playing, hints and flashes, without sparks
+  or the violet left hand, which would recolour its halos and comets. It re-sends that every minute and puts all
+  effects back (31) when the game stops or the page goes.
 - **Anywhere else:** serve this folder over HTTP (`python3 -m http.server` in `tablet/duel`) and open it. Without
   MIDI, play on the on-screen keys or the computer keys `A W S E D F T G Y H U J` (C3 to B3).
 - On load it runs a silent demo with the computer answering. **Autoplay** keeps the computer answering in a

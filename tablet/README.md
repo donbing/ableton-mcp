@@ -109,7 +109,8 @@ The strip's MIDI protocol is in `firmware/fp10_lights/README.md`.
 
 `duel/` is a call-and-response game made for the strip: the caller plays a phrase an octave up, you answer
 it on the beat, and each rally won speeds it up. Same cables; double-click `tablet\Duel.cmd` (it opens
-`http://localhost:8765/duel/`). See `duel/README.md`.
+`http://localhost:8765/duel/`). See `duel/README.md`. With the cables on the Push it's also in PianoDeck (☄️ Duel), through
+the hub.
 
 ## Licence
 

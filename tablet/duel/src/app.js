@@ -7,9 +7,11 @@ import { makeLayout, isBlack, keyPos, whiteIndex, noteName } from './layout.js';
 import { renderPixels, toScreen } from './render.js';
 import { Fp10Adapter, FirmwareSim } from './fp10.js';
 import { Sound } from './audio.js';
+import { Hub } from './hub.js';
 
 const LIGHTS = /FP10 Lights/i;
 const NOT_A_PIANO = /wavetable|through|FP10 Lights/i;
+const PUSH_PORT = /Ableton Push/i;
 const KEYS = 'awsedftgyhuj';
 const LOOKAHEAD_MS = 200;
 const STORE = 'fp10-duel-settings';
@@ -63,6 +65,37 @@ const toStrip = (bytes) => {
   }
 };
 const adapter = new Fp10Adapter(toStrip, layout);
+
+// The Push's hub instead of Web MIDI: on a page that isn't a secure context (PianoDeck on http://moo), or when
+// asked with ?hub=ws://host:port. ?hub=off never uses it.
+const HUB_PARAM = new URLSearchParams(location.search).get('hub');
+const HUB_URL = HUB_PARAM === 'off' ? null
+  : HUB_PARAM || (!window.isSecureContext || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
+let hub = null;
+
+// While a game runs, the board hides the effects it adds to played notes (sparks, the violet left hand), which
+// would recolour Duel's own halos and comets: layers 25 = play + hints + flashes (firmware CC114 on channel 16,
+// not saved, lapses after 2 minutes, so it's re-sent every minute). 31 puts everything back.
+const LAYERS_PLAYING = 25, LAYERS_ALL = 31;
+let layersTimer = null;
+let layersSent = LAYERS_ALL;
+function syncLayers() {
+  const want = mode === 'play' && settings.hardware && !document.hidden ? LAYERS_PLAYING : LAYERS_ALL;
+  const send = (v) => {
+    for (const out of lights) {
+      try { out.send([0xbf, 114, v]); } catch (e) { /* unplugged */ }
+    }
+    layersSent = v;
+  };
+  clearInterval(layersTimer);
+  layersTimer = null;
+  if (want === LAYERS_PLAYING) {
+    send(want);
+    layersTimer = setInterval(() => send(LAYERS_PLAYING), 60000);
+  } else if (layersSent !== LAYERS_ALL) {
+    send(LAYERS_ALL);
+  }
+}
 
 // ---------- settings ----------
 
@@ -132,6 +165,7 @@ function bindSettings() {
         }
       }
       if (key === 'hardware' && settings.hardware) adapter.clear();
+      if (key === 'hardware') syncLayers();
       if (key === 'view') resize();
     });
   }
@@ -153,6 +187,7 @@ function begin(newMode) {
   renderMeter();
   adapter.clear();
   handle(game.start(performance.now()));
+  syncLayers();
   renderMode();
 }
 
@@ -175,6 +210,7 @@ function stop(reason) {
   }
   botQueue = [];
   mode = 'idle';
+  syncLayers();
   if (reason) addLog(reason, 'note');
   renderMode();
 }
@@ -189,7 +225,30 @@ function renderMode() {
 
 // ---------- MIDI ----------
 
+function connectHub() {
+  if (hub) return;
+  midiState = 'hub-connecting';
+  hub = new Hub({
+    url: HUB_URL,
+    makeSocket: (url) => new WebSocket(url),
+    now: () => performance.now(),
+    // The hub also passes the Push's own pads and ports: a bumped pad mustn't count as a note in the game.
+    onMidi: (data, atMs, src) => { if (!PUSH_PORT.test(src || '')) onMidi({ data, timeStamp: atMs }); },
+    onState: (s) => {
+      midiState = s.open ? 'hub' : 'hub-connecting';
+      lights = s.lights ? [{ name: s.lights + ' (Push)', send: (bytes) => hub.send(bytes) }] : [];
+      inputs = s.sources.filter((n) => !NOT_A_PIANO.test(n) && !PUSH_PORT.test(n)).map((name) => ({ name }));
+      pianos = []; // the hub only passes notes to the strip, so the call sounds in the browser
+      adapter.clear(); // the next frame sends what's lit
+      syncLayers();
+      renderMidi();
+    },
+  });
+  hub.connect();
+}
+
 function connectMidi() {
+  if (HUB_URL) return connectHub();
   if (midiState === 'ok' || midiState === 'asking') return;
   if (!navigator.requestMIDIAccess) {
     midiState = 'unsupported';
@@ -229,6 +288,13 @@ function renderMidi() {
     const piano = inputs.map((i) => i.name).join(', ') || 'no keyboard found';
     const strip = lights.length ? 'FP10 Lights connected' : 'FP10 Lights not found';
     el.textContent = `Playing from: ${piano}. ${strip}${lights.length && !settings.hardware ? ' (sending is off)' : ''}.`;
+  } else if (midiState === 'hub') {
+    const piano = inputs.map((i) => i.name).join(', ') || 'no keyboard on the Push';
+    const strip = lights.length ? 'FP10 Lights connected' : 'FP10 Lights not found on the Push';
+    const lag = hub && hub.rttMs !== null ? `; Wi-Fi lag ~${Math.round(hub.oneWayMs)} ms, allowed for` : '';
+    el.textContent = `Through the Push: ${piano}. ${strip}${lights.length && !settings.hardware ? ' (sending is off)' : ''}${lag}.`;
+  } else if (midiState === 'hub-connecting') {
+    el.textContent = `Connecting to the Push for the piano and the strip… meanwhile play on these keys ${keys}.`;
   } else if (midiState === 'asking') {
     el.textContent = 'Asking for MIDI. Allow it to play from the piano and light the strip.';
   } else if (midiState === 'blocked' || midiState === 'unsupported') {
@@ -688,7 +754,14 @@ function init(data) {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && mode === 'play') stop('Stopped while the page was hidden.');
   });
-  window.addEventListener('pagehide', () => adapter.clear());
+  window.addEventListener('pagehide', () => {
+    adapter.clear();
+    mode = 'idle';
+    syncLayers();
+    if (hub) hub.close();
+  });
+  // On PianoDeck the hub carries the piano: connect straight away so the status line says what's there.
+  if (HUB_URL) connectHub();
   // The demo is all motion: with reduced motion asked for, wait for Start instead.
   const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (still) {
