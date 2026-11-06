@@ -70,7 +70,8 @@ track, so check the OPEN set has one first: each set needs its own, and the user
 
 For practising set pieces the user can move the piano's and the board's USB cables from the Push to the Surface
 and run NeoKeys there (`tablet/` in the ableton-mcp repo, `tablet\NeoKeys.cmd`). Then NeoKeys drives the strip:
-hints, green/red flashes in practice mode, and the user's playing echoed in blue. While the cables are on the
+hints, green/red flashes in practice mode, and the user's playing echoed in blue. `tablet\Duel.cmd` starts Duel
+instead, a call-and-response game on the strip (`tablet/duel/README.md`). While the cables are on the
 Surface, Live doesn't hear the piano and can't reach the strip, so none of the steps here work: ask where the
 cables are before debugging a lights track.
 

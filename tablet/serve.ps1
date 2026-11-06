@@ -1,18 +1,21 @@
 # Serve NeoKeys with the FP10 Lights bridge on http://localhost (a secure context, so Chrome allows Web MIDI).
 # NeoKeys' index.html is served with fp10-bridge.js added and its Cloudflare analytics beacon removed; the
-# file on disk is never changed. Works in Windows PowerShell 5.1 and PowerShell 7, nothing to install.
+# file on disk is never changed. Duel (duel/) is served as it is, on /duel/. Works in Windows PowerShell 5.1
+# and PowerShell 7, nothing to install.
 #
-#   powershell -ExecutionPolicy Bypass -File serve.ps1 [-Port 8765] [-NoBrowser]
+#   powershell -ExecutionPolicy Bypass -File serve.ps1 [-Port 8765] [-NoBrowser] [-Open duel/]
 param(
     [int]$Port = 8765,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [string]$Open = ''      # the page to open: '' for NeoKeys, 'duel/' for Duel
 )
 $ErrorActionPreference = 'Stop'
 
 $here = $PSScriptRoot
 $neokeys = Join-Path $here 'neokeys'
 if (-not (Test-Path (Join-Path $neokeys 'index.html'))) {
-    Write-Error "NeoKeys is missing from $neokeys. Run: git submodule update --init"
+    if ($Open -eq '') { Write-Error "NeoKeys is missing from $neokeys. Run: git submodule update --init" }
+    Write-Warning "NeoKeys is missing from $neokeys (git submodule update --init); serving Duel only."
 }
 
 $types = @{
@@ -34,8 +37,8 @@ $listener = New-Object Net.HttpListener
 $url = "http://localhost:$Port/"
 $listener.Prefixes.Add($url)
 $listener.Start()
-Write-Host "NeoKeys + FP10 Lights on $url (Ctrl+C to stop)"
-if (-not $NoBrowser) { Start-Process $url }
+Write-Host "NeoKeys + FP10 Lights on $url, Duel on ${url}duel/ (Ctrl+C to stop)"
+if (-not $NoBrowser) { Start-Process ($url + $Open) }
 
 try {
     while ($listener.IsListening) {
@@ -45,12 +48,21 @@ try {
         $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
         $res = $ctx.Response
         try {
-            if ($path -eq '/' -or $path -eq '/index.html') {
+            if ($path -eq '/duel') {
+                # Duel's scripts are relative to /duel/
+                $res.StatusCode = 301
+                $res.RedirectLocation = '/duel/'
+                $bytes = [byte[]]@()
+                $type = 'text/plain'
+            } elseif ($path -eq '/' -or $path -eq '/index.html') {
                 $bytes = [Text.Encoding]::UTF8.GetBytes((Get-Page))
                 $type = $types['.html']
             } else {
-                $rel = $path.TrimStart('/').Replace('/', '\')
-                $file = if ($rel -eq 'fp10-bridge.js') { Join-Path $here $rel } else { Join-Path $neokeys $rel }
+                $rel = $path.TrimStart('/')
+                if ($rel -eq 'duel/') { $rel = 'duel/index.html' }
+                $rel = $rel.Replace('/', '\')
+                $ours = $rel -eq 'fp10-bridge.js' -or $rel.StartsWith('duel\')
+                $file = if ($ours) { Join-Path $here $rel } else { Join-Path $neokeys $rel }
                 $full = [IO.Path]::GetFullPath($file)
                 if (-not $full.StartsWith($here, [StringComparison]::OrdinalIgnoreCase) -or
                     -not (Test-Path $full -PathType Leaf)) {
