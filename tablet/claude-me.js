@@ -12,7 +12,7 @@
   'use strict';
 
   // ---------------------------------------------------------------- hooks
-  const HOOKS = ['loadMidiObject', 'showVictoryOverlay', 'hideVictoryOverlay', 'setTracksTab', 'setMode',
+  const HOOKS = ['loadMidiObject', 'showVictoryOverlay', 'hideVictoryOverlay', 'setMode',
                  'setHand', 'awardHit', 'awardMiss', 'restartCurrentSong', 'initAudio', 'showToast',
                  'arrayBufferToBase64', 'base64ToArrayBuffer'];
   const missing = HOOKS.filter(name => typeof window[name] !== 'function');
@@ -20,9 +20,8 @@
   if (typeof Midi !== 'function') missing.push('Midi');
   if (typeof MidiWriter === 'undefined' || !MidiWriter.Track) missing.push('MidiWriter');
   if (typeof Tonal === 'undefined' || !Tonal.Key) missing.push('Tonal');
-  const tabsRow = document.querySelector('.tracks-tabs');
-  const panelRecentEl = document.getElementById('panelRecent');
-  if (!tabsRow || !panelRecentEl) missing.push('tracks tabs');
+  const transportBar = document.querySelector('.transport');
+  if (!transportBar) missing.push('transport bar');
   if (missing.length) {
     console.warn('[claude-me] NeoKeys hooks missing, lessons off:', missing);
     return;
@@ -531,10 +530,17 @@
     }
   }
 
-  // ---------------------------------------------------------------- Lessons tab
+  // ---------------------------------------------------------------- Lessons drawer
+  // Its own panel on the right, opened by 🎓 in the transport bar, so it doesn't crowd the settings.
   const style = document.createElement('style');
   style.textContent = `
-    .tracks-tabs .tracks-tab{white-space:nowrap;padding-left:4px;padding-right:4px;min-width:0}
+    #cmPanel{left:auto !important;right:10px;width:300px;max-width:calc(100vw - 20px);overflow-y:auto}
+    #cmPanel[hidden]{display:none !important}
+    #cmPanel .cm-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+    #cmPanel .cm-title h3{margin:0}
+    #cmPanel .cm-close{background:none;border:0;color:var(--text-dim);font-size:16px;cursor:pointer;padding:2px 6px}
+    #cmPanel .cm-close:hover{color:var(--text)}
+    #lessonsBtn.on{outline:2px solid var(--accent);outline-offset:1px}
     #cmPanel .cm-now{font-size:12px;color:var(--text-dim);margin:2px 0 6px}
     #cmPanel .cm-now b{color:var(--text);font-weight:600}
     #cmPanel .cm-row{display:flex;gap:6px;margin-bottom:6px}
@@ -561,39 +567,39 @@
     .victory-card .cm-result .cm-sub{font-size:12px;opacity:.8}`;
   document.head.appendChild(style);
 
-  const tab = document.createElement('button');
-  tab.className = 'tracks-tab';
-  tab.id = 'tabLessons';
-  tab.type = 'button';
-  tab.textContent = '🎓 Lessons';
-  tabsRow.appendChild(tab);
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'tbtn';
+  toggleBtn.id = 'lessonsBtn';
+  toggleBtn.type = 'button';
+  toggleBtn.title = 'Lessons (Claude me)';
+  toggleBtn.textContent = '🎓';
+  const settingsBtn = document.getElementById('panelToggleBtn');
+  if (settingsBtn && settingsBtn.parentNode === transportBar) settingsBtn.insertAdjacentElement('afterend', toggleBtn);
+  else transportBar.appendChild(toggleBtn);
 
   const panel = document.createElement('div');
+  panel.className = 'panel';
   panel.id = 'cmPanel';
-  panel.style.display = 'none';
+  panel.hidden = true;
   panel.innerHTML =
+    '<div class="cm-title"><h3>🎓 Lessons</h3><button class="cm-close" id="cmClose" type="button" title="Close">✕</button></div>' +
     '<div class="cm-now">Song: <b id="cmSong">none loaded</b></div>' +
     '<div class="cm-row"><button class="btn primary" id="cmClaude" type="button">✨ Claude me</button>' +
     '<button class="btn" id="cmQuick" type="button" title="Plan made here, without Claude">Quick plan</button></div>' +
     '<div class="cm-status" id="cmStatus"></div><div id="cmSongs"></div>';
-  panelRecentEl.insertAdjacentElement('afterend', panel);
+  document.body.appendChild(panel);
   const $ = id => document.getElementById(id);
 
-  const origTab = window.setTracksTab;
-  window.setTracksTab = function (which) {
-    const mine = which === 'lessons';
-    origTab.call(this, mine ? 'builtin' : which);
-    tab.classList.toggle('active', mine);
-    panel.style.display = mine ? '' : 'none';
-    if (mine) {
-      document.querySelectorAll('#tabBuiltIn, #tabRecent').forEach(t => t.classList.remove('active'));
-      const pb = document.getElementById('panelBuiltIn');
-      if (pb) pb.style.display = 'none';
-      renderPanel();
-    }
+  const OPEN_KEY = 'neokeys.claudeMe.open';
+  const setOpen = (open) => {
+    panel.hidden = !open;
+    toggleBtn.classList.toggle('on', open);
+    try { localStorage.setItem(OPEN_KEY, open ? '1' : ''); } catch (e) { /* ignore */ }
+    if (open) renderPanel();
   };
-  const openLessonsTab = () => window.setTracksTab('lessons');
-  tab.addEventListener('click', openLessonsTab);
+  const openLessonsTab = () => setOpen(true);
+  toggleBtn.addEventListener('click', () => setOpen(panel.hidden));
+  $('cmClose').addEventListener('click', () => setOpen(false));
 
   const status = (text, err) => { const el = $('cmStatus'); el.textContent = text || ''; el.classList.toggle('err', !!err); };
 
@@ -724,4 +730,5 @@
   window.claudeMe = { analyse: (m, t) => analyse(m, t), quickPlan, normalisePlan, buildLessonMidi, startLesson,
                       get current() { return current; }, get lesson() { return lesson; } };
   renderPanel();
+  try { if (localStorage.getItem(OPEN_KEY)) setOpen(true); } catch (e) { /* ignore */ }
 })();

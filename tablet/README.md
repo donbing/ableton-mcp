@@ -44,8 +44,9 @@ another hub, or `?hub=off` to use only Web MIDI. The hub's protocol is in `MCP_S
 
 ## Claude me lessons
 
-The **🎓 Lessons** tab turns the loaded song into short practice lessons. Load a song (Built-in, Recent or a
-.mid file), then press **✨ Claude me**, or **🎓 Claude me** on the end-of-song screen. Claude plans 3-12 lessons,
+The **🎓** button in the top bar (next to ⚙) opens the Lessons drawer on the right, which turns the loaded song
+into short practice lessons. Load a song (Built-in, Recent or a .mid file), then press **✨ Claude me** there, or
+**🎓 Claude me** on the end-of-song screen. Claude plans 3-12 lessons,
 for example: the tune of the first phrase in the right hand at 60%, its chords as held left-hand blocks, both
 together, then the whole song. Click a lesson to load it in practice mode with its hand and tempo set; the strip
 hints and flashes as usual. At the end the screen says whether it passed (accuracy and wrong notes against the
@@ -80,12 +81,15 @@ ignored (lessons use the first tempo). Practice mode checks which notes you play
 - `fp10-bridge.js` adds the strip. It wraps a few of NeoKeys' global functions (`initMIDI`, `awardHit`,
   `awardMiss`, the `sendHardware*` helpers) and reads its `state` each frame for the hints. If an update renames
   any of them, the badge turns red and names what's missing, and NeoKeys runs as before without the strip.
-- `claude-me.js` adds the Lessons tab the same way: it wraps `loadMidiObject`, `awardHit`/`awardMiss`,
-  `restartCurrentSong`, `showVictoryOverlay` and `setTracksTab`, and uses NeoKeys' `Midi` and `MidiWriter` plus
-  tonal.js (loaded by `serve.ps1`). If any is missing it logs a warning and the tab doesn't appear.
+- `claude-me.js` adds the Lessons drawer the same way: it wraps `loadMidiObject`, `awardHit`/`awardMiss`,
+  `restartCurrentSong` and `showVictoryOverlay`, and uses NeoKeys' `Midi` and `MidiWriter` plus tonal.js (loaded
+  by `serve.ps1`). If any is missing it logs a warning and the 🎓 button doesn't appear.
   `claude-me-plan.schema.json` is the plan format Claude must answer in.
+- `panel-folds.js` folds the settings panel into Play (open), Sound, Display and Advanced. It only moves the
+  panel's existing headings and controls into folding sections, so their ids and handlers are untouched; a
+  heading it doesn't know goes into Advanced. Each section remembers whether it was left open.
 - `serve.ps1` (Windows PowerShell, nothing to install) serves `neokeys/index.html` with the bridge and the
-  lessons added and NeoKeys' Cloudflare analytics beacon left out, plus the `/api/claude-me/` endpoints. Chrome
+  lessons and folds added and NeoKeys' Cloudflare analytics beacon left out, plus the `/api/claude-me/` endpoints. Chrome
   only allows Web MIDI on secure pages, and `localhost` counts as one.
 
 The strip's MIDI protocol is in `firmware/fp10_lights/README.md`.
