@@ -26,6 +26,7 @@
   const HUB_URL = new URLSearchParams(location.search).get('hub') ||
     (location.hostname === 'localhost' ? 'ws://push.local:8766' : 'ws://' + location.host + '/hub');
   const HUB_SKIP = /Ableton Push 3/;   // the Push's pads aren't piano keys
+  const FP10_PIANO = /Roland Digital Piano|FP-?10(?! Lights)/i;   // the piano itself, not the strip
   const LOOKAHEAD_MS = 1200;           // real time a hint shows before its note
   const HINT_LEVELS = [20, 45, 80];    // velocities from far to near; 127 = due now
 
@@ -119,6 +120,8 @@
   const scan = (access) => {
     lights = [...access.outputs.values()].filter(out => LIGHTS.test(out.name || ''));
     for (const input of access.inputs.values()) {
+      // An input NeoKeys hooked up before this script loaded still calls the unguarded original (see below).
+      if (input.onmidimessage === origMidi) input.onmidimessage = window.onMIDIMessage;
       input.removeEventListener('midimessage', echo);
       if (!LIGHTS.test(input.name || '')) input.addEventListener('midimessage', echo);
     }
@@ -138,6 +141,22 @@
     if (hubPlays && e.source !== 'hub') return;
     return origMidi.apply(this, arguments);
   };
+  // That wrapper misses Web MIDI inputs NeoKeys hooked up before this script loaded (PianoDeck starts NeoKeys
+  // by itself, and initMIDI then hands each input the original onMIDIMessage): their copy of the piano reached
+  // NeoKeys as well as the hub's, so falling blocks came twice and froze when one route lost a note-off. So
+  // also stop it one level down, where NeoKeys looks the functions up on every call: while the hub plays, a
+  // note or pedal arriving straight from a Web MIDI input (window.event is its MIDIMessageEvent) is dropped.
+  // The hub's copy runs under a WebSocket MessageEvent, touch and keys under pointer and keyboard events.
+  const fromWebMidi = () => hubPlays && typeof MIDIMessageEvent !== 'undefined' &&
+    window.event instanceof MIDIMessageEvent;
+  for (const name of ['handleUserNoteOn', 'handleUserNoteOff', 'setPedal']) {
+    const orig = window[name];
+    if (typeof orig !== 'function') continue;
+    window[name] = function () {
+      if (fromWebMidi()) return;
+      return orig.apply(this, arguments);
+    };
+  }
 
   // The round trip to the hub in ms, or null when it isn't connected or doesn't answer within `timeout`
   const pings = new Map();             // t -> resolve
@@ -187,7 +206,10 @@
         if (name !== hubLights) lit.clear();   // a replugged board starts dark
         hubLights = name;
         status.pianos = (msg.sources || []).filter(playable);
-        hubPlays = status.pianos.length > 0;
+        // Only the FP-10 can arrive by two routes (the Push's USB, and Bluetooth or USB on the Surface); a
+        // keyboard that lives on the Push (the LPK25) just adds notes through the hub. Keyed to any playable
+        // source, an FP-10 cabled to the Surface was dropped whenever the LPK25 was on the Push.
+        hubPlays = status.pianos.some(n => FP10_PIANO.test(n));
         showStatus();
       } else if (msg.type === 'midi' && playable(msg.src)) {
         const e = { data: msg.data, source: 'hub' };
