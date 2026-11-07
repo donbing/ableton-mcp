@@ -2,7 +2,7 @@
 // FP10 Lights out, optionally the piano out for the call) and the browser's audio. What the game decides
 // lives in game.js; what it looks like lives in render.js (pixels) and fp10.js (the strip's notes).
 
-import { Game, PHASE, DEFAULTS } from './game.js';
+import { Game, PHASE, DEFAULTS, zonesFor } from './game.js';
 import { makeLayout, isBlack, keyPos, whiteIndex, noteName } from './layout.js';
 import { renderPixels, toScreen } from './render.js';
 import { Fp10Adapter, FirmwareSim } from './fp10.js';
@@ -38,7 +38,10 @@ const ideal = new Float32Array(layout.numLeds * 3);
 const today = new Float32Array(layout.numLeds * 3);
 
 let settings = { ...DEFAULT_SETTINGS };
-let mode = 'demo'; // 'demo' (the computer answers, silently, until Start), 'play', 'idle'
+let mode = 'demo'; // 'demo' (the computer answers, silently, until Start or a key), 'play', 'idle'
+let zones = zonesFor(60, layout.lowest, layout.highest); // middle C's octave until a first key picks another
+let picked = false; // this game's first piano key has picked the octave
+let waiting = true; // no game yet since the page loaded: any key starts one (from the demo, or idle with reduced motion)
 let game = new Game();
 let lights = [];
 let pianos = [];
@@ -48,6 +51,7 @@ let scheduled = new Set();
 let clickedUntil = 0;
 let botQueue = [];
 let roundDeltas = [];
+let gameDeltas = []; // every hit this game, early (-) to late (+), for the meter's average
 let lastResult = null;
 const log = [];
 const held = new Map(); // pitch -> count of sources holding it
@@ -124,6 +128,8 @@ function config() {
     cometBeats: settings.comet,
     passScore: settings.pass / 100,
     startNotes: settings.notes,
+    playerZone: zones.player,
+    callerZone: zones.caller,
     seed: (Math.random() * 2 ** 31) | 0,
   };
 }
@@ -181,6 +187,7 @@ function begin(newMode) {
   clickedUntil = 0;
   botQueue = [];
   roundDeltas = [];
+  gameDeltas = [];
   lastResult = null;
   log.length = 0;
   renderLog();
@@ -191,10 +198,47 @@ function begin(newMode) {
   renderMode();
 }
 
-async function start() {
+// byKey: started by a key, which has picked the octave already
+function start(byKey) {
+  waiting = false;
+  picked = !!byKey;
   begin('play');
-  connectMidi(); // not awaited: a permission prompt can sit unanswered
-  await sound.start();
+  connectMidi(); // already connected since the page loaded, unless MIDI was refused
+  // Browsers start audio only after a tap or a key on the page, and a piano key isn't one: say so when the call
+  // would be silent. resume() can stay pending until then, so look after a moment rather than awaiting it.
+  sound.start();
+  setTimeout(() => {
+    if (mode === 'play' && settings.sound === 'pluck' && !sound.ready) {
+      addLog('Tap the page once to hear the caller and the click.', 'note');
+    }
+  }, 400);
+}
+
+const zoneName = (z) => `${noteName(z.low)}–${noteName(z.high)}`;
+
+function setZones(z) {
+  zones = z;
+  buildPad();
+  $('st-zone').textContent = zoneName(zones.player);
+  renderMidi();
+}
+
+// From the demo (or idle on load) a key starts a game. A piano key also picks the octave; on-screen and computer
+// keys are in the zone already.
+function startFromKey(pitch, source) {
+  if (source === 'midi') setZones(zonesFor(pitch, layout.lowest, layout.highest));
+  start(true);
+  addLog(`Started from ${noteName(pitch)}: your zone is ${zoneName(zones.player)}.`, 'note');
+}
+
+// In a game started with Start, the first piano key picks the octave if it comes in the count-in (until just
+// before the call, whose sound is scheduled ahead). -> whether it moved the zones
+function pickZones(pitch, atMs) {
+  const z = zonesFor(pitch, layout.lowest, layout.highest);
+  if (z.player.low === zones.player.low || !game.setZones(z, atMs, LOOKAHEAD_MS + 50)) return false;
+  setZones(z);
+  addLog(`Your zone is ${zoneName(zones.player)}.`, 'note');
+  return true;
 }
 
 function stop(reason) {
@@ -280,29 +324,33 @@ function connectMidi() {
 }
 
 function renderMidi() {
-  const el = $('midi');
+  setText('midi', (waiting && mode !== 'play' ? 'Play a key to start. ' : '') + connection());
+}
+
+// What the page plays from and lights, as a sentence.
+function connection() {
   const keys = 'or your computer keys (A W S E D F T G Y H U J)';
-  if (mode === 'demo') {
-    el.textContent = 'Demo: the computer is answering, with the sound off. Press Start to play.';
-  } else if (midiState === 'ok') {
+  const off = lights.length && !settings.hardware ? ' (sending is off)' : '';
+  if (midiState === 'ok') {
     const piano = inputs.map((i) => i.name).join(', ') || 'no keyboard found';
     const strip = lights.length ? 'FP10 Lights connected' : 'FP10 Lights not found';
-    el.textContent = `Playing from: ${piano}. ${strip}${lights.length && !settings.hardware ? ' (sending is off)' : ''}.`;
-  } else if (midiState === 'hub') {
+    return `Playing from: ${piano}. ${strip}${off}.`;
+  }
+  if (midiState === 'hub') {
     const piano = inputs.map((i) => i.name).join(', ') || 'no keyboard on the Push';
     const strip = lights.length ? 'FP10 Lights connected' : 'FP10 Lights not found on the Push';
-    const lag = hub && hub.rttMs !== null ? `; Wi-Fi lag ~${Math.round(hub.oneWayMs)} ms, allowed for` : '';
-    el.textContent = `Through the Push: ${piano}. ${strip}${lights.length && !settings.hardware ? ' (sending is off)' : ''}${lag}.`;
-  } else if (midiState === 'hub-connecting') {
-    el.textContent = `Connecting to the Push for the piano and the strip… meanwhile play on these keys ${keys}.`;
-  } else if (midiState === 'asking') {
-    el.textContent = 'Asking for MIDI. Allow it to play from the piano and light the strip.';
-  } else if (midiState === 'blocked' || midiState === 'unsupported') {
-    el.textContent = `MIDI isn't available here. Play on these keys ${keys}; on the Surface, run Duel.cmd for the piano and the strip.`;
-  } else {
-    el.textContent = `Play on these keys ${keys}.`;
+    return `Through the Push: ${piano}. ${strip}${off}${lagText()}.`;
   }
+  if (midiState === 'hub-connecting') return `Connecting to the Push for the piano and the strip… meanwhile play on these keys ${keys}.`;
+  if (midiState === 'asking') return 'Asking for MIDI. Allow it to play from the piano and light the strip.';
+  if (midiState === 'blocked' || midiState === 'unsupported') {
+    return `MIDI isn't available here. Play on these keys ${keys}; on the Surface, run Duel.cmd for the piano and the strip.`;
+  }
+  return `Play on these keys ${keys}.`;
 }
+
+// The hub's ping round trip changes without a state change: the status line and the meter follow it.
+const lagText = () => (hub && hub.rttMs !== null ? `; Wi-Fi lag ~${Math.round(hub.oneWayMs)} ms, allowed for` : '');
 
 const stamp = (t) => {
   const now = performance.now();
@@ -325,7 +373,14 @@ function press(pitch, atMs, source) {
   if (source !== 'midi' && source !== 'bot' && settings.sound !== 'off') {
     sound.start().then(() => sound.pluck(pitch, atMs, { bright: 0.3, gain: 0.75 }));
   }
-  if (mode === 'demo' && source !== 'bot') return;
+  if (source !== 'bot') {
+    if (waiting && mode !== 'play') return startFromKey(pitch, source); // that key isn't part of the game
+    if (mode === 'demo') return;
+    if (source === 'midi' && mode === 'play' && !picked) {
+      picked = true;
+      if (game.phase === PHASE.COUNT_IN && pickZones(pitch, atMs)) return;
+    }
+  }
   handle(game.noteOn(pitch, atMs));
 }
 
@@ -339,7 +394,7 @@ function release(pitch) {
 function buildPad() {
   const pad = $('pad');
   pad.textContent = '';
-  const z = game.cfg.playerZone;
+  const z = zones.player;
   const notes = [];
   for (let p = z.low; p <= z.high; p++) notes.push(p);
   const whites = notes.filter((p) => !isBlack(p));
@@ -366,7 +421,11 @@ function buildPad() {
     }
     pad.appendChild(b);
   });
+}
 
+// Once: buildPad() runs again whenever the zone moves.
+function bindPad() {
+  const pad = $('pad');
   pad.addEventListener('pointerdown', (e) => {
     const k = e.target.closest('.k');
     if (!k) return;
@@ -402,12 +461,16 @@ function bindKeyboard() {
     const i = KEYS.indexOf(e.key.toLowerCase());
     if (i < 0) return;
     e.preventDefault();
-    press(game.cfg.playerZone.low + i, stamp(e.timeStamp), 'keys');
+    press(zones.player.low + i, stamp(e.timeStamp), 'keys');
   });
   window.addEventListener('keyup', (e) => {
     const i = KEYS.indexOf(e.key.toLowerCase());
-    if (i >= 0) release(game.cfg.playerZone.low + i);
+    if (i >= 0) release(zones.player.low + i);
   });
+  // A game a piano key started has no sound until the page is tapped or typed on once: any tap will do.
+  const unlock = () => sound.start();
+  window.addEventListener('pointerdown', unlock, true);
+  window.addEventListener('keydown', unlock, true);
 }
 
 // ---------- the bot (autoplay and the demo) ----------
@@ -451,6 +514,7 @@ function handle(events) {
     } else if (e.type === 'judgement') {
       if (e.kind === 'hit') {
         roundDeltas.push(e.deltaMs);
+        if (mode === 'play' && !settings.autoplay) gameDeltas.push(e.deltaMs);
         renderMeter();
       }
       addLog(judgementText(e), e.kind);
@@ -515,6 +579,17 @@ function renderMeter() {
     i.style.left = `${50 + (Math.max(-METER_MS, Math.min(METER_MS, d)) / METER_MS) * 50}%`;
     dots.appendChild(i);
   }
+  renderAverage();
+}
+
+// The average of this game's hits, beside the lag allowed for: a steady lean one way, round after round, is
+// lag the correction misses (or a habit of playing ahead or behind).
+function renderAverage() {
+  const n = gameDeltas.length;
+  const avg = n ? gameDeltas.reduce((a, b) => a + b, 0) / n : 0;
+  const lean = !n ? 'No hits yet this game.' : `This game: ${n} hit${n > 1 ? 's' : ''}, on average ${Math.abs(Math.round(avg))} ms ${avg < 0 ? 'early' : 'late'}.`;
+  const lag = midiState === 'hub' && hub && hub.rttMs !== null ? ` Wi-Fi lag ~${Math.round(hub.oneWayMs)} ms taken off each note.` : '';
+  setText('meter-sum', lean + lag);
 }
 
 function renderRail(phase) {
@@ -690,7 +765,7 @@ function drawKeys(top, h, X, lo, hi, view) {
     ctx.fillText(text, (xa + xb) / 2, top + h + 19);
   };
   label(zc, 'CALLER', '#ff5cb4');
-  label(zp, view.phase === PHASE.IDLE ? 'YOUR ZONE' : 'YOU', '#4fe3ef');
+  label(zp, `${view.phase === PHASE.IDLE || mode === 'demo' ? 'YOUR ZONE' : 'YOU'} · ${zoneName(zp)}`, '#4fe3ef');
   ctx.textAlign = 'start';
 }
 
@@ -722,6 +797,10 @@ function hud(view, now) {
   setText('st-notes', running ? String(view.notes) : '–');
   setText('st-streak', String(view.streak));
   setText('st-score', lastResult ? `${Math.round(lastResult.score * 100)}%` : '–');
+  if (midiState === 'hub') {
+    renderMidi(); // the lag follows the hub's pings
+    renderAverage();
+  }
   const span = view.phaseEndMs - view.phaseStartMs;
   const p = running && span > 0 ? Math.max(0, Math.min(1, (now - view.phaseStartMs) / span)) : 0;
   $('progress').style.transform = `scaleX(${p.toFixed(3)})`;
@@ -744,7 +823,8 @@ function frame() {
 function init(data) {
   loadSettings(data && data.settings);
   bindSettings();
-  buildPad();
+  setZones(zones);
+  bindPad();
   bindKeyboard();
   renderLog();
   renderMeter();
@@ -760,8 +840,8 @@ function init(data) {
     syncLayers();
     if (hub) hub.close();
   });
-  // On PianoDeck the hub carries the piano: connect straight away so the status line says what's there.
-  if (HUB_URL) connectHub();
+  // The piano and the strip from the start, so a key can start a game and the status line says what's there.
+  connectMidi();
   // The demo is all motion: with reduced motion asked for, wait for Start instead.
   const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (still) {

@@ -47,6 +47,19 @@ export const DEFAULTS = Object.freeze({
   stripLow: 29, // the count-in comet starts at the strip's bass end
 });
 
+// The zones for a player who plays `pitch`: the player gets that key's octave (C to B), the caller the octave
+// above, or the one below when the octave above runs off the strip. Octaves the strip can't hold whole move in
+// to the nearest one it can. lowest/highest are the strip's end keys (layout.lowest/.highest: 29 and 99).
+export function zonesFor(pitch, lowest = 29, highest = 99) {
+  const minLow = Math.ceil(lowest / 12) * 12;
+  const maxLow = Math.floor((highest - 11) / 12) * 12;
+  const low = Math.max(minLow, Math.min(maxLow, Math.floor(pitch / 12) * 12));
+  const player = { low, high: low + 11 };
+  const above = low + 12 + 11 <= highest;
+  const caller = above ? { low: low + 12, high: low + 23 } : { low: low - 12, high: low - 1 };
+  return { player, caller };
+}
+
 export class Game {
   constructor(options = {}) {
     this.cfg = { ...DEFAULTS, ...options };
@@ -84,6 +97,21 @@ export class Game {
     this.round = null;
     this.next = null;
     return [{ type: 'phase', phase: PHASE.IDLE }];
+  }
+
+  // Moves both zones: while idle, or during the count-in until `marginMs` before the call starts (sound for the
+  // call is scheduled ahead). The count-in's phrase moves with the player's zone. -> whether it moved
+  setZones({ player, caller }, nowMs = 0, marginMs = 0) {
+    const counting = this.phase === PHASE.COUNT_IN && nowMs < this.round.callMs - marginMs;
+    if (this.phase !== PHASE.IDLE && !counting) return false;
+    const shift = player.low - this.cfg.playerZone.low;
+    this.cfg = { ...this.cfg, playerZone: { ...player }, callerZone: { ...caller } };
+    if (counting) {
+      const phrase = this.round.phrase.map((n) => ({ ...n, pitch: n.pitch + shift }));
+      this.roundNo = 0;
+      this.round = this.planRound(this.round.callBeat, phrase);
+    }
+    return true;
   }
 
   newPhrase() {

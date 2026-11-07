@@ -8,7 +8,7 @@ bar. A caller plays a phrase an octave up; you answer it in your octave, in time
 ## Run it
 
 - **On the Surface, with the piano and the strip:** plug both into the Surface (as for NeoKeys), double-click
-  `tablet\Duel.cmd`, press Start and allow MIDI. It serves `http://localhost:8765/duel/` (Chrome only allows
+  `tablet\Duel.cmd`, allow MIDI and play a key. It serves `http://localhost:8765/duel/` (Chrome only allows
   Web MIDI on secure pages, and `localhost` counts as one). The status line under the keys says what it found.
 - **On the Surface through PianoDeck, cables on the Push:** open **☄️ Duel** in PianoDeck (`http://moo:8484`).
   That page isn't a secure context, so instead of Web MIDI Duel uses the Push's MIDI hub through PianoDeck's
@@ -20,9 +20,18 @@ bar. A caller plays a phrase an octave up; you answer it in your octave, in time
   or the violet left hand, which would recolour its halos and comets. It re-sends that every minute and puts all
   effects back (31) when the game stops or the page goes.
 - **Anywhere else:** serve this folder over HTTP (`python3 -m http.server` in `tablet/duel`) and open it. Without
-  MIDI, play on the on-screen keys or the computer keys `A W S E D F T G Y H U J` (C3 to B3).
-- On load it runs a silent demo with the computer answering. **Autoplay** keeps the computer answering in a
-  real game, so you can watch the strip without playing.
+  MIDI, play on the on-screen keys or the computer keys `A W S E D F T G Y H U J` (your zone, C3 to B3 by default).
+- On load it connects to the piano and the strip (the hub, or Web MIDI) and runs a silent demo with the computer
+  answering. **Play a key to start**: a piano key starts a real game, and its octave becomes your zone (middle C's,
+  C3-B3, until then; the "Your zone" stat and the label under the keys show it). The caller takes the octave
+  above, or below from C5 up, where the strip runs out. Octaves the strip can't hold whole (below C1, above B5)
+  move in to the nearest one. In a game started with **Start**, the first piano key in the count-in picks the
+  octave instead. On-screen and computer keys start a game too, in the zone as it is.
+- A piano key isn't a tap, so the browser may keep the caller's sound off until the page is tapped once: the log
+  says so when it is.
+- **Autoplay** keeps the computer answering in a real game, so you can watch the strip without playing.
+- Under the Timing meter: the average of this game's hits (early or late) and, through the hub, the Wi-Fi lag
+  taken off each note. A steady lean one way, round after round, is lag the correction misses (or how you play).
 
 ## A round
 

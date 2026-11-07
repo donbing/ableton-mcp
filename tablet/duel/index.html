@@ -232,6 +232,7 @@
   }
   .meter .zero { position: absolute; top: 5px; bottom: 5px; left: 50%; width: 1px; background: var(--muted); }
   .meter i { position: absolute; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--good); }
+  .meter-sum { margin: -4px 0 12px; color: var(--muted); font-size: 12px; }
   .meter .lbl { position: absolute; top: 2px; color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
   .meter .l { left: 7px; }
   .meter .r { right: 7px; }
@@ -278,7 +279,7 @@
     <div>
       <p class="eyebrow">FP10 Lights</p>
       <h1>Duel</h1>
-      <p class="sub">The caller plays a phrase an octave up. A comet carries it down to your zone and lands on the first beat: play it back, in time.</p>
+      <p class="sub">The caller plays a phrase an octave from yours. A comet carries it to your zone and lands on the first beat: play it back, in time. Play a key on the piano to start.</p>
     </div>
     <div class="controls">
       <span id="demo" class="badge" hidden>Demo</span>
@@ -312,6 +313,7 @@
     </ol>
     <div class="progress" aria-hidden="true"><i id="progress"></i></div>
     <dl class="stats">
+      <div><dt>Your zone</dt><dd id="st-zone">C3–B3</dd></div>
       <div><dt>Tempo</dt><dd><span id="st-bpm">90</span> <small>BPM</small></dd></div>
       <div><dt>Round</dt><dd id="st-round">–</dd></div>
       <div><dt>Notes</dt><dd id="st-notes">–</dd></div>
@@ -335,6 +337,7 @@
         <span class="lbl r">Late</span>
         <div id="dots"></div>
       </div>
+      <p class="meter-sum" id="meter-sum" aria-live="polite"></p>
       <ol class="log" id="log"></ol>
     </div>
 
@@ -352,7 +355,7 @@
         <label class="check" for="set-click"><input id="set-click" type="checkbox"> Click on each beat</label>
         <label class="check" for="set-hardware"><input id="set-hardware" type="checkbox"> Light FP10 Lights</label>
       </div>
-      <p class="hint">Tempo, window, comet, pass mark and phrase length apply from the next Start. Note names follow Live: C3 is middle C.</p>
+      <p class="hint">Tempo, window, comet, pass mark and phrase length apply from the next Start. Note names follow Live: C3 is middle C. The first key you play on the piano picks your octave (from the demo, or in the count-in); the caller plays the octave above, or below from C5 up.</p>
     </details>
   </section>
 </main>

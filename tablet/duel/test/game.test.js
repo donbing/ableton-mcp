@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Game, PHASE } from '../src/game.js';
+import { Game, PHASE, zonesFor } from '../src/game.js';
 import { makeLayout } from '../src/layout.js';
 import { renderPixels } from '../src/render.js';
 import { Fp10Adapter, FirmwareSim } from '../src/fp10.js';
@@ -265,4 +265,39 @@ test('a NoteOn delivered a frame late still counts by its own timestamp', () => 
   // but once the grace has passed, the window is closed
   g.update(g.round.evaluator.results[1].timeMs + 181);
   assert.equal(g.round.evaluator.results[1].state, 'missed');
+});
+
+test('the first key picks the zones: its octave for the player, the caller above, or below at the top', () => {
+  assert.deepEqual(zonesFor(60), { player: { low: 60, high: 71 }, caller: { low: 72, high: 83 } });
+  assert.deepEqual(zonesFor(53), { player: { low: 48, high: 59 }, caller: { low: 60, high: 71 } });
+  // C5-B5 fits on the strip (it ends at 99) but the octave above doesn't: the caller goes below
+  assert.deepEqual(zonesFor(90), { player: { low: 84, high: 95 }, caller: { low: 72, high: 83 } });
+  // octaves the strip can't hold whole move in: A0 to C1, C6 and up to C5
+  assert.equal(zonesFor(21).player.low, 36);
+  assert.equal(zonesFor(100).player.low, 84);
+  const { lowest, highest } = makeLayout();
+  for (let p = 21; p <= 108; p++) {
+    const z = zonesFor(p, lowest, highest);
+    for (const zone of [z.player, z.caller]) assert.ok(zone.low >= lowest && zone.high <= highest, `${p}`);
+  }
+});
+
+test('a key during the count-in moves the zones and the first phrase with them; later it does not', () => {
+  const g = newGame();
+  const before = g.round.phrase.map((n) => n.pitch);
+  assert.equal(g.setZones(zonesFor(40), 1000, 200), true);
+  assert.deepEqual(g.round.phrase.map((n) => n.pitch), before.map((p) => p - 24));
+  assert.equal(g.round.no, 1);
+  for (const c of g.round.callNotes) assert.ok(c.pitch >= 48 && c.pitch <= 59 && c.echo === c.pitch - 12);
+  for (const t of g.round.evaluator.results) assert.ok(t.pitch >= 36 && t.pitch <= 47);
+  assert.equal(g.round.callNotes[0].startMs, 2150); // the clock doesn't move
+  // too close to the call (its sound is already scheduled), or once it has started: no change
+  assert.equal(g.setZones(zonesFor(60), 2000, 200), false);
+  g.update(2200);
+  assert.equal(g.setZones(zonesFor(60), 2200), false);
+  assert.equal(g.cfg.playerZone.low, 36);
+  // the next round's phrase is dealt in the new zone
+  playAll((g.update(5150), g));
+  g.update(7200);
+  for (const t of g.next.evaluator.results) assert.ok(t.pitch >= 36 && t.pitch <= 47);
 });
