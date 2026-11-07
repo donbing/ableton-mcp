@@ -1,7 +1,7 @@
 # Serve NeoKeys with the FP10 Lights bridge on http://localhost (a secure context, so Chrome allows Web MIDI).
 # NeoKeys' index.html is served with fp10-bridge.js, claude-me.js, lights-layers.js and panel-folds.js added and
-# its Cloudflare analytics beacon removed; the file on disk is never changed. Duel (duel/) is served as it is, on
-# /duel/. Works in Windows PowerShell 5.1 and PowerShell 7, nothing to install.
+# its Cloudflare analytics beacon removed; the file on disk is never changed. Duel (duel/) and Rally (rally/) are served
+# as they are, on /duel/ and /rally/. Works in Windows PowerShell 5.1 and PowerShell 7, nothing to install.
 #
 #   powershell -ExecutionPolicy Bypass -File serve.ps1 [-Port 8765] [-NoBrowser] [-Open duel/]
 #
@@ -114,7 +114,7 @@ $listener = New-Object Net.HttpListener
 $url = "http://localhost:$Port/"
 $listener.Prefixes.Add($url)
 $listener.Start()
-Write-Host "NeoKeys + FP10 Lights on $url, Duel on ${url}duel/ (Ctrl+C to stop)"
+Write-Host "NeoKeys + FP10 Lights on $url, Duel on ${url}duel/, Rally on ${url}rally/ (Ctrl+C to stop)"
 if (-not $NoBrowser) { Start-Process ($url + $Open) }
 
 try {
@@ -142,10 +142,10 @@ try {
                 $res.StatusCode = $status
                 $bytes = [Text.Encoding]::UTF8.GetBytes($json)
                 $type = $types['.json']
-            } elseif ($path -eq '/duel') {
-                # Duel's scripts are relative to /duel/
+            } elseif ($path -eq '/duel' -or $path -eq '/rally') {
+                # Duel's and Rally's scripts are relative to their folders
                 $res.StatusCode = 301
-                $res.RedirectLocation = '/duel/'
+                $res.RedirectLocation = $path + '/'
                 $bytes = [byte[]]@()
                 $type = 'text/plain'
             } elseif ($path -eq '/' -or $path -eq '/index.html') {
@@ -153,9 +153,9 @@ try {
                 $type = $types['.html']
             } else {
                 $rel = $path.TrimStart('/')
-                if ($rel -eq 'duel/') { $rel = 'duel/index.html' }
+                if ($rel -eq 'duel/' -or $rel -eq 'rally/') { $rel = $rel + 'index.html' }
                 $rel = $rel.Replace('/', '\')
-                $ours = ($own -contains $rel) -or $rel.StartsWith('duel\')
+                $ours = ($own -contains $rel) -or $rel.StartsWith('duel\') -or $rel.StartsWith('rally\')
                 $file = if ($ours) { Join-Path $here $rel } else { Join-Path $neokeys $rel }
                 $full = [IO.Path]::GetFullPath($file)
                 if (-not $full.StartsWith($here, [StringComparison]::OrdinalIgnoreCase) -or

@@ -1,0 +1,9 @@
+{
+  "name": "fp10-rally",
+  "private": true,
+  "description": "Rally: a ball across the whole keyboard on the FP10 Lights strip, returned in time from each end",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

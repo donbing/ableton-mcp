@@ -112,6 +112,13 @@ it on the beat, and each rally won speeds it up. Same cables; double-click `tabl
 `http://localhost:8765/duel/`). See `duel/README.md`. With the cables on the Push it's also in PianoDeck (☄️ Duel), through
 the hub.
 
+## Rally
+
+`rally/` is a simpler rhythm game: a ball of light crosses the whole keyboard in a bar, and you send it back
+with any key in the end octave it lands in, on the beat. Each return is a little faster. Double-click
+`tablet\Rally.cmd` (`http://localhost:8765/rally/`), or open 🏓 Rally in PianoDeck. It uses Duel's hub, layout
+and sound modules from `duel/src/`. See `rally/README.md`.
+
 ## Licence
 
 NeoKeys is © ArtinSHF, under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): free for
