@@ -70,11 +70,14 @@ const toStrip = (bytes) => {
 };
 const adapter = new Fp10Adapter(toStrip, layout);
 
-// The Push's hub instead of Web MIDI: on a page that isn't a secure context (PianoDeck on http://moo), or when
-// asked with ?hub=ws://host:port. ?hub=off never uses it.
+// The Push's hub instead of Web MIDI on any page not served from this computer (PianoDeck on http://moo), as
+// NeoKeys' bridge does: the piano and the strip are on the Push there, and the Surface's Edge treats moo as a
+// secure page, so Web MIDI is available but finds neither. Web MIDI on localhost (Duel.cmd), or without Web MIDI
+// at all. ?hub=ws://host:port picks a hub, ?hub=off never uses one.
 const HUB_PARAM = new URLSearchParams(location.search).get('hub');
+const LOCAL = /^(localhost|127.0.0.1|[::1])$/.test(location.hostname);
 const HUB_URL = HUB_PARAM === 'off' ? null
-  : HUB_PARAM || (!window.isSecureContext || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
+  : HUB_PARAM || (!LOCAL || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
 let hub = null;
 
 // While a game runs, the board hides the effects it adds to played notes (sparks, the violet left hand), which
