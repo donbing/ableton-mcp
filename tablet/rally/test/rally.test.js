@@ -31,9 +31,12 @@ test('rally: a key in the far octave near landing sends it back on the landing b
   assert.deepEqual(r.noteOn(60, landMs), [], 'a key outside the zone does nothing');
   assert.deepEqual(r.noteOn(LOW + 3, landMs), [], 'nor one in the zone it came from');
   assert.equal(r.noteOn(HIGH - 2, landMs - 400)[0].type, 'early');
-  const [hit] = r.noteOn(HIGH - 2, landMs + 40); // late, inside the window
+  assert.equal(r.flashes.at(-1).kind, 'early', 'an early key flashes red, so you know');
+  assert.deepEqual(r.noteOn(HIGH - 2, landMs - beat(80) - 10), [], 'a key before the last beat is just playing');
+  // someone reacting to the light lands ~250 ms after it: that still counts
+  const [hit] = r.noteOn(HIGH - 2, landMs + 240);
   assert.equal(hit.type, 'hit');
-  assert.equal(hit.offsetMs, 40);
+  assert.equal(hit.offsetMs, 240);
   assert.equal(r.rally, 1);
   assert.equal(r.bpm, 80 + DEFAULTS.stepBpm);
   // the return starts on the landing beat, not when the key went down, so the pulse doesn't drift
@@ -48,8 +51,8 @@ test('rally: a miss flashes the zone, then serves again from there at the start 
   const land1 = flyAt + 4 * beat(80);
   r.noteOn(HIGH, land1);
   const land2 = land1 + 4 * beat(84);
-  assert.deepEqual(r.update(land2 + DEFAULTS.windowMs), []);
-  const ev = r.update(land2 + DEFAULTS.windowMs + DEFAULTS.graceMs + 1);
+  assert.deepEqual(r.update(land2 + DEFAULTS.lateMs), []);
+  const ev = r.update(land2 + DEFAULTS.lateMs + DEFAULTS.graceMs + 1);
   assert.deepEqual(ev, [{ type: 'miss', side: 'low', rally: 1 }]);
   assert.equal(r.phase, PHASE.MISSED);
   assert.equal(r.flashes.at(-1).kind, 'miss');
@@ -94,4 +97,13 @@ test('strip: the ball is one blue key that moves, the target octave amber, flash
   sent.length = 0;
   s.frame(r.view(land + 5));
   assert.equal(sent.filter((m) => m[0] === 0x92).length, 0, 'a flash is sent once');
+});
+
+test('strip: the amber zone brightens in steps, so the last beat sends 4 x 12 amber notes, not hundreds', () => {
+  let n = 0;
+  const s = new StripNotes((m) => { if (m[0] === 0x91) n++; }, { lowest: LOW, highest: HIGH });
+  const { r, flyAt } = served('low');
+  const land = flyAt + 4 * beat(80);
+  for (let t = land - beat(80); t < land; t += 8) s.frame(r.view(t)); // 125 frames a second
+  assert.ok(n <= 4 * 12, `${n} amber notes over the last beat`);
 });

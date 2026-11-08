@@ -25,20 +25,28 @@ first, because browsers start sound only after a tap.
 |---|---|---|
 | Start tempo | 80 BPM | yes |
 | Faster per return | 4 BPM, up to 160 | yes |
-| A return counts within | ±150 ms of landing (plus 60 ms for late Wi-Fi notes) | ±100 / 150 / 220 ms |
+| A return counts | from 150 ms before landing to 300 ms after (plus 60 ms for late Wi-Fi notes) | tight 100/150, easy 220/400 |
 | The end zones | the strip's lowest and highest 12 keys (F0–E1 and E5–D#6 at the default calibration) | |
 | A crossing | 4 beats; serves count in for 4 | |
 
-A return starts the next crossing on the landing beat, not when the key went down, so the pulse never drifts.
+Late is more forgiving than early: reacting to the light lands about 200-300 ms after it, and that should count
+while you find the beat. A key in the last beat before the window flashes red ("Too early"); one before that is
+ignored. A return starts the next crossing on the landing beat, not when the key went down, so the pulse never
+drifts.
 
 ## On the strip
 
 | | FP10 Lights |
 |---|---|
 | The ball | ch 1 blue, a key at a time; the firmware's 450 ms fade draws its tail |
-| The end it's heading for | ch 2 amber, dim, brightening over the last beat |
+| The end it's heading for | ch 2 amber, dim, brightening in 4 steps over the last beat |
 | A return | ch 3 green flash on the key you hit |
 | A miss | ch 4 red flash over that end's octave |
+| Too early | ch 4 red flash on the key |
+
+Through the hub the strip is drawn ahead by half the Wi-Fi round trip (~45 ms measured), so the ball lands on
+the real strip on the beat. The amber steps rather than ramps: a ramp re-sent 12 notes every frame, over 600
+messages a second, which the Wi-Fi to the Push can't carry smoothly.
 
 While a game runs the board's layers are set to 25 (CC114: no sparks, no violet left hand), re-sent every minute,
 and put back to 31 when it stops or the page goes.

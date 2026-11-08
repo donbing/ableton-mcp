@@ -5,8 +5,9 @@
 //
 //   IDLE     nothing moving
 //   SERVE    the ball waits at the serving end for a count-in (SERVE_BEATS clicks), then flies
-//   FLIGHT   the ball crosses in `crossBeats` beats and lands on a beat; a key in the far zone within
-//            ±windowMs of landing sends it back, starting on that same beat so the pulse never shifts
+//   FLIGHT   the ball crosses in `crossBeats` beats and lands on a beat; a key in the far zone from windowMs
+//            before landing to lateMs after sends it back, starting on that same beat so the pulse never shifts.
+//            Late is more forgiving than early: someone reacting to the light lands ~200-300 ms after it.
 //   MISSED   red on the zone that missed, then a fresh serve from there at the start tempo
 
 export const PHASE = { IDLE: 'idle', SERVE: 'serve', FLIGHT: 'flight', MISSED: 'missed' };
@@ -16,7 +17,8 @@ export const DEFAULTS = {
   stepBpm: 4,       // faster per return
   maxBpm: 160,
   crossBeats: 4,    // one bar end to end
-  windowMs: 150,    // a return counts this close to landing
+  windowMs: 150,    // a return counts from this long before landing…
+  lateMs: 300,      // …to this long after
   graceMs: 60,      // the window closes this much later, for notes that arrive late (Wi-Fi)
   zoneKeys: 12,     // each end's zone: an octave
   serveBeats: 4,
@@ -109,8 +111,12 @@ export class Rally {
     const f = this.flight;
     if (this.sideOf(pitch) !== f.to) return [];
     const off = atMs - f.landMs;
-    if (off < -this.o.windowMs) return [{ type: 'early', pitch, offsetMs: off }];
-    if (off > this.o.windowMs) return [];
+    if (off < -this.o.windowMs) {
+      if (off < -this.beatMs) return []; // not even in the last beat: just playing
+      this.flashes.push({ id: ++this.flashId, kind: 'early', pitch, atMs });
+      return [{ type: 'early', pitch, offsetMs: off }];
+    }
+    if (off > this.o.lateMs) return [];
     // a return: the next flight starts on the landing beat, at the new tempo
     this.rally += 1;
     this.best = Math.max(this.best, this.rally);
@@ -132,7 +138,7 @@ export class Rally {
       }
     } else if (this.phase === PHASE.FLIGHT) {
       const f = this.flight;
-      if (nowMs > f.landMs + this.o.windowMs + this.o.graceMs) {
+      if (nowMs > f.landMs + this.o.lateMs + this.o.graceMs) {
         const rally = this.rally;
         this.flashes.push({ id: ++this.flashId, kind: 'miss', side: f.to, atMs: nowMs });
         this.phase = PHASE.MISSED;

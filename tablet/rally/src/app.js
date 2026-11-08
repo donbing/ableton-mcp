@@ -22,7 +22,7 @@ const LOCAL = /^(localhost|127.0.0.1|\[::1\])$/.test(location.hostname);
 const HUB_URL = HUB_PARAM === 'off' ? null
   : HUB_PARAM || (!LOCAL || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
 
-let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, click: true, hardware: true, best: 0 };
+let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, lateMs: DEFAULTS.lateMs, click: true, hardware: true, best: 0 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) { /* no storage */ }
 const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* no storage */ } };
 
@@ -40,7 +40,8 @@ const trail = [];      // recent ball positions for the drawn tail
 
 function makeGame() {
   const g = new Rally({ lowest: layout.lowest, highest: layout.highest,
-                        bpm: settings.bpm, stepBpm: settings.stepBpm, windowMs: settings.windowMs });
+                        bpm: settings.bpm, stepBpm: settings.stepBpm,
+                        windowMs: settings.windowMs, lateMs: settings.lateMs });
   g.best = settings.best || 0;
   return g;
 }
@@ -81,7 +82,9 @@ function start(from = 'low') {
   game = makeGame();
   scheduledTo = 0;
   game.start(performance.now(), from);
-  say(from === 'low' ? 'Serving from the bass end…' : 'Serving from the treble end…', '');
+  const where = from === 'low' ? 'Serving from the bass end' : 'Serving from the treble end';
+  // a piano key can't start the browser's sound: only a tap or a click can
+  say(sound.ready || !settings.click ? `${where}…` : `${where}… (tap the screen once for the beat click)`, '');
   syncLayers();
   render();
 }
@@ -101,6 +104,8 @@ function handle(events) {
       const when = Math.abs(off) <= 30 ? 'right on it' : `${Math.abs(off)} ms ${off < 0 ? 'early' : 'late'}`;
       say(`${e.rally} — ${when}`, 'good');
       if (e.rally > settings.best) { settings.best = e.rally; save(); }
+    } else if (e.type === 'early') {
+      say(`Too early (${Math.round(-e.offsetMs)} ms): wait for the ball to land`, 'bad');
     } else if (e.type === 'miss') {
       say(e.rally ? `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end after ${e.rally}. Serving again…`
                   : `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end. Serving again…`, 'bad');
@@ -229,7 +234,11 @@ function bindSettings() {
   const w = $('set-window');
   w.value = String(settings.windowMs);
   if (!w.value) w.value = '150';
-  w.addEventListener('change', () => { settings.windowMs = Number(w.value); save(); });
+  w.addEventListener('change', () => {
+    settings.windowMs = Number(w.value);
+    settings.lateMs = { 100: 150, 150: 300, 220: 400 }[w.value] || 300;
+    save();
+  });
   for (const [id, key] of [['set-click', 'click'], ['set-hardware', 'hardware']]) {
     const el = $(id);
     el.checked = !!settings[key];
@@ -376,8 +385,11 @@ function frame() {
       }
     }
   }
+  // The strip's notes cross the Wi-Fi to the Push, so they're drawn that much ahead: the ball lands on the real
+  // strip on the beat, not ~50 ms after it.
+  const lead = midiState === 'hub' && hub ? hub.oneWayMs : 0;
+  strip.frame(game.view(now + lead));
   const v = game.view(now);
-  strip.frame(v);
   draw(v);
   if (hub && hub.rttMs !== null && Math.round(hub.oneWayMs) !== lastLag) { lastLag = Math.round(hub.oneWayMs); renderMidi(); }
   requestAnimationFrame(frame);

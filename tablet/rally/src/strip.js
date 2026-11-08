@@ -1,10 +1,12 @@
 // Rally on FP10 Lights as the firmware is today (notes, not pixels; see tablet/duel/src/fp10.js):
 //
 //   ball         ch 1 blue on the key under it; the firmware's 450 ms fade draws its tail
-//   target zone  ch 2 amber, dim, brightening over the last beat before the ball lands
+//   target zone  ch 2 amber, dim, brightening in 4 steps over the last beat before the ball lands (steps, not
+//                a ramp: a ramp re-sends 12 notes every frame, 600+ messages a second over the hub's Wi-Fi)
 //   serve        ch 2 amber on the ball at the serving end, harder on each count-in beat
 //   return       ch 3 green flash on the key that hit it
 //   miss         ch 4 red flash over the zone that missed
+//   too early    ch 4 red flash on the key
 //
 // Sends only what changed since the last frame.
 
@@ -34,7 +36,7 @@ export class StripNotes {
     if (view.phase === PHASE.FLIGHT) {
       raise(0, view.ball, L.ball);
       const z = view.zones[view.target];
-      const v = L.zoneIdle + (L.zoneHot - L.zoneIdle) * view.heat;
+      const v = L.zoneIdle + (L.zoneHot - L.zoneIdle) * Math.floor(view.heat * 4) / 4;
       for (let p = z.low; p <= z.high; p++) raise(1, p, v);
     } else if (view.phase === PHASE.SERVE) {
       raise(1, view.ball, view.intoBeatMs < L.serveBeatMs ? L.serveBeat : L.serve);
@@ -62,8 +64,8 @@ export class StripNotes {
     for (const f of view.flashes) {
       if (f.id <= this.lastFlash) continue;
       newest = Math.max(newest, f.id);
-      if (f.kind === 'hit') {
-        if (this.inRange(f.pitch)) this.send([0x92, f.pitch, 127]);
+      if (f.kind === 'hit' || f.kind === 'early') {
+        if (this.inRange(f.pitch)) this.send([f.kind === 'hit' ? 0x92 : 0x93, f.pitch, 127]);
       } else {
         const z = view.zones[f.side];
         for (let p = z.low; p <= z.high; p++) if (this.inRange(p)) this.send([0x93, p, 127]);
