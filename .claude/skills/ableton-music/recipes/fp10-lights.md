@@ -72,14 +72,15 @@ C6; the board saves both (README "Calibrating from the piano"). The keys reach t
 track, so check the OPEN set has one first: each set needs its own, and the user may switch sets mid-task
 (2026-11-01: calibration "did nothing" because they had opened a song set without one).
 
-## Lessons on the Surface (NeoKeys)
+## Lessons and games on the Surface (PianoDeck)
 
-For practising set pieces the user can move the piano's and the board's USB cables from the Push to the Surface
-and run NeoKeys there (`tablet/` in the ableton-mcp repo, `tablet\NeoKeys.cmd`). Then NeoKeys drives the strip:
-hints, green/red flashes in practice mode, and the user's playing echoed in blue. `tablet\Duel.cmd` starts Duel
-instead, a call-and-response game on the strip (`tablet/duel/README.md`). While the cables are on the
-Surface, Live doesn't hear the piano and can't reach the strip, so none of the steps here work: ask where the
-cables are before debugging a lights track.
+The Surface on the FP-10 runs PianoDeck (`http://moo:8484`; code in the pianodeck repo, `~/git/pianodeck` on moo,
+Gitea `chris/pianodeck`). With the cables left on the Push, its apps reach the piano and the strip through the
+Push's MIDI hub (`MCP_Server/midi_hub.py`, relayed at moo's `/hub`) while Live keeps hearing the piano: Practice
+(NeoKeys: hints, green/red flashes, your playing echoed in blue), Duel and Rally (games on the strip), Lights
+(split, sparks, brightness by touch) and the MIDI Visualiser. Changes to those apps belong in pianodeck, not here.
+If the user has moved the USB cables to the Surface instead, Live doesn't hear the piano and can't reach the strip,
+so none of the steps here work: ask where the cables are before debugging a lights track.
 
 ## Hints, lessons and right/wrong from Live (more later)
 

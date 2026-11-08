@@ -1,9 +1,0 @@
-{
-  "name": "fp10-duel",
-  "private": true,
-  "description": "Call and response on the FP10 Lights strip: game engine, renderers and the page that runs them",
-  "type": "module",
-  "scripts": {
-    "test": "node --test"
-  }
-}
