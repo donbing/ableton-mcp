@@ -165,17 +165,21 @@ export class Rally {
       zones: this.zones, ball: null, target: null, heat: 0, flashes: this.flashes, lastOffset: this.lastOffset,
       serveBeat: null, intoBeatMs: 0,
     };
-    const end = (side) => (side === 'low' ? this.lowest : this.highest);
+    // The ball lands as it touches a zone's inner edge (the key next to the middle), not the strip's last key:
+    // someone hits when the ball reaches their octave, which used to be ~2/3 of a beat before it "landed".
+    // After landing it carries on into the zone at the same speed, so a late or missed return shows.
+    const edge = (side) => (side === 'low' ? this.zones.low.high : this.zones.high.low);
     if (this.phase === PHASE.SERVE) {
-      v.ball = end(this.serveFrom);
+      v.ball = edge(this.serveFrom);
       v.target = other(this.serveFrom);
       const into = nowMs - this.phaseStart;
       v.serveBeat = Math.floor(into / this.beatMs);
       v.intoBeatMs = into - v.serveBeat * this.beatMs;
     } else if (this.phase === PHASE.FLIGHT) {
       const f = this.flight;
-      const t = Math.min(1, Math.max(0, (nowMs - f.startMs) / (f.landMs - f.startMs)));
-      v.ball = end(f.from) + (end(f.to) - end(f.from)) * t;
+      const t = Math.max(0, (nowMs - f.startMs) / (f.landMs - f.startMs));
+      const ball = edge(f.from) + (edge(f.to) - edge(f.from)) * t;
+      v.ball = Math.min(this.highest, Math.max(this.lowest, ball));
       v.target = f.to;
       v.heat = Math.max(0, 1 - (f.landMs - nowMs) / this.beatMs); // rises over the last beat
     }

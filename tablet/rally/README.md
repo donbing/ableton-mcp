@@ -1,7 +1,8 @@
 # Rally: a ball across the whole keyboard on FP10 Lights
 
-A simpler rhythm game than Duel. A ball of light crosses the whole strip in one bar and lands on the beat. When it
-reaches an end, play any key in that end's octave as it lands to send it back: left hand at the bass end, right
+A simpler rhythm game than Duel. A ball of light crosses the strip in one bar and lands on the beat as it reaches
+the far end's octave (its inner edge, nearest the middle). Play any key in that octave as the ball touches it to
+send it back; missed, it runs on into the octave: left hand at the bass end, right
 hand at the treble end. Each return adds 4 BPM; a miss flashes that end red and serves again from there at the
 start tempo. There's nothing to remember, only the beat to keep.
 
@@ -27,7 +28,7 @@ first, because browsers start sound only after a tap.
 | Faster per return | 4 BPM, up to 160 | yes |
 | A return counts | from 150 ms before landing to 300 ms after (plus 60 ms for late Wi-Fi notes) | tight 100/150, easy 220/400 |
 | The end zones | the strip's lowest and highest 12 keys (F0–E1 and E5–D#6 at the default calibration) | |
-| A crossing | 4 beats; serves count in for 4 | |
+| A crossing | 4 beats, from one octave's inner edge to the other's; serves count in for 4 | |
 
 Late is more forgiving than early: reacting to the light lands about 200-300 ms after it, and that should count
 while you find the beat. A key in the last beat before the window flashes red ("Too early"); one before that is

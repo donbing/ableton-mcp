@@ -14,12 +14,14 @@ function served(from = 'low') {
   return { r, flyAt };
 }
 
-test('rally: the serve counts in, then the ball crosses the whole strip in a bar and lands on the beat', () => {
+test('rally: the serve counts in, then the ball crosses in a bar and lands on the beat as it touches the far octave', () => {
   const { r, flyAt } = served('low');
   const landMs = flyAt + DEFAULTS.crossBeats * beat(80);
-  assert.equal(r.view(flyAt).ball, LOW);
+  assert.equal(r.view(flyAt).ball, LOW + 11, 'from the inner edge of the bass octave');
   assert.equal(r.view((flyAt + landMs) / 2).ball, (LOW + HIGH) / 2);
-  assert.equal(r.view(landMs).ball, HIGH);
+  assert.equal(r.view(landMs).ball, HIGH - 11, 'landing as it reaches the treble octave, where people hit');
+  assert.equal(r.view(landMs + 250).ball, HIGH - 7, 'then on into the octave if no one hits it');
+  assert.equal(r.view(landMs + 5000).ball, HIGH, 'but never off the strip');
   assert.equal(r.view(landMs).target, 'high');
   assert.equal(r.view(landMs - beat(80)).heat, 0);
   assert.equal(r.view(landMs).heat, 1);
@@ -61,7 +63,7 @@ test('rally: a miss flashes the zone, then serves again from there at the start 
   assert.equal(r.bpm, 80);
   assert.equal(r.rally, 0);
   assert.equal(r.best, 1);
-  assert.equal(r.view(land2 + 3000).ball, LOW, 'the low end serves');
+  assert.equal(r.view(land2 + 3000).ball, LOW + 11, 'the low end serves');
 });
 
 test('rally: the click track has no doubled beat where one flight hands over to the next', () => {
@@ -82,14 +84,14 @@ test('strip: the ball is one blue key that moves, the target octave amber, flash
   const s = new StripNotes((m) => sent.push(m), layout);
   const { r, flyAt } = served('low');
   s.frame(r.view(flyAt));
-  assert.deepEqual(sent.filter((m) => m[0] === 0x90), [[0x90, LOW, 127]]);
+  assert.deepEqual(sent.filter((m) => m[0] === 0x90), [[0x90, LOW + 11, 127]]);
   assert.equal(sent.filter((m) => m[0] === 0x91).length, 12);
   sent.length = 0;
   s.frame(r.view(flyAt + 10)); // ball still on the same key: nothing new
   assert.deepEqual(sent, []);
   const land = flyAt + 4 * beat(80);
   s.frame(r.view(flyAt + beat(80)));
-  assert.ok(sent.some((m) => m[0] === 0x80 && m[1] === LOW), 'the old key goes off');
+  assert.ok(sent.some((m) => m[0] === 0x80 && m[1] === LOW + 11), 'the old key goes off');
   r.noteOn(HIGH - 1, land);
   sent.length = 0;
   s.frame(r.view(land));

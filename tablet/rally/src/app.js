@@ -105,7 +105,7 @@ function handle(events) {
       say(`${e.rally} — ${when}`, 'good');
       if (e.rally > settings.best) { settings.best = e.rally; save(); }
     } else if (e.type === 'early') {
-      say(`Too early (${Math.round(-e.offsetMs)} ms): wait for the ball to land`, 'bad');
+      say(`Too early (${Math.round(-e.offsetMs)} ms): hit as the ball reaches the amber octave`, 'bad');
     } else if (e.type === 'miss') {
       say(e.rally ? `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end after ${e.rally}. Serving again…`
                   : `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end. Serving again…`, 'bad');
