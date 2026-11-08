@@ -115,15 +115,16 @@
   <details>
     <summary>How to play, and settings</summary>
     <p class="how">The ball crosses the whole keyboard in one bar, landing on the beat. When it reaches an end, play
-      any key in that end's octave as it lands (the octave glows amber, brighter as the ball comes in). Left hand
+      any key in that end's octave while the ball is in it (the octave glows amber, brighter as the ball comes in;
+      on the beat, as it reaches the octave, is best). Left hand
       at the bass end, right hand at the treble end. Each return is a little faster; a miss starts again from the
       end that missed. Any piano key starts a game. Without a piano: tap the end boxes, or press Z (bass), M
       (treble) or Space (whichever end the ball is heading for).</p>
     <div class="settings">
       <label for="set-bpm">Start tempo (BPM)<input id="set-bpm" type="number" min="40" max="160" step="1"></label>
       <label for="set-step">Faster per return (BPM)<input id="set-step" type="number" min="0" max="10" step="1"></label>
-      <label for="set-window">Timing window
-        <select id="set-window"><option value="100">Tight: 100 ms early to 150 late</option><option value="150">150 ms early to 300 late</option><option value="220">Easy: 220 ms early to 400 late</option></select></label>
+      <label for="set-window">How early a key counts
+        <select id="set-window"><option value="100">Tight: 100 ms before it lands</option><option value="150">150 ms before it lands</option><option value="220">Easy: 220 ms before it lands</option></select></label>
       <label class="check" for="set-click"><input id="set-click" type="checkbox"> Click on each beat</label>
       <label class="check" for="set-hardware"><input id="set-hardware" type="checkbox"> Light FP10 Lights</label>
     </div>

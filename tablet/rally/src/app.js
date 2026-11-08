@@ -22,7 +22,7 @@ const LOCAL = /^(localhost|127.0.0.1|\[::1\])$/.test(location.hostname);
 const HUB_URL = HUB_PARAM === 'off' ? null
   : HUB_PARAM || (!LOCAL || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
 
-let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, lateMs: DEFAULTS.lateMs, click: true, hardware: true, best: 0 };
+let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, click: true, hardware: true, best: 0 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) { /* no storage */ }
 const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* no storage */ } };
 
@@ -41,7 +41,7 @@ const trail = [];      // recent ball positions for the drawn tail
 function makeGame() {
   const g = new Rally({ lowest: layout.lowest, highest: layout.highest,
                         bpm: settings.bpm, stepBpm: settings.stepBpm,
-                        windowMs: settings.windowMs, lateMs: settings.lateMs });
+                        windowMs: settings.windowMs });
   g.best = settings.best || 0;
   return g;
 }
@@ -236,7 +236,6 @@ function bindSettings() {
   if (!w.value) w.value = '150';
   w.addEventListener('change', () => {
     settings.windowMs = Number(w.value);
-    settings.lateMs = { 100: 150, 150: 300, 220: 400 }[w.value] || 300;
     save();
   });
   for (const [id, key] of [['set-click', 'click'], ['set-hardware', 'hardware']]) {

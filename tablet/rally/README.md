@@ -26,14 +26,14 @@ first, because browsers start sound only after a tap.
 |---|---|---|
 | Start tempo | 80 BPM | yes |
 | Faster per return | 4 BPM, up to 160 | yes |
-| A return counts | from 150 ms before landing to 300 ms after (plus 60 ms for late Wi-Fi notes) | tight 100/150, easy 220/400 |
+| A return counts | from 150 ms before the ball reaches the octave until it reaches the end of the strip (plus 60 ms for late Wi-Fi notes): while the light is in the octave | tight 100, easy 220 ms early |
 | The end zones | the strip's lowest and highest 12 keys (F0–E1 and E5–D#6 at the default calibration) | |
 | A crossing | 4 beats, from one octave's inner edge to the other's; serves count in for 4 | |
 
-Late is more forgiving than early: reacting to the light lands about 200-300 ms after it, and that should count
-while you find the beat. A key in the last beat before the window flashes red ("Too early"); one before that is
-ignored. A return starts the next crossing on the landing beat, not when the key went down, so the pulse never
-drifts.
+Late is more forgiving than early: whenever the light is in your octave, a key there sends it back, from where it
+is. Reacting to the light lands 200-300 ms after the beat, and that should count while you find the beat. A key in
+the last beat before the window flashes red ("Too early"); one before that is ignored. The next crossing still lands
+on the beat a bar after the last landing, whenever the key went down, so the pulse never drifts.
 
 ## On the strip
 

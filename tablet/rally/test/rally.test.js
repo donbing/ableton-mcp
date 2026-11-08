@@ -44,8 +44,23 @@ test('rally: a key in the far octave near landing sends it back on the landing b
   // the return starts on the landing beat, not when the key went down, so the pulse doesn't drift
   assert.equal(r.flight.startMs, landMs);
   assert.equal(r.flight.landMs, landMs + 4 * beat(84));
-  assert.equal(r.view(landMs + 2 * beat(84)).ball, (LOW + HIGH) / 2);
+  assert.equal(r.view(landMs + 4 * beat(84)).ball, LOW + 11);
   assert.equal(r.view(landMs + 1).target, 'low');
+});
+
+test('rally: while the light is anywhere in your octave it counts, and goes back from there without a jump', () => {
+  const { r, flyAt } = served('low');
+  const land = flyAt + 4 * beat(80);
+  const late = land + 600; // ~10 keys into the 12-key zone at 80 BPM
+  const before = r.view(late).ball;
+  assert.ok(before > HIGH - 11 && before < HIGH, `the ball is deep in the zone (${before})`);
+  assert.equal(r.noteOn(HIGH - 3, late)[0].type, 'hit');
+  assert.ok(Math.abs(r.view(late).ball - before) < 1e-9, 'no jump');
+  assert.equal(r.flight.landMs, land + 4 * beat(84), 'and it still lands on the beat');
+  assert.equal(r.view(r.flight.landMs).ball, LOW + 11);
+  assert.deepEqual(r.beatTimes(land, land + 1).map((b) => b.atMs), [land], 'the beats count from the landing beat');
+  const { r: r2 } = served('low');
+  assert.deepEqual(r2.noteOn(HIGH - 3, r2.flight.closeMs + 1), [], 'past the end of the strip is too late');
 });
 
 test('rally: a miss flashes the zone, then serves again from there at the start tempo', () => {
@@ -53,8 +68,10 @@ test('rally: a miss flashes the zone, then serves again from there at the start 
   const land1 = flyAt + 4 * beat(80);
   r.noteOn(HIGH, land1);
   const land2 = land1 + 4 * beat(84);
-  assert.deepEqual(r.update(land2 + DEFAULTS.lateMs), []);
-  const ev = r.update(land2 + DEFAULTS.lateMs + DEFAULTS.graceMs + 1);
+  const close = r.flight.closeMs;
+  assert.equal(Math.round(r.ballAt(close) * 1000) / 1000, LOW, 'the chance ends as the ball reaches the end of the strip');
+  assert.deepEqual(r.update(close + DEFAULTS.graceMs), []);
+  const ev = r.update(close + DEFAULTS.graceMs + 1);
   assert.deepEqual(ev, [{ type: 'miss', side: 'low', rally: 1 }]);
   assert.equal(r.phase, PHASE.MISSED);
   assert.equal(r.flashes.at(-1).kind, 'miss');
