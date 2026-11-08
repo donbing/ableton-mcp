@@ -20,7 +20,19 @@ start tempo. There's nothing to remember, only the beat to keep.
 Any piano key starts a game, serving away from the end nearer that key. The click needs one tap on the page
 first, because browsers start sound only after a tap.
 
-## The rules
+## Notes or octave
+
+**Notes** (the default) is the musical one. The ball lands on one key, glowing amber: play that key on the beat as
+it lands. The left hand plays a bass line, A F C G, one note per crossing, and the right a tune over it, E F E D C
+A G B; each return sounds the chord in the browser (Am, F, C, G, two crossings each). A key near the target that
+isn't it flashes red as a wrong note, and the right one still counts if it's in time. A return counts from 150 ms
+before landing to 0.6 of a beat after (at least 300 ms); a miss starts the tune again. The tunes are in
+`src/songs.js`.
+
+**Octave** is the first version: any key in the end's octave, while the ball is in it. Pick it under Targets in
+the settings.
+
+## The rules (Octave)
 
 | | Default | Setting |
 |---|---|---|

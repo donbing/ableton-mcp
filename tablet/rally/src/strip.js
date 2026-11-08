@@ -2,17 +2,20 @@
 //
 //   ball         ch 1 blue on the key under it; the firmware's 450 ms fade draws its tail
 //   target zone  ch 2 amber, dim, brightening in 4 steps over the last beat before the ball lands (steps, not
-//                a ramp: a ramp re-sends 12 notes every frame, 600+ messages a second over the hub's Wi-Fi)
+//                a ramp: a ramp re-sends 12 notes every frame, 600+ messages a second over the hub's Wi-Fi);
+//                a single target note (Notes mode) is brighter, as it's one key to find
 //   serve        ch 2 amber on the ball at the serving end, harder on each count-in beat
 //   return       ch 3 green flash on the key that hit it
 //   miss         ch 4 red flash over the zone that missed
-//   too early    ch 4 red flash on the key
+//   too early,
+//   wrong note   ch 4 red flash on the key
 //
 // Sends only what changed since the last frame.
 
 import { PHASE } from './rally.js';
 
-export const LOOK = { ball: 127, zoneIdle: 6, zoneHot: 70, serve: 50, serveBeat: 127, serveBeatMs: 120 };
+export const LOOK = { ball: 127, zoneIdle: 6, zoneHot: 70, noteIdle: 30, noteHot: 127, serve: 50, serveBeat: 127,
+                      serveBeatMs: 120 };
 
 export class StripNotes {
   constructor(send, layout, look = LOOK) {
@@ -35,13 +38,15 @@ export class StripNotes {
     };
     if (view.phase === PHASE.FLIGHT) {
       raise(0, view.ball, L.ball);
-      const z = view.zones[view.target];
-      const v = L.zoneIdle + (L.zoneHot - L.zoneIdle) * Math.floor(view.heat * 4) / 4;
+      const z = view.aim;
+      const one = z.low === z.high;
+      const [idle, hot] = one ? [L.noteIdle, L.noteHot] : [L.zoneIdle, L.zoneHot];
+      const v = idle + (hot - idle) * Math.floor(view.heat * 4) / 4;
       for (let p = z.low; p <= z.high; p++) raise(1, p, v);
     } else if (view.phase === PHASE.SERVE) {
       raise(1, view.ball, view.intoBeatMs < L.serveBeatMs ? L.serveBeat : L.serve);
-      const z = view.zones[view.target];
-      for (let p = z.low; p <= z.high; p++) raise(1, p, L.zoneIdle);
+      const z = view.aim;
+      for (let p = z.low; p <= z.high; p++) raise(1, p, z.low === z.high ? L.noteIdle : L.zoneIdle);
     }
 
     for (let ch = 0; ch < 2; ch++) {
@@ -64,10 +69,11 @@ export class StripNotes {
     for (const f of view.flashes) {
       if (f.id <= this.lastFlash) continue;
       newest = Math.max(newest, f.id);
-      if (f.kind === 'hit' || f.kind === 'early') {
+      if (f.kind === 'hit' || f.kind === 'early' || f.kind === 'wrong') {
         if (this.inRange(f.pitch)) this.send([f.kind === 'hit' ? 0x92 : 0x93, f.pitch, 127]);
       } else {
-        const z = view.zones[f.side];
+        // a missed note flashes its neighbours too, or one red key is easy to miss
+        const z = f.range.low === f.range.high ? { low: f.range.low - 2, high: f.range.high + 2 } : f.range;
         for (let p = z.low; p <= z.high; p++) if (this.inRange(p)) this.send([0x93, p, 127]);
       }
     }

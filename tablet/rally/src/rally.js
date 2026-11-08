@@ -10,6 +10,11 @@
 //            sends it back from wherever it is, landing on the beat `crossBeats` after this one, so the pulse never
 //            shifts. Late is more forgiving than early: what you see is what counts, the light in your octave.
 //   MISSED   red on the zone that missed, then a fresh serve from there at the start tempo
+//
+// Two kinds of target. Without a song, any key in the far end's octave counts (the ball lands at its inner edge
+// and runs on through it). With a song ({ low: [...], high: [...] } pitches, see songs.js) the ball lands on one
+// key, the next note of that side's list, and stays there while the window is open; a key near it that isn't it
+// flashes red as a wrong note, and you can still play the right one in time.
 
 export const PHASE = { IDLE: 'idle', SERVE: 'serve', FLIGHT: 'flight', MISSED: 'missed' };
 
@@ -23,6 +28,10 @@ export const DEFAULTS = {
   zoneKeys: 12,     // each end's zone: an octave
   serveBeats: 4,
   missedBeats: 2,
+  song: null,       // null: anywhere in the octave; or { low: [pitches], high: [pitches] }
+  lateBeats: 0.6,   // with a song: a return counts until this much of a beat after landing…
+  lateMinMs: 300,   // …but never less than this
+  wrongKeys: 12,    // with a song: a key this close to the target, not it, is a wrong note
 };
 
 const SIDES = ['low', 'high'];
@@ -49,8 +58,20 @@ export class Rally {
     this.serveFrom = 'low';
     this.phaseStart = 0;
     this.lastOffset = null;
-    this.flashes = [];    // { id, kind: 'hit' | 'miss', pitch?, side?, atMs }
+    this.flashes = [];    // { id, kind: 'hit' | 'early' | 'wrong' | 'miss', pitch?, side?, range?, atMs }
     this.flashId = 0;
+    this.step = { low: 0, high: 0 }; // with a song: the next note of each side
+  }
+
+  get song() { return this.o.song; }
+
+  // The next target on a side: the keys that count, where the ball lands and how far it may run on.
+  aimOf(side) {
+    if (!this.song) return { keys: this.zones[side], land: this.edge(side), end: this.end(side), step: null };
+    const list = this.song[side];
+    const step = this.step[side];
+    const p = list[step % list.length];
+    return { keys: { low: p, high: p }, land: p, end: p, step };
   }
 
   get beatMs() { return 60000 / this.bpm; }
@@ -83,26 +104,36 @@ export class Rally {
     this.flight = null;
   }
 
+  serveSpot(side) { return this.song ? this.aimOf(side).land : this.edge(side); }
+
   // A zone's inner edge, where the ball lands, and its far end, where the chance to return it ends.
   edge(side) { return side === 'low' ? this.zones.low.high : this.zones.high.low; }
   end(side) { return side === 'low' ? this.lowest : this.highest; }
 
   // `ballFrom`/`ballMs`: where and when the ball sets off, which for a late return is inside the zone, after the
   // beat; it still lands on the beat, a touch faster.
-  fly(from, startMs, ballFrom = this.edge(from), ballMs = startMs) {
+  fly(from, startMs, ballFrom = this.serveSpot(from), ballMs = startMs) {
     this.phase = PHASE.FLIGHT;
     const to = other(from);
+    const aim = this.aimOf(to);
     const landMs = startMs + this.o.crossBeats * this.beatMs;
-    const speed = (this.edge(to) - this.edge(from)) / (landMs - startMs); // keys per ms at the stated tempo
-    const closeMs = landMs + (this.end(to) - this.edge(to)) / speed;
-    this.flight = { from, to, startMs, landMs, ballFrom, ballMs, closeMs };
+    let closeMs;
+    if (this.song) closeMs = landMs + Math.max(this.o.lateMinMs, this.o.lateBeats * this.beatMs);
+    else {
+      const speed = (this.edge(to) - this.edge(from)) / (landMs - startMs); // keys per ms at the stated tempo
+      closeMs = landMs + (aim.end - aim.land) / speed;
+    }
+    this.flight = { from, to, startMs, landMs, ballFrom, ballMs, closeMs, aim };
   }
 
+  // On towards the landing key, then (octave targets) on through the zone to the strip's end; never past `end`.
   ballAt(nowMs) {
     const f = this.flight;
     const t = Math.max(0, (nowMs - f.ballMs) / (f.landMs - f.ballMs));
-    const p = f.ballFrom + (this.edge(f.to) - f.ballFrom) * t;
-    return Math.min(this.highest, Math.max(this.lowest, p));
+    const p = f.ballFrom + (f.aim.land - f.ballFrom) * t;
+    const lo = Math.max(this.lowest, Math.min(f.ballFrom, f.aim.end));
+    const hi = Math.min(this.highest, Math.max(f.ballFrom, f.aim.end));
+    return Math.min(hi, Math.max(lo, p));
   }
 
   // Beats of the click track: the serve's count-in, then one per beat of each flight.
@@ -126,8 +157,15 @@ export class Rally {
   noteOn(pitch, atMs) {
     if (this.phase !== PHASE.FLIGHT) return [];
     const f = this.flight;
-    if (this.sideOf(pitch) !== f.to) return [];
     const off = atMs - f.landMs;
+    const k = f.aim.keys;
+    if (pitch < k.low || pitch > k.high) {
+      // with a song, a key near the target in its last beat is a wrong note; the right one can still follow
+      if (!this.song || Math.abs(pitch - f.aim.land) > this.o.wrongKeys) return [];
+      if (off < -this.beatMs || atMs > f.closeMs) return [];
+      this.flashes.push({ id: ++this.flashId, kind: 'wrong', pitch, atMs });
+      return [{ type: 'wrong', pitch, want: f.aim.land, side: f.to, offsetMs: off }];
+    }
     if (off < -this.o.windowMs) {
       if (off < -this.beatMs) return []; // not even in the last beat: just playing
       this.flashes.push({ id: ++this.flashId, kind: 'early', pitch, atMs });
@@ -141,10 +179,12 @@ export class Rally {
     this.flashes.push({ id: ++this.flashId, kind: 'hit', pitch, atMs });
     const landMs = f.landMs;
     const ball = this.ballAt(atMs);
+    const step = f.aim.step;
+    if (step !== null) this.step[f.to] += 1;
     this.bpm = Math.min(this.o.maxBpm, this.bpm + this.o.stepBpm);
     if (atMs > landMs) this.fly(f.to, landMs, ball, atMs);
-    else this.fly(f.to, landMs);
-    return [{ type: 'hit', pitch, offsetMs: off, rally: this.rally, bpm: this.bpm }];
+    else this.fly(f.to, landMs, f.aim.land, landMs);
+    return [{ type: 'hit', pitch, offsetMs: off, rally: this.rally, bpm: this.bpm, side: f.to, step }];
   }
 
   update(nowMs) {
@@ -159,7 +199,7 @@ export class Rally {
       const f = this.flight;
       if (nowMs > f.closeMs + this.o.graceMs) {
         const rally = this.rally;
-        this.flashes.push({ id: ++this.flashId, kind: 'miss', side: f.to, atMs: nowMs });
+        this.flashes.push({ id: ++this.flashId, kind: 'miss', side: f.to, range: f.aim.keys, atMs: nowMs });
         this.phase = PHASE.MISSED;
         this.phaseStart = f.landMs;
         this.serveFrom = f.to;
@@ -170,6 +210,7 @@ export class Rally {
       if (nowMs >= at) {
         this.rally = 0;
         this.bpm = this.o.bpm;
+        this.step = { low: 0, high: 0 }; // the tune starts again too
         this.serve(at, this.serveFrom);
       }
     }
@@ -182,12 +223,13 @@ export class Rally {
     const v = {
       phase: this.phase, now: nowMs, bpm: this.bpm, beatMs: this.beatMs, rally: this.rally, best: this.best,
       zones: this.zones, ball: null, target: null, heat: 0, flashes: this.flashes, lastOffset: this.lastOffset,
-      serveBeat: null, intoBeatMs: 0,
+      serveBeat: null, intoBeatMs: 0, aim: null,
     };
     // The ball lands as it touches a zone's inner edge, where people hit, and runs on into the zone after.
     if (this.phase === PHASE.SERVE) {
-      v.ball = this.edge(this.serveFrom);
+      v.ball = this.serveSpot(this.serveFrom);
       v.target = other(this.serveFrom);
+      v.aim = this.aimOf(v.target).keys;
       const into = nowMs - this.phaseStart;
       v.serveBeat = Math.floor(into / this.beatMs);
       v.intoBeatMs = into - v.serveBeat * this.beatMs;
@@ -195,6 +237,7 @@ export class Rally {
       const f = this.flight;
       v.ball = this.ballAt(nowMs);
       v.target = f.to;
+      v.aim = f.aim.keys;
       v.heat = Math.max(0, 1 - (f.landMs - nowMs) / this.beatMs); // rises over the last beat
     }
     return v;

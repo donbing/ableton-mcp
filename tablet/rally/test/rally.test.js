@@ -126,3 +126,64 @@ test('strip: the amber zone brightens in steps, so the last beat sends 4 x 12 am
   for (let t = land - beat(80); t < land; t += 8) s.frame(r.view(t)); // 125 frames a second
   assert.ok(n <= 4 * 12, `${n} amber notes over the last beat`);
 });
+
+import { SONGS, chordFor } from '../src/songs.js';
+
+function servedSong(from = 'low') {
+  const r = new Rally({ lowest: LOW, highest: HIGH, song: SONGS.vamp });
+  r.start(0, from);
+  const flyAt = DEFAULTS.serveBeats * beat(DEFAULTS.bpm);
+  r.update(flyAt);
+  return { r, flyAt, land: flyAt + 4 * beat(80) };
+}
+
+test('notes: the ball lands on the tune\'s next key, and only that key sends it back', () => {
+  const { r, flyAt, land } = servedSong('low');
+  const [bass0, top0, top1] = [SONGS.vamp.low[0], SONGS.vamp.high[0], SONGS.vamp.high[1]];
+  assert.equal(r.view(flyAt).ball, bass0, 'serves from the bass line\'s first note');
+  assert.deepEqual(r.view(flyAt).aim, { low: top0, high: top0 });
+  assert.equal(r.view(land).ball, top0);
+  assert.equal(r.view(land + 200).ball, top0, 'and waits on it');
+  assert.deepEqual(r.noteOn(top0 + 30, land), [], 'a key far away is just playing');
+  const [wrong] = r.noteOn(top0 + 1, land);
+  assert.equal(wrong.type, 'wrong');
+  assert.equal(wrong.want, top0);
+  assert.equal(r.flashes.at(-1).kind, 'wrong');
+  const [hit] = r.noteOn(top0, land + 100);
+  assert.equal(hit.type, 'hit', 'the right key still counts after a wrong one');
+  assert.equal(hit.step, 0);
+  assert.equal(chordFor(SONGS.vamp, hit.step).name, 'Am');
+  assert.equal(r.view(land + 4 * beat(84)).ball, bass0, 'back to the bass line\'s first note…');
+  r.noteOn(bass0, land + 4 * beat(84));
+  assert.equal(r.flight.aim.land, top1, '…then the tune\'s second');
+});
+
+test('notes: the window stays open a little after landing, then a miss starts the tune again', () => {
+  const { r, land } = servedSong('low');
+  const top0 = SONGS.vamp.high[0];
+  r.noteOn(top0, land);
+  const land2 = land + 4 * beat(84);
+  const close = r.flight.closeMs;
+  assert.equal(close, land2 + Math.max(DEFAULTS.lateMinMs, DEFAULTS.lateBeats * beat(84)));
+  assert.deepEqual(r.update(close + DEFAULTS.graceMs), []);
+  const [miss] = r.update(close + DEFAULTS.graceMs + 1);
+  assert.equal(miss.type, 'miss');
+  const f = r.flashes.at(-1);
+  assert.deepEqual(f.range, { low: SONGS.vamp.low[0], high: SONGS.vamp.low[0] });
+  r.update(land2 + DEFAULTS.missedBeats * beat(84));
+  assert.deepEqual(r.step, { low: 0, high: 0 });
+});
+
+test('notes strip: one amber key, brighter than an octave\'s, and a missed note flashes its neighbours', () => {
+  const sent = [];
+  const s = new StripNotes((m) => sent.push(m), { lowest: LOW, highest: HIGH });
+  const { r, land } = servedSong('low');
+  s.frame(r.view(land - 2 * beat(80)));
+  const amber = sent.filter((m) => m[0] === 0x91);
+  assert.equal(amber.length, 1);
+  assert.equal(amber[0][1], SONGS.vamp.high[0]);
+  r.update(r.flight.closeMs + DEFAULTS.graceMs + 1);
+  sent.length = 0;
+  s.frame(r.view(r.flight.closeMs + DEFAULTS.graceMs + 2));
+  assert.equal(sent.filter((m) => m[0] === 0x93).length, 5);
+});

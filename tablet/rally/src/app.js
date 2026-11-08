@@ -4,6 +4,7 @@
 
 import { Rally, PHASE, DEFAULTS } from './rally.js';
 import { StripNotes } from './strip.js';
+import { SONGS, chordFor } from './songs.js';
 import { Hub } from '../../duel/src/hub.js';
 import { makeLayout, keyPos, whiteIndex, isBlack, noteName } from '../../duel/src/layout.js';
 import { Sound } from '../../duel/src/audio.js';
@@ -22,9 +23,13 @@ const LOCAL = /^(localhost|127.0.0.1|\[::1\])$/.test(location.hostname);
 const HUB_URL = HUB_PARAM === 'off' ? null
   : HUB_PARAM || (!LOCAL || !navigator.requestMIDIAccess ? `ws://${location.host}/hub` : null);
 
-let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, click: true, hardware: true, best: 0 };
+let settings = { bpm: DEFAULTS.bpm, stepBpm: DEFAULTS.stepBpm, windowMs: DEFAULTS.windowMs, mode: 'notes', chords: true,
+                 click: true, hardware: true, best: 0 };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE) || '{}')); } catch (e) { /* no storage */ }
 const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* no storage */ } };
+
+const song = () => (settings.mode === 'notes' ? SONGS.vamp : null);
+const target = () => (game.song ? 'key' : 'octave');
 
 const layout = makeLayout();
 const sound = new Sound();
@@ -41,7 +46,7 @@ const trail = [];      // recent ball positions for the drawn tail
 function makeGame() {
   const g = new Rally({ lowest: layout.lowest, highest: layout.highest,
                         bpm: settings.bpm, stepBpm: settings.stepBpm,
-                        windowMs: settings.windowMs });
+                        windowMs: settings.windowMs, song: song() });
   g.best = settings.best || 0;
   return g;
 }
@@ -102,10 +107,18 @@ function handle(events) {
     if (e.type === 'hit') {
       const off = Math.round(e.offsetMs);
       const when = Math.abs(off) <= 30 ? 'right on it' : `${Math.abs(off)} ms ${off < 0 ? 'early' : 'late'}`;
-      say(`${e.rally} — ${when}`, 'good');
+      if (game.song && settings.chords && sound.ready) {
+        // the chord of that step, softly, under the note just played
+        const c = chordFor(game.song, e.step);
+        for (const n of c.notes) sound.pluck(n, performance.now(), { gain: 0.28, bright: 0.25 });
+      }
+      const chord = game.song ? ` (${chordFor(game.song, e.step).name})` : '';
+      say(`${e.rally}${chord} — ${when}`, 'good');
       if (e.rally > settings.best) { settings.best = e.rally; save(); }
     } else if (e.type === 'early') {
-      say(`Too early (${Math.round(-e.offsetMs)} ms): hit as the ball reaches the amber octave`, 'bad');
+      say(`Too early (${Math.round(-e.offsetMs)} ms): hit as the ball reaches the amber ${target()}`, 'bad');
+    } else if (e.type === 'wrong') {
+      say(`${noteName(e.pitch)} — this one's ${noteName(e.want)}, the amber key`, 'bad');
     } else if (e.type === 'miss') {
       say(e.rally ? `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end after ${e.rally}. Serving again…`
                   : `Missed at the ${e.side === 'low' ? 'bass' : 'treble'} end. Serving again…`, 'bad');
@@ -137,7 +150,9 @@ function onMidi(e) {
   else if (cmd === 0x80 || cmd === 0x90) held.delete(d1);
 }
 
-const mid = (side) => Math.round((game.zones[side].low + game.zones[side].high) / 2);
+// the key a tap or a computer key plays: the target note, or the middle of the octave
+const mid = (side) => (game.song ? game.aimOf(side).land
+  : Math.round((game.zones[side].low + game.zones[side].high) / 2));
 
 // ---------- MIDI ----------
 
@@ -215,10 +230,28 @@ function render() {
   $('start').textContent = playing ? 'Stop' : 'Start';
   $('start').setAttribute('aria-pressed', String(playing));
   for (const side of ['low', 'high']) $('zone-' + side).classList.toggle('target', playing && v.target === side);
+  renderZones();
   renderMidi();
 }
 
+function renderZones() {
+  for (const side of ['low', 'high']) {
+    const z = game.zones[side];
+    $(`zone-${side}-keys`).textContent = game.song ? `next: ${noteName(game.aimOf(side).land)}`
+      : `${noteName(z.low)}–${noteName(z.high)}`;
+  }
+}
+
 function bindSettings() {
+  const m = $('set-mode');
+  m.value = settings.mode === 'octave' ? 'octave' : 'notes';
+  m.addEventListener('change', () => {
+    settings.mode = m.value;
+    save();
+    if (game.phase !== PHASE.IDLE) stop('Stopped: press Start or play a key to go again.');
+    game = makeGame();
+    render();
+  });
   const num = (id, key, lo, hi) => {
     const el = $(id);
     el.value = settings[key];
@@ -238,7 +271,7 @@ function bindSettings() {
     settings.windowMs = Number(w.value);
     save();
   });
-  for (const [id, key] of [['set-click', 'click'], ['set-hardware', 'hardware']]) {
+  for (const [id, key] of [['set-click', 'click'], ['set-chords', 'chords'], ['set-hardware', 'hardware']]) {
     const el = $(id);
     el.checked = !!settings[key];
     el.addEventListener('change', () => {
@@ -322,20 +355,21 @@ function draw(v) {
     const x = X(layout.posOfLed(i));
     if (x >= 0 && x <= W) ctx.fillRect(x - 1.5, stripY - 1.5, 3, 3);
   }
-  const zoneSpan = (side) => [X(keyPos(v.zones[side].low) - 0.3), X(keyPos(v.zones[side].high) + 0.3)];
-  // the zone the ball is heading for, amber, brighter as it comes in
-  if (v.target) {
-    const [a, b] = zoneSpan(v.target);
+  const span = (k) => [X(keyPos(k.low) - 0.3), X(keyPos(k.high) + 0.3)];
+  // the keys the ball is heading for, amber, brighter as it comes in
+  if (v.aim) {
+    const [a, b] = span(v.aim);
     ctx.fillStyle = `rgba(255,150,40,${0.12 + 0.6 * v.heat})`;
     ctx.fillRect(a, stripY - 4, b - a, 8);
   }
-  // flashes: green where a return was hit, red over a zone that missed
+  // flashes: green where a return was hit, red on an early or wrong key, red over what missed
   for (const f of v.flashes) {
     const age = v.now - f.atMs;
     const a = Math.max(0, 1 - age / 450);
     if (f.kind === 'hit') glow(X(keyPos(f.pitch)), stripY, 26, '60,255,110', a);
+    else if (f.kind === 'early' || f.kind === 'wrong') glow(X(keyPos(f.pitch)), stripY, 22, '255,60,50', a);
     else {
-      const [x0, x1] = zoneSpan(f.side);
+      const [x0, x1] = span(f.range);
       ctx.fillStyle = `rgba(255,50,40,${a * 0.9})`;
       ctx.fillRect(x0, stripY - 6, x1 - x0, 12);
     }
@@ -354,7 +388,7 @@ function draw(v) {
   for (let n = layout.lowest; n <= layout.highest; n++) {
     if (isBlack(n)) continue;
     const x = X(whiteIndex(n));
-    const inZone = v.target && n >= v.zones[v.target].low && n <= v.zones[v.target].high;
+    const inZone = v.aim && n >= v.aim.low && n <= v.aim.high;
     ctx.fillStyle = held.has(n) ? '#9fe7ee' : inZone ? '#ffe2bd' : '#ece9f0';
     ctx.fillRect(x + 0.5, keysTop, whiteW - 1, keysH);
     if (n % 12 === 0) {
@@ -395,8 +429,6 @@ function frame() {
 }
 
 function init() {
-  $('zone-low-keys').textContent = `${noteName(game.zones.low.low)}–${noteName(game.zones.low.high)}`;
-  $('zone-high-keys').textContent = `${noteName(game.zones.high.low)}–${noteName(game.zones.high.high)}`;
   bindSettings();
   bindInput();
   resize();
